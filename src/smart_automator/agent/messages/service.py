@@ -15,6 +15,7 @@ from .utils import (
 HISTORY_START_MARKER = "[Your task history memory starts here]"
 CURRENT_STATE_MARKER = "[Current state starts here]"
 SUMMARY_MARKER = "[Earlier history summarized]"
+PLAN_MARKER = "<plan>"
 
 
 @dataclass
@@ -83,6 +84,8 @@ class MessageManager:
         self.history = MessageHistory()
         self._tool_id = 1
         self._summary_message_index: int | None = None
+        self._progress_lines: list[str] = []
+        self._latest_plan_index: int | None = None
 
     def next_tool_id(self) -> int:
         tool_id = self._tool_id
@@ -112,9 +115,9 @@ class MessageManager:
             "current_state": {
                 "evaluation_previous_goal": "Success - clicked Apple link from Google results.",
                 "memory": "Searched for iPhone retailers. Currently at step 3/15.",
-                "next_goal": "Click the iPhone link at index [127].",
+                "next_goal": "Click the iPhone link at index [2].",
             },
-            "action": [{"click_element": {"index": 127, "intent": "Open iPhone page"}}],
+            "action": [{"click_element": {"index": 2, "intent": "Open iPhone page"}}],
         }
         self.add_message_with_tokens(
             {
@@ -148,6 +151,10 @@ class MessageManager:
                 {"role": "assistant", "content": f"<plan>{cleaned}</plan>"},
                 position=position,
             )
+            if position is not None:
+                self._latest_plan_index = position
+            else:
+                self._latest_plan_index = len(self.history.messages) - 1
 
     def add_state_message(self, content: str):
         self.add_message_with_tokens({"role": "user", "content": content})
@@ -159,6 +166,34 @@ class MessageManager:
                 "content": json.dumps(model_output),
             }
         )
+
+    def record_progress_step(
+        self,
+        *,
+        step_number: int,
+        url: str,
+        title: str,
+        evaluation: str = "",
+        memory: str = "",
+        next_goal: str = "",
+        action_summary: str = "",
+        error: str = "",
+    ) -> None:
+        parts: list[str] = [f"step {step_number}"]
+        if url:
+            parts.append(f"@{url}")
+        if title:
+            parts.append(f"({title})")
+        if evaluation and evaluation not in {"", "Unknown"}:
+            parts.append(f"[{evaluation}]")
+        detail = action_summary or memory or next_goal
+        if detail:
+            parts.append(detail[:140])
+        if error:
+            parts.append(f"error: {error[:100]}")
+        self._progress_lines.append(" ".join(parts))
+        if len(self._progress_lines) > 30:
+            self._progress_lines = self._progress_lines[-30:]
 
     def remove_last_state_message(self):
         self.history.remove_last_state_message()
@@ -216,6 +251,10 @@ class MessageManager:
         content = stored.message.get("content", "")
         return isinstance(content, str) and SUMMARY_MARKER in content
 
+    def _is_plan_message(self, stored: StoredMessage) -> bool:
+        content = stored.message.get("content", "")
+        return isinstance(content, str) and PLAN_MARKER in content
+
     def _trimmable_indices(self) -> list[int]:
         prefix_end = self._protected_prefix_end()
         indices: list[int] = []
@@ -225,18 +264,39 @@ class MessageManager:
                 continue
             if self._is_summary_message(stored):
                 continue
+            if self._is_plan_message(stored):
+                continue
             indices.append(index)
         return indices
 
     def _summarize_removed_messages(self, removed_messages: list[StoredMessage]) -> str:
-        lines = [SUMMARY_MARKER, "Dropped older turns to stay within context limits:"]
-        for stored in removed_messages[-5:]:
-            role = stored.message.get("role", "unknown")
-            content = stored.message.get("content", "")
-            if not isinstance(content, str):
-                content = json.dumps(content)
-            preview = " ".join(content.split())[:180]
-            lines.append(f"- {role}: {preview}")
+        lines = [SUMMARY_MARKER, "Task progress summary (older turns compacted):"]
+        if self._progress_lines:
+            for entry in self._progress_lines[-8:]:
+                lines.append(f"- {entry}")
+        else:
+            lines.append("Dropped older turns to stay within context limits:")
+            for stored in removed_messages[-5:]:
+                role = stored.message.get("role", "unknown")
+                content = stored.message.get("content", "")
+                if not isinstance(content, str):
+                    content = json.dumps(content)
+                if PLAN_MARKER in content:
+                    lines.append("- planner: (plan preserved separately)")
+                    continue
+                try:
+                    parsed = json.loads(content)
+                    if isinstance(parsed, dict) and "current_state" in parsed:
+                        state = parsed.get("current_state", {})
+                        memory = state.get("memory", "")
+                        goal = state.get("next_goal", "")
+                        lines.append(f"- navigator: {memory or goal}"[:180])
+                        continue
+                except (json.JSONDecodeError, TypeError):
+                    pass
+                preview = " ".join(content.split())[:120]
+                lines.append(f"- {role}: {preview}")
+        lines.append("Indexes in this summary are stale — use only indexes from the current page state.")
         return "\n".join(lines)
 
     def _ensure_summary_message(self, removed_messages: list[StoredMessage]) -> None:

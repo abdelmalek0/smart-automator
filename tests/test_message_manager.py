@@ -41,6 +41,26 @@ class TestMessageManagerCutMessages(unittest.TestCase):
         self.assertLess(len(manager.history.messages), before_count)
         self.assertLessEqual(manager.history.total_tokens, manager.settings.max_input_tokens)
 
+    def test_progress_summary_uses_recorded_steps(self):
+        manager = self._build_manager(max_tokens=500)
+        manager.record_progress_step(
+            step_number=1,
+            url="https://google.com",
+            title="Google",
+            memory="searched python tutorials",
+            next_goal="open first result",
+        )
+        manager.cut_messages()
+        summary_messages = [
+            stored.message["content"]
+            for stored in manager.history.messages
+            if isinstance(stored.message.get("content"), str)
+            and "[Earlier history summarized]" in stored.message["content"]
+        ]
+        self.assertTrue(summary_messages)
+        self.assertIn("searched python tutorials", summary_messages[0])
+        self.assertIn("stale", summary_messages[0].lower())
+
     def test_preserves_protected_prefix(self):
         manager = self._build_manager(max_tokens=500)
         manager.cut_messages()
@@ -50,6 +70,17 @@ class TestMessageManagerCutMessages(unittest.TestCase):
         )
         self.assertIn(HISTORY_START_MARKER, protected)
         self.assertIn("do the task", protected)
+
+    def test_preserves_plan_messages_during_trim(self):
+        manager = self._build_manager(max_tokens=500)
+        manager.add_plan('{"next_steps": "click submit"}')
+        manager.cut_messages()
+        plan_messages = [
+            stored.message["content"]
+            for stored in manager.history.messages
+            if isinstance(stored.message.get("content"), str) and "<plan>" in stored.message["content"]
+        ]
+        self.assertTrue(plan_messages)
 
 
 if __name__ == "__main__":

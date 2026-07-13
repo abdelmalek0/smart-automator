@@ -155,6 +155,12 @@ def extract_json_from_model_output(content: str):
     try:
         return json.loads(processed)
     except json.JSONDecodeError:
+        repaired = repair_json_string(processed)
+        if repaired != processed:
+            try:
+                return json.loads(repaired)
+            except json.JSONDecodeError:
+                pass
         pass
     if processed.startswith("["):
         start = processed.find("[")

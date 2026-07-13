@@ -10,6 +10,8 @@ from ..agent.context import ActionResult, AgentContext
 from ..agent.history import AgentStepRecord, BrowserStateHistory
 from ..agent.messages.utils import coerce_navigator_response, fix_actions, preview_text
 from ..agent.submit_hint import build_submit_completeness_hint
+from ..agent.compound_integrity import build_post_commit_no_wait_hint
+from ..agent.verification import count_verification_issues, format_verification_hints
 from ..agent.stuck_recovery import should_block_navigator_done
 from ..browser.history import find_history_element_in_tree
 from ..browser.views import BrowserState
@@ -21,7 +23,16 @@ from .errors import (
     ChatModelBadRequestError,
     ChatModelForbiddenError,
     RequestCancelledError,
+    ResponseParseError,
     classify_llm_error,
+)
+from .recovery import (
+    build_empty_action_repair_message,
+    build_invalid_index_message,
+    build_parse_repair_message,
+    collect_rejected_actions,
+    filter_actions_by_selector_map,
+    format_valid_indices,
 )
 
 MAX_CONSECUTIVE_NO_ACTION_STEPS = 3
@@ -59,9 +70,10 @@ class NavigatorAgent(BaseAgent):
         message_manager = self._context.message_manager
         for i, result in enumerate(self._context.action_results):
             if result.include_in_memory:
-                if result.extracted_content:
+                memory_line = result.format_memory_line()
+                if memory_line:
                     message_manager.add_message_with_tokens(
-                        {"role": "user", "content": f"Action result: {result.extracted_content}"}
+                        {"role": "user", "content": f"Action result: {memory_line}"}
                     )
                 if result.error:
                     error = result.error.split("\n")[-1]
@@ -87,19 +99,38 @@ class NavigatorAgent(BaseAgent):
 
     def execute(self) -> dict:
         output: dict = {"id": self.id}
+        recovery_attempts = 0
         try:
             dom_start = time.perf_counter()
             browser_state = self.add_state_message_to_memory(
                 show_highlights=True,
                 wait_for_stable=True,
             )
+            if (
+                self._context.last_step_had_commit
+                and self._context.last_commit_snapshot is not None
+                and self._context.last_commit_snapshot.url == browser_state.url
+                and self._context.last_commit_snapshot.title == browser_state.title
+            ):
+                self._context.message_manager.add_message_with_tokens({
+                    "role": "user",
+                    "content": (
+                        "Previous step submitted on this page but the screen did not advance. "
+                        "Re-check verified field values and retry the commit — do not wait."
+                    ),
+                })
             dom_ms = (time.perf_counter() - dom_start) * 1000
 
             messages = self._get_messages()
             prompt_chars = sum(len(str(m.get("content", ""))) for m in messages)
+            observation_chars = len(
+                str(messages[-1].get("content", "")) if messages else ""
+            )
 
             llm_start = time.perf_counter()
-            response, raw_llm_response = self.get_json_response_with_raw(messages, temperature=0.1)
+            response, raw_llm_response, recovery_attempts, rejected_actions = (
+                self._invoke_navigator_with_recovery(messages, browser_state)
+            )
             llm_ms = (time.perf_counter() - llm_start) * 1000
 
             self.remove_last_state_message_from_memory()
@@ -108,6 +139,15 @@ class NavigatorAgent(BaseAgent):
             fixed_actions = fix_actions(response)
             if fixed_actions:
                 response["action"] = fixed_actions
+            if rejected_actions:
+                self._context.message_manager.add_message_with_tokens({
+                    "role": "user",
+                    "content": (
+                        "Rejected actions from your last response: "
+                        f"{json.dumps(rejected_actions, ensure_ascii=False)}. "
+                        "Use only allowed action names from the system prompt."
+                    ),
+                })
             current_state = response.get("current_state", {
                 "evaluation_previous_goal": "Unknown",
                 "memory": "",
@@ -120,51 +160,86 @@ class NavigatorAgent(BaseAgent):
             actions = parse_actions(raw_actions, self._context.options.max_actions_per_step)
             num_elements = len(browser_state.selector_map)
             auto_wait = False
+            escalate_recovery = False
 
             if not actions:
                 self._context.consecutive_no_action_steps += 1
                 if self._context.consecutive_no_action_steps >= MAX_CONSECUTIVE_NO_ACTION_STEPS:
-                    diagnostics = self._build_no_action_diagnostics(
-                        response,
-                        raw_llm_response,
-                        num_elements,
-                    )
-                    detail = ""
-                    if diagnostics.get("raw_preview"):
-                        detail = f" Last LLM output: {diagnostics['raw_preview']}"
-                    output["error"] = (
-                        "Navigator produced no parseable actions for "
-                        f"{MAX_CONSECUTIVE_NO_ACTION_STEPS} consecutive steps."
-                        f"{detail}"
-                    )
-                    output["diagnostics"] = diagnostics
-                    return output
-
-                intent = (
-                    "Auto-wait: page still loading (no interactive elements)"
-                    if num_elements == 0
-                    else "Auto-wait: model returned no parseable actions"
-                )
-                actions = [
-                    Action(
-                        name="wait",
-                        args={"seconds": 3, "intent": intent},
-                    )
-                ]
-                auto_wait = True
-                if num_elements > 0 and self._context.consecutive_no_action_steps == 1:
+                    escalate_recovery = True
+                    self._context.consecutive_no_action_steps = MAX_CONSECUTIVE_NO_ACTION_STEPS - 1
                     self._context.message_manager.add_message_with_tokens({
                         "role": "user",
                         "content": (
-                            f"The page has {num_elements} interactive element(s) but your last "
-                            "response had no parseable actions. Respond with flat JSON only: "
-                            '{"current_state": {...}, "action": [{...}]}. '
-                            "Use click_element / input_text on indexed controls — for PIN keypads, "
-                            "click each digit button by index."
+                            "Navigator produced no parseable actions repeatedly. "
+                            "Planner/critic recovery will run — respond with valid indexed actions next."
                         ),
                     })
+                    actions = [
+                        Action(
+                            name="wait",
+                            args={
+                                "seconds": 3,
+                                "intent": "Escalating recovery after repeated no-action responses",
+                            },
+                        )
+                    ]
+                    auto_wait = True
+                else:
+                    intent = (
+                        "Auto-wait: page still loading (no interactive elements)"
+                        if num_elements == 0
+                        else "Auto-wait: model returned no parseable actions"
+                    )
+                    actions = [
+                        Action(
+                            name="wait",
+                            args={"seconds": 3, "intent": intent},
+                        )
+                    ]
+                    auto_wait = True
+                    if num_elements > 0 and self._context.consecutive_no_action_steps == 1:
+                        valid_indices = format_valid_indices(browser_state.selector_map)
+                        self._context.message_manager.add_message_with_tokens({
+                            "role": "user",
+                            "content": build_empty_action_repair_message(valid_indices),
+                        })
             else:
                 self._context.consecutive_no_action_steps = 0
+
+            invalid_index_actions: list[dict] = []
+            if actions:
+                actions, invalid_index_actions = filter_actions_by_selector_map(
+                    actions,
+                    browser_state.selector_map,
+                )
+                if invalid_index_actions:
+                    valid_indices = format_valid_indices(browser_state.selector_map)
+                    self._context.message_manager.add_message_with_tokens({
+                        "role": "user",
+                        "content": build_invalid_index_message(
+                            invalid_index_actions,
+                            valid_indices,
+                        ),
+                    })
+                if not actions and not auto_wait:
+                    actions = [
+                        Action(
+                            name="wait",
+                            args={"seconds": 2, "intent": "Re-evaluate after invalid indexes"},
+                        )
+                    ]
+                    auto_wait = True
+
+            post_commit_hint = build_post_commit_no_wait_hint(
+                self._context,
+                browser_state,
+                actions,
+            )
+            if post_commit_hint:
+                self._context.message_manager.add_message_with_tokens({
+                    "role": "user",
+                    "content": post_commit_hint,
+                })
 
             done_blocked = False
             requested_done = any(action.name == "done" for action in actions)
@@ -197,19 +272,32 @@ class NavigatorAgent(BaseAgent):
                 wait_for_stable=True,
             )
             submit_hint = build_submit_completeness_hint(actions, browser_state, after_state)
+            verification_hint = format_verification_hints(action_results)
             submit_hint_fired = False
-            if submit_hint:
+            if verification_hint:
+                self._context.message_manager.add_message_with_tokens({
+                    "role": "user",
+                    "content": verification_hint,
+                })
+            elif submit_hint:
                 submit_hint_fired = True
                 self._context.message_manager.add_message_with_tokens({
                     "role": "user",
                     "content": submit_hint,
                 })
 
+            verification_counts = count_verification_issues(action_results)
             self._context.last_step_metrics = {
                 "dom_ms": round(dom_ms, 1),
                 "llm_ms": round(llm_ms, 1),
                 "prompt_chars": prompt_chars,
+                "observation_chars": observation_chars,
                 "num_highlights": num_elements,
+                "recovery_attempts": recovery_attempts,
+                "rejected_actions": len(rejected_actions) + len(invalid_index_actions),
+                "verified_actions": verification_counts.get("verified", 0),
+                "no_effect_actions": verification_counts.get("no_effect", 0),
+                "failed_verifications": verification_counts.get("failed", 0),
             }
 
             executed_done = bool(action_results) and action_results[-1].is_done
@@ -224,11 +312,14 @@ class NavigatorAgent(BaseAgent):
                 "auto_wait": auto_wait,
                 "consecutive_no_action_steps": self._context.consecutive_no_action_steps,
                 "submit_hint_fired": submit_hint_fired,
+                "verification_issues": verification_counts.get("no_effect", 0)
+                + verification_counts.get("failed", 0),
                 "action_results": action_results,
                 "page_url": after_state.url,
                 "page_title": after_state.title,
                 "only_wait_actions": only_wait_actions,
                 "only_done_action": only_done_action,
+                "escalate_recovery": escalate_recovery,
             }
             if auto_wait:
                 output["result"]["diagnostics"] = self._build_no_action_diagnostics(
@@ -242,6 +333,12 @@ class NavigatorAgent(BaseAgent):
                 action_results=action_results,
                 browser_state=browser_state,
                 actions=actions,
+            )
+            self._record_progress(
+                browser_state=browser_state,
+                current_state=current_state,
+                actions=actions,
+                action_results=action_results,
             )
             return output
         except Exception as error:
@@ -259,6 +356,87 @@ class NavigatorAgent(BaseAgent):
                 raise classified from error
             output["error"] = str(error)
             return output
+
+    def _invoke_navigator_with_recovery(
+        self,
+        messages: list[dict],
+        browser_state: BrowserState,
+    ) -> tuple[dict, str, int, list]:
+        valid_indices = format_valid_indices(browser_state.selector_map)
+        recovery_attempts = 0
+        rejected_actions: list = []
+
+        try:
+            response, raw = self.get_json_response_with_raw(messages, temperature=0.1)
+        except ResponseParseError as error:
+            recovery_attempts = 1
+            repair_messages = [
+                *messages,
+                {
+                    "role": "user",
+                    "content": build_parse_repair_message(
+                        error=str(error),
+                        valid_indices=valid_indices,
+                    ),
+                },
+            ]
+            response, raw = self.get_json_response_with_raw(repair_messages, temperature=0.1)
+
+        raw_before_validation = fix_actions(response)
+        rejected_actions = collect_rejected_actions(
+            raw_before_validation,
+            response.get("action", []),
+        )
+        if not response.get("action") and raw_before_validation:
+            recovery_attempts += 1
+            repair_messages = [
+                *messages,
+                {
+                    "role": "user",
+                    "content": build_parse_repair_message(
+                        error="all actions were rejected during validation",
+                        valid_indices=valid_indices,
+                        rejected_actions=rejected_actions,
+                    ),
+                },
+            ]
+            response, raw = self.get_json_response_with_raw(repair_messages, temperature=0.1)
+            raw_before_validation = fix_actions(response)
+            rejected_actions = collect_rejected_actions(
+                raw_before_validation,
+                response.get("action", []),
+            )
+
+        return response, raw, recovery_attempts, rejected_actions
+
+    def _record_progress(
+        self,
+        *,
+        browser_state: BrowserState,
+        current_state: dict,
+        actions: list[Action],
+        action_results: list[ActionResult],
+    ) -> None:
+        action_summary = ", ".join(
+            f"{action.name}({json.dumps(action.args, ensure_ascii=False)})"
+            for action in actions[:3]
+        )
+        error = ""
+        for result in action_results:
+            if result.error:
+                error = result.error.split("\n")[-1]
+                break
+        step_number = self._context.n_steps + 1
+        self._context.message_manager.record_progress_step(
+            step_number=step_number,
+            url=browser_state.url,
+            title=browser_state.title,
+            evaluation=str(current_state.get("evaluation_previous_goal", "")),
+            memory=str(current_state.get("memory", "")),
+            next_goal=str(current_state.get("next_goal", "")),
+            action_summary=action_summary,
+            error=error,
+        )
 
     @staticmethod
     def _actions_to_dicts(actions: list[Action]) -> list[dict]:

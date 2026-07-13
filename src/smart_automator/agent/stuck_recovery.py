@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from .context import ActionResult, AgentContext
 
 STALE_PAGE_STEP_THRESHOLD = 2
-MAX_CRITIC_RUNS_PER_EPISODE = 1
+MAX_CRITIC_RUNS_PER_EPISODE = 3
 
 
 @dataclass
@@ -14,6 +14,7 @@ class StuckSignals:
     submit_hint_fired: bool = False
     no_progress_on_same_page: bool = False
     action_errors: bool = False
+    verification_issues: bool = False
     consecutive_no_action_steps: int = 0
     num_highlights: int = 0
     reasons: list[str] = field(default_factory=list)
@@ -27,6 +28,8 @@ class StuckSignals:
         if self.no_progress_on_same_page:
             return True
         if self.action_errors:
+            return True
+        if self.verification_issues:
             return True
         return False
 
@@ -105,13 +108,19 @@ def detect_stuck_signals(
     submit_hint_fired: bool,
     action_results: list[ActionResult],
     stale_steps_on_same_page: int,
+    verification_issues: int = 0,
 ) -> StuckSignals:
     action_errors = any(result.error for result in action_results)
+    verification_failed = any(result.verification_status == "failed" for result in action_results)
+    verification_no_effect = sum(
+        1 for result in action_results if result.verification_status == "no_effect"
+    )
     signals = StuckSignals(
         auto_wait_with_elements=auto_wait and num_highlights > 0,
         submit_hint_fired=submit_hint_fired,
         no_progress_on_same_page=stale_steps_on_same_page >= STALE_PAGE_STEP_THRESHOLD,
         action_errors=action_errors,
+        verification_issues=verification_failed or verification_no_effect >= 2 or verification_issues >= 2,
         consecutive_no_action_steps=consecutive_no_action_steps,
         num_highlights=num_highlights,
     )
@@ -129,6 +138,10 @@ def detect_stuck_signals(
         )
     if action_errors:
         signals.reasons.append("action execution errors on the last step")
+    if verification_failed:
+        signals.reasons.append("action verification failed on the last step")
+    elif verification_no_effect >= 2:
+        signals.reasons.append("multiple actions had no observable effect")
 
     if signals.needs_planner_recovery:
         context.stuck_episode_active = True
@@ -139,7 +152,7 @@ def detect_stuck_signals(
 def should_block_navigator_done(context: AgentContext) -> bool:
     if context.stuck_episode_active:
         return True
-    if context.stale_steps_on_same_page >= 1:
+    if context.stale_steps_on_same_page >= 2:
         return True
     if context.consecutive_unvalidated_done >= 1:
         return True
@@ -171,6 +184,7 @@ def build_stuck_recovery_hint(signals: StuckSignals, diagnostics: dict | None) -
         "Do not wrap output in AgentOutput or tool-call envelopes.",
         "For PIN keypads, click each digit by index, then click Enter/OK/Submit.",
         "For forms, fill required fields, then click the confirm/submit control.",
+        "Use action verification notes in the history to decide whether to retry or continue.",
     ]
     if diagnostics and diagnostics.get("raw_preview"):
         lines.append(f"Last model output preview: {diagnostics['raw_preview']}")

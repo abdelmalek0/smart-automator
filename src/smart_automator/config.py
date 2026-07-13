@@ -24,9 +24,11 @@ class Config(BaseModel):
     viewport_expansion: int = 0
     max_steps: int = 100
     planning_interval: int = 3
-    max_actions_per_step: int = 10
-    max_failures: int = 3
-    max_input_tokens: int = 128000
+    max_actions_per_step: int = 5
+    max_failures: int = 5
+    max_input_tokens: int = 64000
+    max_observation_elements: int = 80
+    max_observation_chars: int = 12000
     include_attributes: list[str] = Field(default_factory=lambda: list(DEFAULT_INCLUDE_ATTRIBUTES))
     include_dynamic_attributes: bool = True
     minimum_wait_page_load_time: float = 0.25
@@ -63,9 +65,11 @@ def load_config() -> Config:
         viewport_expansion=int(os.getenv("VIEWPORT_EXPANSION", "0")),
         max_steps=int(os.getenv("MAX_STEPS", "100")),
         planning_interval=int(os.getenv("PLANNING_INTERVAL", "3")),
-        max_actions_per_step=int(os.getenv("MAX_ACTIONS_PER_STEP", "10")),
-        max_failures=int(os.getenv("MAX_FAILURES", "3")),
-        max_input_tokens=int(os.getenv("MAX_INPUT_TOKENS", "128000")),
+        max_actions_per_step=int(os.getenv("MAX_ACTIONS_PER_STEP", "5")),
+        max_failures=int(os.getenv("MAX_FAILURES", "5")),
+        max_input_tokens=int(os.getenv("MAX_INPUT_TOKENS", "64000")),
+        max_observation_elements=int(os.getenv("MAX_OBSERVATION_ELEMENTS", "80")),
+        max_observation_chars=int(os.getenv("MAX_OBSERVATION_CHARS", "12000")),
         include_attributes=_parse_list(os.getenv("INCLUDE_ATTRIBUTES", ",".join(DEFAULT_INCLUDE_ATTRIBUTES)))
         or list(DEFAULT_INCLUDE_ATTRIBUTES),
         include_dynamic_attributes=os.getenv("INCLUDE_DYNAMIC_ATTRIBUTES", "true").lower() == "true",

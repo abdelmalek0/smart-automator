@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from smart_automator.actions.builder import NavigatorActionRegistry, _should_break_action_sequence
+from smart_automator.actions.builder import NavigatorActionRegistry
 from smart_automator.actions.schemas import Action
 from smart_automator.agent.context import AgentContext
 from smart_automator.agent.submit_hint import (
@@ -31,45 +31,6 @@ def _browser_state(url: str, title: str, selector_map: dict[int, DOMElementNode]
         element_tree=tree,
         selector_map=selector_map,
     )
-
-
-class TestShouldBreakActionSequence(unittest.TestCase):
-    def test_click_on_unchanged_dom_does_not_break(self):
-        hashes = {"a|/body"}
-        should_break = _should_break_action_sequence(
-            Action(name="click_element", args={"index": 1}),
-            page_url="https://example.com",
-            page_title="POS",
-            cached_hashes=hashes,
-            new_url="https://example.com",
-            new_title="POS",
-            new_hashes=hashes,
-        )
-        self.assertFalse(should_break)
-
-    def test_click_after_navigation_breaks(self):
-        should_break = _should_break_action_sequence(
-            Action(name="click_element", args={"index": 1}),
-            page_url="https://example.com/login",
-            page_title="Login",
-            cached_hashes={"a"},
-            new_url="https://example.com/home",
-            new_title="Home",
-            new_hashes={"a", "b"},
-        )
-        self.assertTrue(should_break)
-
-    def test_go_to_url_always_breaks(self):
-        should_break = _should_break_action_sequence(
-            Action(name="go_to_url", args={"url": "https://example.com"}),
-            page_url="https://example.com",
-            page_title="A",
-            cached_hashes=set(),
-            new_url="https://example.com",
-            new_title="A",
-            new_hashes=set(),
-        )
-        self.assertTrue(should_break)
 
 
 class TestSubmitCompletenessHint(unittest.TestCase):

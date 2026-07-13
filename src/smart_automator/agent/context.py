@@ -10,17 +10,20 @@ if TYPE_CHECKING:
     from ..browser.context import BrowserContext
     from .history import AgentStepHistory
     from .messages.service import MessageManager
+    from .verification import PageSnapshot
 
 
 @dataclass
 class AgentOptions:
     max_steps: int = 100
-    max_actions_per_step: int = 10
-    max_failures: int = 3
-    max_input_tokens: int = 128000
+    max_actions_per_step: int = 5
+    max_failures: int = 5
+    max_input_tokens: int = 64000
     planning_interval: int = 3
     include_attributes: list[str] = field(default_factory=lambda: list(DEFAULT_INCLUDE_ATTRIBUTES))
     action_delay_seconds: float = 1.0
+    max_observation_elements: int = 80
+    max_observation_chars: int = 12000
 
 
 @dataclass
@@ -31,6 +34,26 @@ class ActionResult:
     error: str | None = None
     include_in_memory: bool = False
     interacted_element: object | None = None
+    action_name: str | None = None
+    action_index: int | None = None
+    verification_status: str = "unverified"
+    verification_evidence: str | None = None
+
+    def format_memory_line(self) -> str | None:
+        if self.error:
+            return f"Action error: {self.error.split(chr(10))[-1]}"
+        if self.extracted_content:
+            from .verification import format_verification_summary
+
+            base = self.extracted_content
+            if self.verification_status != "unverified":
+                return f"{base} | {format_verification_summary(self)}"
+            return base
+        if self.verification_status != "unverified":
+            from .verification import format_verification_summary
+
+            return format_verification_summary(self)
+        return None
 
 
 @dataclass
@@ -73,6 +96,8 @@ class AgentContext:
         self.last_step_metrics: dict[str, float | int] | None = None
         self.last_page_url: str | None = None
         self.last_page_title: str | None = None
+        self.last_step_had_commit: bool = False
+        self.last_commit_snapshot: PageSnapshot | None = None
         self.stale_steps_on_same_page = 0
         self.stuck_episode_active = False
         self.critic_runs_this_episode = 0

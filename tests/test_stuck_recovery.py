@@ -106,7 +106,8 @@ class StuckRecoveryTests(unittest.TestCase):
             stale_steps_on_same_page=1,
         )
         self.assertTrue(signals.needs_action_critic(0))
-        self.assertFalse(signals.needs_action_critic(1))
+        self.assertTrue(signals.needs_action_critic(1))
+        self.assertFalse(signals.needs_action_critic(3))
 
     def test_recovery_hint_includes_signals(self):
         context = _make_context()
@@ -138,6 +139,27 @@ class StuckRecoveryTests(unittest.TestCase):
             only_done_action=True,
         )
         self.assertEqual(stale, 1)
+
+    def test_verification_failure_triggers_planner_recovery(self):
+        context = _make_context()
+        signals = detect_stuck_signals(
+            context,
+            auto_wait=False,
+            consecutive_no_action_steps=0,
+            num_highlights=3,
+            submit_hint_fired=False,
+            action_results=[
+                ActionResult(
+                    action_name="input_text",
+                    action_index=1,
+                    verification_status="failed",
+                    verification_evidence="input still empty",
+                )
+            ],
+            stale_steps_on_same_page=1,
+        )
+        self.assertTrue(signals.verification_issues)
+        self.assertTrue(signals.needs_planner_recovery)
 
     def test_should_block_navigator_done_when_stuck(self):
         context = _make_context()

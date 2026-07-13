@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from ..actions.schemas import Action
+from ..agent.compound_integrity import (
+    format_action_results_with_verification,
+    format_all_actions_args,
+)
 
 
 def planner_to_plan(plan_result: dict[str, Any]) -> dict[str, Any]:
@@ -27,25 +30,6 @@ def planner_to_plan(plan_result: dict[str, Any]) -> dict[str, Any]:
         "skipped": [],
         "in_progress": in_progress or None,
     }
-
-
-def _format_action_results(action_results: list[Any]) -> str:
-    parts: list[str] = []
-    for result in action_results:
-        if getattr(result, "error", None):
-            parts.append(f"Error: {result.error}")
-        elif getattr(result, "extracted_content", None):
-            parts.append(str(result.extracted_content))
-        elif getattr(result, "is_done", False):
-            parts.append("Task marked done by navigator")
-    return "\n".join(parts) if parts else "OK"
-
-
-def _primary_action(actions: list[Action]) -> tuple[str, dict[str, Any]]:
-    if not actions:
-        return "wait", {}
-    action = actions[0]
-    return action.name, dict(action.args)
 
 
 def build_step_start(index: int, thought: str = "Observing page and choosing actions…") -> dict[str, Any]:
@@ -76,9 +60,12 @@ def navigator_to_step(
         or ""
     )
     actions = nav_result.get("actions") or []
-    action_name, action_args = _primary_action(actions)
     if len(actions) > 1:
         action_name = ", ".join(action.name for action in actions)
+    elif actions:
+        action_name = actions[0].name
+    else:
+        action_name = "wait"
 
     action_results = nav_result.get("action_results") or []
     has_error = any(getattr(r, "error", None) for r in action_results)
@@ -86,17 +73,12 @@ def navigator_to_step(
     if nav_result.get("error"):
         status = "error"
 
-    if isinstance(action_args, dict):
-        args = action_args
-    else:
-        args = {}
-
     return {
         "index": index,
         "thought": str(thought),
         "action": action_name,
-        "args": args,
-        "result": _format_action_results(action_results),
+        "args": format_all_actions_args(actions),
+        "result": format_action_results_with_verification(action_results),
         "status": status,
         "screenshot_url": screenshot_url,
         "elapsed_ms": elapsed_ms,

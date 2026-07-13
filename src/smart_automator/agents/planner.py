@@ -29,7 +29,7 @@ class PlannerAgent(BaseAgent):
         messages = self._get_messages()
         planner_messages = [{"role": "system", "content": self._system_prompt}, *messages[1:]]
         try:
-            response = self.get_json_response(planner_messages, temperature=0.5)
+            response = self.get_json_response(planner_messages, temperature=0.2)
             response = validate_planner_output(response)
         except Exception as error:
             return {

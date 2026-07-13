@@ -7,10 +7,57 @@ from urllib.parse import urlparse
 
 from ..agent.context import ActionResult, AgentContext
 from ..agent.messages.utils import wrap_untrusted_content
-from ..browser.dom import DOMElementNode, branch_hash_is_subset_of, calc_branch_path_hash_set
-from ..browser.history import convert_dom_element_to_history_element, is_file_uploader
+from ..agent.compound_integrity import (
+    BatchState,
+    MutationRecord,
+    format_related_control_states,
+    is_commit_action,
+    is_mutation_action,
+    record_commit_outcome,
+    reverify_mutations,
+)
+from ..agent.verification import (
+    VERIFICATION_FAILED,
+    VERIFICATION_NO_EFFECT,
+    VERIFICATION_VERIFIED,
+    apply_verification,
+    capture_page_snapshot,
+    probe_element,
+    redact_input_message,
+)
+from ..browser.dom import DOMElementNode
+from ..browser.history import convert_dom_element_to_history_element, find_history_element_in_tree, is_file_uploader
 from ..browser.views import BrowserState, URLNotAllowedError
 from .schemas import Action
+
+
+def _resolve_element_for_action(
+    action: Action,
+    selector_map: dict[int, DOMElementNode],
+    *,
+    element_tree: DOMElementNode | None = None,
+    original_element: DOMElementNode | None = None,
+) -> DOMElementNode | None:
+    """Resolve an action target, preferring stable identity over rebuilt highlight indexes."""
+    if action.index is None:
+        return None
+    if original_element is not None:
+        if isinstance(element_tree, DOMElementNode):
+            history = convert_dom_element_to_history_element(original_element)
+            remapped = find_history_element_in_tree(history, element_tree)
+            if remapped is not None:
+                return remapped
+        # Fall back to xpath match in the current selector map.
+        for candidate in selector_map.values():
+            if (
+                isinstance(candidate, DOMElementNode)
+                and candidate.xpath
+                and candidate.xpath == original_element.xpath
+            ):
+                return candidate
+        return original_element
+    candidate = selector_map.get(action.index)
+    return candidate if isinstance(candidate, DOMElementNode) else None
 
 
 def _normalize_url(url: str) -> str:
@@ -41,25 +88,8 @@ def _action_will_navigate(action: Action, page_url: str) -> bool:
     return False
 
 
-def _should_break_action_sequence(
-    action: Action,
-    *,
-    page_url: str,
-    page_title: str,
-    cached_hashes: set[str],
-    new_url: str,
-    new_title: str,
-    new_hashes: set[str],
-) -> bool:
-    if action.name in _NAVIGATION_ACTIONS:
-        return True
-    if action.name in ("click_element", "send_keys"):
-        if new_url != page_url or new_title != page_title:
-            return True
-        return not branch_hash_is_subset_of(new_hashes, cached_hashes)
-    if action.name in _PAGE_STATE_CHANGING_ACTIONS:
-        return True
-    return False
+def _action_breaks_sequence(before_url: str, after_url: str, before_title: str, after_title: str) -> bool:
+    return before_url != after_url or before_title != after_title
 
 
 class NavigatorActionRegistry:
@@ -109,45 +139,131 @@ class NavigatorActionRegistry:
             return results
 
         selector_map = dict(browser_state.selector_map)
-        cached_hashes = calc_branch_path_hash_set(selector_map)
+        original_elements: dict[int, DOMElementNode] = {
+            index: node for index, node in selector_map.items()
+        }
         page_url = browser_state.url
         page_title = browser_state.title
         action_delay = context.options.action_delay_seconds
         err_count = 0
+        batch = BatchState()
+        step_start_snapshot = capture_page_snapshot(page, browser_context.get_all_tab_ids())
+        had_commit = False
+        page_advanced = False
 
         for i, action in enumerate(actions):
             if context.paused or context.stopped:
                 break
 
-            if i > 0 and self.has_index(action.name) and action.index is not None:
-                new_state = browser_context.get_state(show_highlights=False)
-                new_hashes = calc_branch_path_hash_set(new_state.selector_map)
-                if not branch_hash_is_subset_of(new_hashes, cached_hashes):
-                    msg = f"Something new appeared after action {i} / {len(actions)}"
-                    results.append(ActionResult(extracted_content=msg, include_in_memory=True))
-                    break
-                selector_map = new_state.selector_map
-                cached_hashes = new_hashes
+            if action.index is not None and action.index not in selector_map:
+                fresh_state = browser_context.get_state(show_highlights=False, wait_for_stable=False)
+                selector_map = fresh_state.selector_map
+                page_url = fresh_state.url
+                page_title = fresh_state.title
 
-            cached_dom = page.get_cached_state()
-            if cached_dom is not None:
-                selector_map = cached_dom.selector_map
-            elif action.index is not None and action.index not in selector_map:
-                fresh = page.get_dom_state(show_highlights=False, wait_for_stable=False)
-                selector_map = fresh.selector_map
+            original = (
+                original_elements.get(action.index)
+                if action.index is not None
+                else None
+            )
+            element = _resolve_element_for_action(
+                action,
+                selector_map,
+                element_tree=getattr(browser_state, "element_tree", None),
+                original_element=original,
+            )
+            # Prefer the observation-time node for locating clicks; indexes can shift after rebuilds.
+            locate_element = original or element
+            tab_ids = browser_context.get_all_tab_ids()
+            before_snapshot = capture_page_snapshot(page, tab_ids)
+            before_element = probe_element(
+                page,
+                locate_element,
+                expected_value=str(action.args.get("text", "")) if action.name == "input_text" else None,
+                expected_selected_text=str(action.args.get("text", ""))
+                if action.name == "select_dropdown_option"
+                else None,
+            )
 
-            if _action_will_navigate(action, page_url):
+            if action.name in _NAVIGATION_ACTIONS:
                 browser_context.remove_highlight()
 
-            result = self.execute(action, selector_map)
+            pending_commit = is_commit_action(action, locate_element)
+            if pending_commit and batch.mutations:
+                ok, issues = reverify_mutations(page, batch)
+                if not ok:
+                    blocked = ActionResult(
+                        extracted_content=(
+                            "Commit blocked: prior mutations no longer verified — "
+                            + "; ".join(issues)
+                        ),
+                        error="Commit blocked due to mutation regression",
+                        include_in_memory=True,
+                        action_name=action.name,
+                        action_index=action.index,
+                        verification_status=VERIFICATION_FAILED,
+                        verification_evidence="; ".join(issues)[:160],
+                    )
+                    results.append(blocked)
+                    break
+
+            # Execute against a map that includes the stable observation-time element.
+            exec_map = dict(selector_map)
+            if locate_element is not None and action.index is not None:
+                exec_map[action.index] = locate_element
+            result = self.execute(action, exec_map)
+            if locate_element is not None and action.index is not None:
+                result.interacted_element = convert_dom_element_to_history_element(locate_element)
+
+            page.wait_for_page_stable(minimum_wait=0.1)
+            after_snapshot = capture_page_snapshot(page, browser_context.get_all_tab_ids())
+            after_element = probe_element(
+                page,
+                locate_element,
+                expected_value=str(action.args.get("text", "")) if action.name == "input_text" else None,
+                expected_selected_text=str(action.args.get("text", ""))
+                if action.name == "select_dropdown_option"
+                else None,
+            )
+            apply_verification(
+                action,
+                result,
+                before=before_snapshot,
+                after=after_snapshot,
+                before_element=before_element,
+                after_element=after_element,
+                element=locate_element,
+            )
+
             if (
-                self.has_index(action.name)
-                and action.index is not None
-                and action.index in selector_map
+                is_mutation_action(action)
+                and locate_element is not None
+                and result.verification_status == VERIFICATION_VERIFIED
             ):
-                result.interacted_element = convert_dom_element_to_history_element(
-                    selector_map[action.index]
+                batch.mutations.append(
+                    MutationRecord(
+                        action=action,
+                        element=locate_element,
+                        expected_value=str(action.args.get("text", ""))
+                        if action.name == "input_text"
+                        else None,
+                        expected_selected_text=str(action.args.get("text", ""))
+                        if action.name == "select_dropdown_option"
+                        else None,
+                    )
                 )
+                if action.index is not None:
+                    batch.mutation_indices.add(action.index)
+
+            if is_mutation_action(action) and result.extracted_content:
+                related = format_related_control_states(page, selector_map)
+                if related:
+                    result.extracted_content = f"{result.extracted_content}\n{related}"
+
+            if pending_commit:
+                had_commit = True
+                page_advanced = before_snapshot.page_changed(after_snapshot)
+
             results.append(result)
 
             if result.error:
@@ -160,45 +276,68 @@ class NavigatorActionRegistry:
 
             if result.is_done:
                 break
-            if result.error:
+            if result.error or result.verification_status == VERIFICATION_FAILED:
                 err_count += 1
                 if err_count >= 3:
                     break
-                continue
+                break
 
-            post_action_state = None
-            needs_post_action_snapshot = self.has_index(action.name) and action.index is not None
-            needs_next_action_check = (
-                i < len(actions) - 1
-                and self.has_index(actions[i + 1].name)
-                and actions[i + 1].index is not None
-            )
-            if needs_post_action_snapshot or needs_next_action_check:
-                post_action_state = browser_context.get_state(show_highlights=False)
-                selector_map = post_action_state.selector_map
-                cached_hashes = calc_branch_path_hash_set(selector_map)
-                page_url = post_action_state.url
-                page_title = post_action_state.title
-
-            if needs_next_action_check and post_action_state is not None:
-                new_hashes = calc_branch_path_hash_set(post_action_state.selector_map)
-                if _should_break_action_sequence(
-                    action,
-                    page_url=page_url,
-                    page_title=page_title,
-                    cached_hashes=cached_hashes,
-                    new_url=post_action_state.url,
-                    new_title=post_action_state.title,
-                    new_hashes=new_hashes,
-                ):
-                    msg = f"Action sequence stopped after action {i + 1}/{len(actions)} due to page change"
-                    results.append(ActionResult(extracted_content=msg, include_in_memory=True))
-                    break
+            # Refresh page metadata for sequence control, but keep using observation-time
+            # element identities for subsequent indexed actions on the same page.
+            post_state = browser_context.get_state(show_highlights=False, wait_for_stable=False)
+            selector_map = post_state.selector_map
+            browser_state = post_state
+            page_url = post_state.url
+            page_title = post_state.title
 
             if i < len(actions) - 1:
+                next_action = actions[i + 1]
+                if _action_breaks_sequence(
+                    before_snapshot.url,
+                    after_snapshot.url,
+                    before_snapshot.title,
+                    after_snapshot.title,
+                ):
+                    results.append(
+                        ActionResult(
+                            extracted_content=(
+                                f"Action sequence stopped after action {i + 1}/{len(actions)} due to navigation"
+                            ),
+                            include_in_memory=True,
+                        )
+                    )
+                    break
+
+                if next_action.index is not None and self.has_index(next_action.name):
+                    next_original = original_elements.get(next_action.index)
+                    next_element = _resolve_element_for_action(
+                        next_action,
+                        selector_map,
+                        element_tree=post_state.element_tree,
+                        original_element=next_original,
+                    )
+                    if next_element is None and next_original is None:
+                        results.append(
+                            ActionResult(
+                                extracted_content=(
+                                    f"Action sequence stopped: index {next_action.index} "
+                                    f"not found after action {i + 1}/{len(actions)}"
+                                ),
+                                include_in_memory=True,
+                            )
+                        )
+                        break
+
                 time.sleep(action_delay)
             else:
                 page.wait_for_page_stable()
+
+        record_commit_outcome(
+            context,
+            snapshot=step_start_snapshot,
+            had_commit=had_commit,
+            page_advanced=page_advanced,
+        )
 
         return results
 
@@ -280,7 +419,7 @@ class ActionBuilder:
             return ActionResult(extracted_content="Navigated back", include_in_memory=True)
 
         def wait_action(args, _selector_map):
-            seconds = int(args.get("seconds", 3))
+            seconds = int(args.get("seconds", args.get("duration", 3)))
             time.sleep(seconds)
             return ActionResult(extracted_content=f"Waited {seconds} seconds", include_in_memory=True)
 
@@ -313,7 +452,7 @@ class ActionBuilder:
             text = args.get("text", "")
             get_page().input_text(element, text)
             return ActionResult(
-                extracted_content=f"Typed '{text}' into element {args.get('index')}",
+                extracted_content=redact_input_message(args.get("index"), text, element),
                 include_in_memory=True,
             )
 
@@ -425,7 +564,7 @@ class ActionBuilder:
             if result != "ok":
                 return ActionResult(error=result, include_in_memory=True)
             return ActionResult(
-                extracted_content=f"Selected '{text}' in dropdown {args.get('index')}",
+                extracted_content=f"Selected option in dropdown {args.get('index')}",
                 include_in_memory=True,
             )
 

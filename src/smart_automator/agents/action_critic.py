@@ -5,6 +5,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from ..agent.messages.utils import coerce_navigator_response, preview_text
+from ..utils.prompts import build_browser_state_message
 from .base import BaseAgent
 from ..llm.base import BaseLLM
 
@@ -12,7 +13,7 @@ log = logging.getLogger(__name__)
 
 ACTION_CRITIC_SYSTEM_PROMPT = """You are a one-shot action critic for a browser automation agent.
 
-The navigator is stuck. Review the conversation and page state, then output ONLY flat JSON with the single most obvious missing action(s):
+The navigator is stuck. Review the task, current page state, and stuck reason, then output ONLY flat JSON:
 
 {"action": [{"click_element": {"index": N, "intent": "..."}}]}
 
@@ -24,6 +25,7 @@ Rules:
 """
 
 if TYPE_CHECKING:
+    from ..agent.context import AgentContext
     from ..agent.messages.service import MessageManager
 
 
@@ -32,6 +34,7 @@ class ActionCriticAgent(BaseAgent):
         self,
         llm: BaseLLM,
         message_manager: MessageManager,
+        context: "AgentContext | None" = None,
     ):
         super().__init__(
             llm,
@@ -39,20 +42,76 @@ class ActionCriticAgent(BaseAgent):
             message_manager=message_manager,
             agent_id="action_critic",
         )
+        self._context = context
+
+    def _build_compact_messages(self, reason: str) -> list[dict]:
+        history = self._message_manager.get_messages() if self._message_manager else []
+        task_message = ""
+        for message in history:
+            if message.get("role") == "user":
+                content = str(message.get("content", ""))
+                if "<nano_user_request>" in content:
+                    task_message = content
+                    break
+
+        state_message = ""
+        if self._context and self._context.state_message_added:
+            for message in reversed(history):
+                if message.get("role") == "user" and "[Current state starts here]" in str(
+                    message.get("content", "")
+                ):
+                    state_message = str(message.get("content", ""))
+                    break
+        elif self._context:
+            try:
+                browser_state = self._context.browser_context.get_state(
+                    show_highlights=False,
+                    wait_for_stable=False,
+                )
+                state_message = build_browser_state_message(self._context, browser_state)
+            except Exception:
+                state_message = ""
+
+        recent_lines: list[str] = []
+        for message in reversed(history[-6:]):
+            role = message.get("role", "")
+            content = str(message.get("content", ""))
+            if role == "assistant" and content.startswith("{"):
+                try:
+                    parsed = json.loads(content)
+                    state = parsed.get("current_state", {})
+                    if state:
+                        recent_lines.append(
+                            f"navigator: {state.get('next_goal') or state.get('memory', '')}"[:160]
+                        )
+                except json.JSONDecodeError:
+                    pass
+            elif role == "user" and (
+                content.startswith("Action error:")
+                or content.startswith("Previously failed actions")
+            ):
+                recent_lines.append(content[:160])
+            if len(recent_lines) >= 3:
+                break
+
+        user_parts = [f"Stuck reason: {reason}"]
+        if task_message:
+            user_parts.append(task_message)
+        if state_message:
+            user_parts.append(state_message)
+        if recent_lines:
+            user_parts.append("Recent issues:\n" + "\n".join(reversed(recent_lines)))
+        user_parts.append(
+            "What action(s) are missing? Output flat JSON with an action array only."
+        )
+
+        return [
+            {"role": "system", "content": ACTION_CRITIC_SYSTEM_PROMPT},
+            {"role": "user", "content": "\n\n".join(user_parts)},
+        ]
 
     def suggest_actions(self, reason: str) -> dict | None:
-        messages = self._get_messages()
-        critic_messages = [
-            {"role": "system", "content": ACTION_CRITIC_SYSTEM_PROMPT},
-            *messages[1:],
-            {
-                "role": "user",
-                "content": (
-                    f"Stuck reason: {reason}\n"
-                    "What action(s) are missing? Output flat JSON with an action array only."
-                ),
-            },
-        ]
+        critic_messages = self._build_compact_messages(reason)
         try:
             response, raw = self.get_json_response_with_raw(critic_messages, temperature=0.2)
             response = coerce_navigator_response(response)

@@ -91,7 +91,10 @@ def _format_navigator_panel(nav_result: dict) -> str:
             "[dim]"
             f"dom={metrics.get('dom_ms')}ms "
             f"llm={metrics.get('llm_ms')}ms "
-            f"highlights={metrics.get('num_highlights')}"
+            f"prompt={metrics.get('prompt_chars')}ch "
+            f"obs={metrics.get('observation_chars', '?')}ch "
+            f"highlights={metrics.get('num_highlights')} "
+            f"recovery={metrics.get('recovery_attempts', 0)}"
             "[/dim]"
         )
     return "\n\n".join(lines) if lines else "(no navigator output)"
@@ -125,6 +128,8 @@ class Executor:
             planning_interval=config.planning_interval,
             include_attributes=config.include_attributes,
             action_delay_seconds=config.action_delay_seconds,
+            max_observation_elements=config.max_observation_elements,
+            max_observation_chars=config.max_observation_chars,
         )
         self._context = AgentContext(
             task_id=str(uuid.uuid4()),
@@ -140,7 +145,7 @@ class Executor:
         action_registry = ActionBuilder(self._context).build_default_actions()
         self._navigator = NavigatorAgent(llm, self._context, message_manager, action_registry)
         self._planner = PlannerAgent(self._planner_llm, self._context, message_manager)
-        self._action_critic = ActionCriticAgent(llm, message_manager)
+        self._action_critic = ActionCriticAgent(llm, message_manager, context=self._context)
 
         message_manager.init_task_messages(
             self._navigator._system_prompt,
@@ -415,8 +420,18 @@ class Executor:
             submit_hint_fired=bool(result.get("submit_hint_fired")),
             action_results=result.get("action_results", []),
             stale_steps_on_same_page=stale_steps,
+            verification_issues=int(result.get("verification_issues", 0)),
         )
-        if not signals.needs_planner_recovery:
+        if result.get("escalate_recovery"):
+            signals.auto_wait_with_elements = num_highlights > 0
+            signals.consecutive_no_action_steps = max(
+                signals.consecutive_no_action_steps,
+                MAX_CONSECUTIVE_NO_ACTION_STEPS,
+            )
+            signals.reasons.append("repeated no-action responses — escalating recovery")
+            self._context.stuck_episode_active = True
+
+        if not signals.needs_planner_recovery and not result.get("escalate_recovery"):
             return False
 
         self._inject_stuck_recovery_hint(signals, result.get("diagnostics"))

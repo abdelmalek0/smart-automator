@@ -276,6 +276,83 @@ class Page:
         })""")
         return int(info["scrollY"]), int(info["viewportHeight"]), int(info["scrollHeight"])
 
+    def probe_element_state(
+        self,
+        element: DOMElementNode,
+        *,
+        expected_value: str | None = None,
+        expected_selected_text: str | None = None,
+    ) -> dict | None:
+        handle = self._locate_element(element)
+        if not handle:
+            return {"exists": False}
+        try:
+            return handle.evaluate(
+                """(el, expectedValue, expectedSelectedText) => {
+                    const tag = (el.tagName || '').toLowerCase();
+                    const style = window.getComputedStyle(el);
+                    const visible = !!(
+                        (el.offsetWidth || el.offsetHeight) &&
+                        style.visibility !== 'hidden' &&
+                        style.display !== 'none'
+                    );
+                    let value = '';
+                    if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+                        value = el.value || '';
+                    } else if (el.isContentEditable) {
+                        value = el.textContent || '';
+                    }
+                    let selectedText = '';
+                    if (el.tagName === 'SELECT' && el.selectedIndex >= 0) {
+                        selectedText = el.options[el.selectedIndex]?.text || '';
+                    }
+                    const result = {
+                        exists: true,
+                        tagName: tag,
+                        valueLength: value.length,
+                        disabled: !!(el.disabled || el.readOnly),
+                        visible,
+                        focused: document.activeElement === el,
+                        checked: typeof el.checked === 'boolean' ? el.checked : null,
+                        ariaChecked: el.getAttribute('aria-checked'),
+                        ariaExpanded: el.getAttribute('aria-expanded'),
+                        selectedIndex: el.tagName === 'SELECT' ? el.selectedIndex : null,
+                        selectedTextLength: selectedText.length,
+                    };
+                    if (expectedValue !== null && expectedValue !== undefined) {
+                        result.valueMatches = value === expectedValue;
+                    }
+                    if (expectedSelectedText !== null && expectedSelectedText !== undefined) {
+                        result.selectedMatches = selectedText.trim() === String(expectedSelectedText).trim();
+                    }
+                    return result;
+                }""",
+                expected_value,
+                expected_selected_text,
+            )
+        except Exception:
+            return {"exists": False}
+
+    def capture_snapshot(self, tab_ids: set[int]) -> PageSnapshot:
+        from ..agent.verification import PageSnapshot
+        from .dom import build_dom_tree, calc_branch_path_hash_set
+
+        scroll_y, _, _ = self.get_scroll_info()
+        dom = build_dom_tree(
+            self._page,
+            show_highlights=False,
+            viewport_expansion=self._viewport_expansion,
+        )
+        signature = hash(frozenset(calc_branch_path_hash_set(dom)))
+        return PageSnapshot(
+            url=self.url(),
+            title=self.title(),
+            scroll_y=scroll_y,
+            tab_ids=tuple(sorted(tab_ids)),
+            dom_signature=signature,
+            interactive_count=len(dom.selector_map),
+        )
+
     def _find_nearest_scrollable_element(self, handle: ElementHandle) -> ElementHandle | None:
         is_scrollable = handle.evaluate(
             """el => {
@@ -625,28 +702,72 @@ class Page:
 
         iframes = [parent for parent in reversed(parents) if parent.tag_name == "iframe"]
         for parent in iframes:
-            css_selector = parent.enhanced_css_selector_for_element(self._include_dynamic_attributes)
-            if not css_selector:
+            frame_handle = self._query_unique_handle(current_frame, parent)
+            if frame_handle is None:
                 return None
-            frame_element = current_frame.query_selector(css_selector)
-            if not frame_element:
-                return None
-            frame = frame_element.content_frame()
+            frame = frame_handle.content_frame()
             if not frame:
                 return None
             current_frame = frame
 
-        css_selector = element.enhanced_css_selector_for_element(self._include_dynamic_attributes)
-        if css_selector:
-            handle = current_frame.query_selector(css_selector)
-            if handle:
-                return handle
+        return self._query_unique_handle(current_frame, element)
 
+    def _element_identity_text(self, element: DOMElementNode) -> str:
+        text = element.get_all_text_till_next_clickable_element().strip().lower()
+        if text:
+            return text
+        for attr in ("aria-label", "title", "placeholder", "value", "name"):
+            value = element.attributes.get(attr, "").strip().lower()
+            if value:
+                return value
+        return ""
+
+    def _handle_matches_element(self, handle: ElementHandle, element: DOMElementNode) -> bool:
+        expected = self._element_identity_text(element)
+        if not expected:
+            return True
+        try:
+            actual = handle.evaluate(
+                """el => {
+                    const label = (el.getAttribute('aria-label') || el.getAttribute('title') || '').trim();
+                    const text = (el.innerText || el.textContent || '').trim();
+                    const value = ('value' in el && el.value) ? String(el.value).trim() : '';
+                    return (label || text || value || '').toLowerCase();
+                }"""
+            )
+        except Exception:
+            return True
+        if not actual:
+            return True
+        return actual == expected or expected in actual or actual in expected
+
+    def _query_unique_handle(
+        self,
+        frame: PlaywrightPage | Frame,
+        element: DOMElementNode,
+    ) -> ElementHandle | None:
+        # Prefer xpath — CSS with shared classes often matches the wrong keypad/button.
         xpath = element.xpath
         if xpath:
             try:
                 full_xpath = xpath if xpath.startswith("/") else f"/{xpath}"
-                return current_frame.query_selector(f"xpath={full_xpath}")
+                handle = frame.query_selector(f"xpath={full_xpath}")
+                if handle and self._handle_matches_element(handle, element):
+                    return handle
             except Exception:
                 pass
+
+        css_selector = element.enhanced_css_selector_for_element(self._include_dynamic_attributes)
+        if css_selector:
+            try:
+                matches = frame.query_selector_all(css_selector)
+            except Exception:
+                matches = []
+            if len(matches) == 1 and self._handle_matches_element(matches[0], element):
+                return matches[0]
+            if len(matches) > 1:
+                for handle in matches:
+                    if self._handle_matches_element(handle, element):
+                        return handle
+
         return None

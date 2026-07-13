@@ -52,12 +52,11 @@ class BaseAgent:
             self._standalone_messages.append({"role": "assistant", "content": content})
 
     def invoke(self, messages: list[dict] | None = None, temperature: float = 0.7) -> str:
-        msgs = messages if messages is not None else self._get_messages()
         if self._message_manager:
             if self._llm.model_name:
                 self._message_manager.settings.token_model = self._llm.model_name
             self._message_manager.cut_messages()
-            msgs = self._message_manager.get_messages()
+        msgs = messages if messages is not None else self._get_messages()
         chat_messages = convert_messages_for_chat(msgs)
         if self._llm.supports_structured_output:
             return self._llm.chat_json(chat_messages, temperature=temperature)

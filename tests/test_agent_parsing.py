@@ -154,50 +154,67 @@ class TestNoActionWaitPolicy(unittest.TestCase):
         self.assertFalse(output["result"]["auto_wait"])
         self.assertEqual(navigator._context.consecutive_no_action_steps, 0)
 
-    def test_three_consecutive_no_actions_fails(self):
+    def test_three_consecutive_no_actions_escalates(self):
         navigator = self._make_navigator()
         navigator._context.consecutive_no_action_steps = MAX_CONSECUTIVE_NO_ACTION_STEPS - 1
         browser_state = MagicMock()
         browser_state.selector_map = {}
+        browser_state.url = "https://example.com"
+        browser_state.title = "Example"
 
         with patch.object(navigator, "add_state_message_to_memory", return_value=browser_state):
             with patch.object(navigator, "remove_last_state_message_from_memory"):
                 with patch.object(
                     navigator,
-                    "get_json_response_with_raw",
-                    return_value=({"current_state": {}, "action": []}, "bad json"),
+                    "_invoke_navigator_with_recovery",
+                    return_value=({"current_state": {}, "action": []}, "bad json", 0, []),
                 ):
-                    output = navigator.execute()
+                    with patch.object(navigator._action_registry, "execute_multi", return_value=[]):
+                        with patch.object(
+                            navigator._context.browser_context,
+                            "get_state",
+                            return_value=browser_state,
+                        ):
+                            output = navigator.execute()
 
-        self.assertIn("error", output)
-        self.assertIn("3 consecutive steps", output["error"])
+        self.assertFalse(output.get("error"))
+        self.assertTrue(output["result"]["escalate_recovery"])
 
 
 class TestExecutorFatalErrors(unittest.TestCase):
-    def test_navigator_fatal_error_is_not_retried(self):
+    def test_navigator_escalation_does_not_raise_immediately(self):
         browser_context = MagicMock()
         llm = MagicMock()
         config = MagicMock()
-        config.max_input_tokens = 128000
+        config.max_input_tokens = 64000
         config.max_steps = 5
         config.max_actions_per_step = 5
-        config.max_failures = 3
+        config.max_failures = 5
         config.planning_interval = 3
         config.include_attributes = []
         config.action_delay_seconds = 0
+        config.max_observation_elements = 80
+        config.max_observation_chars = 12000
 
         executor = Executor("task", browser_context, llm, config)
-        fatal = RuntimeError("Navigator produced no parseable actions for 3 consecutive steps.")
+        nav_result = {
+            "result": {
+                "escalate_recovery": True,
+                "auto_wait": True,
+                "consecutive_no_action_steps": 2,
+                "action_results": [],
+                "page_url": "https://example.com",
+                "page_title": "Example",
+                "only_wait_actions": True,
+                "only_done_action": False,
+                "submit_hint_fired": False,
+            }
+        }
 
         with patch.object(executor, "_run_planner", return_value=None):
-            with patch.object(
-                executor._navigator,
-                "execute",
-                return_value={"error": str(fatal)},
-            ):
-                with self.assertRaises(RuntimeError) as ctx:
-                    executor._navigate()
-                self.assertIn("3 consecutive steps", str(ctx.exception))
+            with patch.object(executor._navigator, "execute", return_value=nav_result):
+                outcome = executor._navigate()
+                self.assertIsNone(outcome)
                 self.assertEqual(executor.context.consecutive_failures, 0)
 
 

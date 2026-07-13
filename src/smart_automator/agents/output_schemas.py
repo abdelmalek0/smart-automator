@@ -70,8 +70,11 @@ def validate_action_args(action_name: str, args: dict[str, Any]) -> dict[str, An
         index = validated.get("index")
         if index is not None:
             validated["index"] = int(index)
-    if action_name == "wait" and "seconds" in validated:
-        validated["seconds"] = int(validated["seconds"])
+    if action_name == "wait":
+        if "seconds" in validated:
+            validated["seconds"] = int(validated["seconds"])
+        elif "duration" in validated:
+            validated["seconds"] = int(validated["duration"])
     if action_name in {"switch_tab", "close_tab"} and "tab_id" in validated:
         validated["tab_id"] = int(validated["tab_id"])
     if action_name == "scroll_to_percent":
