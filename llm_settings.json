@@ -1,5 +1,5 @@
 {
-  "provider": "ollama",
+  "provider": "ollama-cloud",
   "providers": {
     "groq": {
       "base_url": "https://api.groq.com/openai/v1",
@@ -21,6 +21,13 @@
       "model": "gemini-2.5-flash",
       "models": [
         "gemini-2.5-flash"
+      ]
+    },
+    "ollama-cloud": {
+      "base_url": "https://ollama.com",
+      "model": "gemma4:31b-cloud",
+      "models": [
+        "gemma4:31b-cloud"
       ]
     }
   }
