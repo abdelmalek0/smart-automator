@@ -35,6 +35,7 @@ from ..agent.stuck_recovery import (
     update_page_progress,
 )
 from ..server.step_mapper import build_step_start, planner_to_plan
+from ..server.config_service import compute_cost_usd
 
 console = Console()
 
@@ -165,14 +166,34 @@ class Executor:
 
     def _emit_tokens(self) -> None:
         total = self._context.message_manager.history.total_tokens
+        prompt_tokens = 0
+        completion_tokens = 0
+        cache_tokens = 0
+        for llm in (self._llm, self._planner_llm):
+            usage = llm.get_accumulated_usage()
+            prompt_tokens += usage.get("prompt_tokens", 0)
+            completion_tokens += usage.get("completion_tokens", 0)
+            cache_tokens += usage.get("cache_tokens", 0)
+        if prompt_tokens == 0 and completion_tokens == 0:
+            prompt_tokens = total
+        tokens = prompt_tokens + completion_tokens
+        provider = self._config.active_provider or self._config.llm_provider
+        model = self._config.active_model or self._llm.model_name or ""
+        cost_usd = compute_cost_usd(
+            provider,
+            model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cache_tokens=cache_tokens,
+        )
         self._emit(
             {
                 "type": "tokens_update",
-                "tokens": total,
-                "prompt_tokens": total,
-                "completion_tokens": 0,
-                "cache_tokens": 0,
-                "cost_usd": None,
+                "tokens": tokens or total,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "cache_tokens": cache_tokens,
+                "cost_usd": cost_usd,
             }
         )
 

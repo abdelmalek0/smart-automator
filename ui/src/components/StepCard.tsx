@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { AlertTriangle, Check, Circle, Loader2, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { formatDurationMs } from '@/lib/run-status'
 
 interface Props {
   step: Step
@@ -54,11 +55,6 @@ export default function StepCard({ step, isActive = false }: Props) {
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-xs text-muted-foreground">#{step.index}</span>
-                  {step.atomic_step != null && (
-                    <Badge variant="outline" className="text-[10px] py-0 text-violet-400 border-violet-400/30">
-                      atomic {step.atomic_step}
-                    </Badge>
-                  )}
                   <span className="text-sm mono font-medium">{step.action}</span>
                   {isSelfHeal && (
                     <Badge variant="outline" className="text-[10px] py-0 text-primary border-primary/30">
@@ -69,7 +65,9 @@ export default function StepCard({ step, isActive = false }: Props) {
                 <p className="text-xs text-muted-foreground truncate mt-0.5">{step.thought}</p>
               </div>
               {step.elapsed_ms > 0 && (
-                <span className="text-xs mono text-muted-foreground shrink-0">{step.elapsed_ms}ms</span>
+                <span className="text-xs mono text-muted-foreground shrink-0">
+                  {formatDurationMs(step.elapsed_ms)}
+                </span>
               )}
             </div>
           </AccordionTrigger>

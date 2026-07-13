@@ -12,6 +12,8 @@ from ..config import Config, load_config
 from ..server.paths import ENV_FILE, PRICING_FILE
 from ..server.provider_utils import (
     UI_PROVIDERS,
+    default_base_url,
+    default_model_for_provider,
     normalize_provider,
     provider_api_key_env_name,
     provider_api_key_is_set,
@@ -50,14 +52,13 @@ def build_config_response() -> dict:
     provider = normalize_provider(settings.provider or config.llm_provider)
     active = settings.get_provider(provider)
     runtime = runtime_provider(provider)
-    model = active.model or (
-        config.groq_model if runtime == "groq" else config.ollama_model
-    )
-    base_url = active.base_url or (
-        "https://api.groq.com/openai/v1"
-        if runtime == "groq"
-        else config.ollama_base_url
-    )
+    if runtime == "groq":
+        model = active.model or config.groq_model
+    elif runtime == "google":
+        model = active.model or config.google_model
+    else:
+        model = active.model or config.ollama_model
+    base_url = active.base_url or default_base_url(provider)
     provider_keys_set = {name: provider_api_key_is_set(name) for name in UI_PROVIDERS}
     provider_settings = {
         name: entry.to_dict() for name, entry in settings.providers.items()
@@ -96,10 +97,13 @@ def apply_config_update(update) -> dict:
     if update.model is not None:
         if runtime == "groq":
             set_key(str(ENV_FILE), "GROQ_MODEL", update.model)
+        elif runtime == "google":
+            set_key(str(ENV_FILE), "GOOGLE_MODEL", update.model)
         else:
             set_key(str(ENV_FILE), "OLLAMA_MODEL", update.model)
-    if update.base_url is not None and runtime == "ollama":
-        set_key(str(ENV_FILE), "OLLAMA_BASE_URL", update.base_url)
+    if update.base_url is not None:
+        if runtime == "ollama":
+            set_key(str(ENV_FILE), "OLLAMA_BASE_URL", update.base_url)
     if update.api_key is not None:
         ui_provider = (update.provider or settings.provider or provider).strip().lower()
         key_env = provider_api_key_env_name(ui_provider)
@@ -113,18 +117,10 @@ def apply_config_update(update) -> dict:
 
 
 def check_llm_connection() -> None:
-    reload_runtime_env()
-    config = load_config()
-    settings = LlmSettingsStore().ensure_loaded()
-    provider = runtime_provider(settings.provider or config.llm_provider)
-    if provider == "ollama":
-        from ..llm.ollama import OllamaLLM
+    config = config_for_run()
+    from ..main import create_llm
 
-        llm = OllamaLLM(config)
-    else:
-        from ..llm.groq import GroqLLM
-
-        llm = GroqLLM(config)
+    llm = create_llm(config)
     llm.chat([{"role": "user", "content": "Reply with OK only."}], temperature=0)
 
 
@@ -148,19 +144,60 @@ def save_pricing(entries: list[dict]) -> int:
     return len(entries)
 
 
+def _pricing_lookup(provider: str, model: str) -> dict | None:
+    canonical = normalize_provider(provider)
+    runtime = runtime_provider(canonical)
+    for entry in load_pricing():
+        entry_provider = normalize_provider(str(entry.get("provider", "")))
+        entry_runtime = runtime_provider(entry_provider)
+        if entry_runtime == runtime and str(entry.get("model", "")) == model:
+            return entry
+    return None
+
+
+def compute_cost_usd(
+    provider: str,
+    model: str,
+    *,
+    prompt_tokens: int,
+    completion_tokens: int,
+    cache_tokens: int,
+) -> float | None:
+    canonical = normalize_provider(provider)
+    runtime = runtime_provider(canonical)
+    row = _pricing_lookup(canonical, model)
+    if row is None:
+        if runtime == "ollama":
+            return 0.0
+        return None
+    input_rate = float(row.get("input", 0) or 0)
+    output_rate = float(row.get("output", 0) or 0)
+    cache_rate = float(row.get("cache_read", 0) or 0)
+    return (
+        prompt_tokens * input_rate
+        + completion_tokens * output_rate
+        + cache_tokens * cache_rate
+    ) / 1_000_000
+
+
 def config_for_run() -> Config:
     reload_runtime_env()
     config = load_config()
     settings = LlmSettingsStore().ensure_loaded()
-    runtime = runtime_provider(settings.provider or config.llm_provider)
-    active = settings.get_provider(settings.provider)
+    ui_provider = normalize_provider(settings.provider or config.llm_provider)
+    runtime = runtime_provider(ui_provider)
+    active = settings.get_provider(ui_provider)
     config.llm_provider = runtime
+    config.active_provider = ui_provider
+    config.active_model = active.model or default_model_for_provider(ui_provider)
     if runtime == "groq":
-        if active.model:
-            config.groq_model = active.model
+        config.groq_model = config.active_model
+        config.openai_base_url = active.base_url or default_base_url("groq")
+    elif runtime == "google":
+        config.google_model = config.active_model
+        config.openai_base_url = active.base_url or default_base_url("google")
     else:
-        if active.model:
-            config.ollama_model = active.model
+        config.ollama_model = config.active_model
         if active.base_url:
             config.ollama_base_url = active.base_url
     return config

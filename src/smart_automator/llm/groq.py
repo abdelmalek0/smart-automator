@@ -4,14 +4,31 @@ from .base import BaseLLM
 from .retry import call_with_retry
 from .structured_output import ensure_json_keyword_in_messages
 from ..config import Config
+from ..server.provider_utils import default_base_url
 
 
-class GroqLLM(BaseLLM):
-    def __init__(self, config: Config):
+def _chat_completions_url(base_url: str) -> str:
+    base = base_url.rstrip("/")
+    if base.endswith("/chat/completions"):
+        return base
+    return f"{base}/chat/completions"
+
+
+class OpenAICompatLLM(BaseLLM):
+    """OpenAI-compatible chat client for Groq, Google Gemini, and similar APIs."""
+
+    def __init__(self, config: Config, *, provider: str | None = None):
         super().__init__()
-        self._api_key = config.groq_api_key
-        self._model = config.groq_model
-        self._base_url = "https://api.groq.com/openai/v1/chat/completions"
+        selected = (provider or config.llm_provider or "groq").strip().lower()
+        if selected == "google":
+            self._api_key = config.google_api_key
+            self._model = config.active_model or config.google_model
+            base = config.openai_base_url or default_base_url("google")
+        else:
+            self._api_key = config.groq_api_key
+            self._model = config.active_model or config.groq_model
+            base = config.openai_base_url or default_base_url("groq")
+        self._base_url = _chat_completions_url(base)
         self._client = httpx.Client(timeout=60.0)
 
     @property
@@ -65,15 +82,29 @@ class GroqLLM(BaseLLM):
             detail = response.text.strip()
             if detail:
                 raise httpx.HTTPStatusError(
-                    f"Groq API error {response.status_code}: {detail}",
+                    f"LLM API error {response.status_code}: {detail}",
                     request=response.request,
                     response=response,
                 )
         response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
+        body = response.json()
+        usage = body.get("usage") or {}
+        details = usage.get("prompt_tokens_details") or {}
+        self._record_usage(
+            {
+                "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
+                "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
+                "cache_tokens": int(details.get("cached_tokens", 0) or 0),
+            }
+        )
+        return body["choices"][0]["message"]["content"]
 
     def __del__(self):
         try:
             self._client.close()
         except Exception:
             pass
+
+
+# Backward-compatible alias
+GroqLLM = OpenAICompatLLM

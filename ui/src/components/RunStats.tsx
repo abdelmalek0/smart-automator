@@ -5,6 +5,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { Loader2 } from 'lucide-react'
+import { formatDurationMs } from '@/lib/run-status'
 
 interface Props {
   stepCount?: number
@@ -105,14 +106,14 @@ export default function RunStats({
             <Tooltip>
               <TooltipTrigger asChild>
                 <span className="text-xs mono cursor-help border-b border-dotted border-muted-foreground">
-                  {turnTiming.turn_ms}ms
+                  {formatDurationMs(turnTiming.turn_ms)}
                 </span>
               </TooltipTrigger>
               <TooltipContent side="left" className="space-y-1">
-                <p>Snapshot: {turnTiming.snapshot_ms ?? 0}ms</p>
-                <p>LLM: {turnTiming.llm_navigator_ms ?? 0}ms</p>
-                <p>Batch: {turnTiming.batch_ms ?? 0}ms</p>
-                <p>Settle: {turnTiming.settle_ms ?? 0}ms</p>
+                <p>Snapshot: {formatDurationMs(turnTiming.snapshot_ms ?? 0)}</p>
+                <p>LLM: {formatDurationMs(turnTiming.llm_navigator_ms ?? 0)}</p>
+                <p>Batch: {formatDurationMs(turnTiming.batch_ms ?? 0)}</p>
+                <p>Settle: {formatDurationMs(turnTiming.settle_ms ?? 0)}</p>
               </TooltipContent>
             </Tooltip>
           </StatRow>

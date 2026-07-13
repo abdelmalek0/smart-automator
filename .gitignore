@@ -19,5 +19,3 @@ ui/dist/
 # Runtime data
 data/screenshots/
 websites.json
-llm_settings.json
-pricing.json

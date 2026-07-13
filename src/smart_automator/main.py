@@ -1,7 +1,7 @@
 from .config import load_config, Config
 from .browser.context import BrowserContext
 from .llm.base import BaseLLM
-from .llm.groq import GroqLLM
+from .llm.groq import OpenAICompatLLM
 from .llm.ollama import OllamaLLM
 from .agent.executor import Executor
 from rich.console import Console
@@ -12,10 +12,10 @@ console = Console()
 
 
 def create_llm(config: Config, provider: str | None = None) -> BaseLLM:
-    selected = provider or config.llm_provider
+    selected = (provider or config.llm_provider or "groq").strip().lower()
     if selected == "ollama":
         return OllamaLLM(config)
-    return GroqLLM(config)
+    return OpenAICompatLLM(config, provider=selected)
 
 
 def run_task(task: str, config: Config) -> str | None:

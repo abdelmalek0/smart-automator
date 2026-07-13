@@ -9,6 +9,11 @@ from .tokens import count_message_tokens, count_text_tokens
 class BaseLLM(ABC):
     def __init__(self):
         self._cancel_event: threading.Event | None = None
+        self._usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "cache_tokens": 0,
+        }
 
     @property
     def model_name(self) -> str | None:
@@ -26,6 +31,14 @@ class BaseLLM(ABC):
             from ..agents.errors import RequestCancelledError
 
             raise RequestCancelledError("LLM request cancelled")
+
+    def _record_usage(self, usage: dict) -> None:
+        self._usage["prompt_tokens"] += int(usage.get("prompt_tokens", 0) or 0)
+        self._usage["completion_tokens"] += int(usage.get("completion_tokens", 0) or 0)
+        self._usage["cache_tokens"] += int(usage.get("cache_tokens", 0) or 0)
+
+    def get_accumulated_usage(self) -> dict[str, int]:
+        return dict(self._usage)
 
     @abstractmethod
     def chat(self, messages: list[dict], temperature: float = 0.7) -> str:

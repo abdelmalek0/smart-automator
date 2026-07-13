@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-SUPPORTED_PROVIDERS = ("groq", "ollama")
+SUPPORTED_PROVIDERS = ("groq", "ollama", "google")
 UI_PROVIDERS = ("groq", "ollama-cloud", "ollama", "google")
 
 _PROVIDER_ALIASES = {

@@ -47,3 +47,13 @@ export function formatElapsed(secs: number): string {
   if (secs < 60) return `${secs}s`
   return `${Math.floor(secs / 60)}m ${secs % 60}s`
 }
+
+export function formatDurationMs(ms: number): string {
+  if (ms <= 0) return '0s'
+  const secs = ms / 1000
+  if (secs < 10) return `${secs.toFixed(1)}s`
+  if (secs < 60) return `${Math.round(secs)}s`
+  const minutes = Math.floor(secs / 60)
+  const remainder = Math.round(secs % 60)
+  return `${minutes}m ${remainder}s`
+}

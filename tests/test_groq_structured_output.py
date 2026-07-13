@@ -25,6 +25,11 @@ class TestGroqJsonFallback(unittest.TestCase):
         config = MagicMock()
         config.groq_api_key = "test-key"
         config.groq_model = "llama-3.3-70b-versatile"
+        config.llm_provider = "groq"
+        config.active_model = ""
+        config.openai_base_url = ""
+        config.google_api_key = ""
+        config.google_model = ""
         llm = GroqLLM(config)
         request = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
         bad_response = httpx.Response(

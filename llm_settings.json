@@ -1,0 +1,27 @@
+{
+  "provider": "ollama",
+  "providers": {
+    "groq": {
+      "base_url": "https://api.groq.com/openai/v1",
+      "model": "openai/gpt-oss-120b",
+      "models": [
+        "openai/gpt-oss-120b"
+      ]
+    },
+    "ollama": {
+      "base_url": "https://ollama.com",
+      "model": "gemma4:31b-cloud",
+      "models": [
+        "gemma4:31b-cloud",
+        "llama3.2"
+      ]
+    },
+    "google": {
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "model": "gemini-2.5-flash",
+      "models": [
+        "gemini-2.5-flash"
+      ]
+    }
+  }
+}

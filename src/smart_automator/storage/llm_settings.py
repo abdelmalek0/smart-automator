@@ -146,11 +146,12 @@ class LlmSettingsStore:
     def seed_from_env(self) -> LlmSettings:
         env_provider = os.environ.get("LLM_PROVIDER", "groq")
         runtime = runtime_provider(env_provider)
-        model = (
-            os.environ.get("GROQ_MODEL", "")
-            if runtime == "groq"
-            else os.environ.get("OLLAMA_MODEL", "")
-        )
+        if runtime == "groq":
+            model = os.environ.get("GROQ_MODEL", "")
+        elif runtime == "google":
+            model = os.environ.get("GOOGLE_MODEL", "")
+        else:
+            model = os.environ.get("OLLAMA_MODEL", "")
         base_url = (
             os.environ.get("OLLAMA_BASE_URL", default_base_url(env_provider))
             if runtime == "ollama"

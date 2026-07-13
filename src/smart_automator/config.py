@@ -17,6 +17,11 @@ class Config(BaseModel):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.2"
     ollama_api_key: str = ""
+    google_api_key: str = ""
+    google_model: str = "gemini-2.5-flash"
+    openai_base_url: str = ""
+    active_provider: str = ""
+    active_model: str = ""
     headless: bool = False
     home_page_url: str = "https://www.google.com"
     viewport_width: int = 1280
@@ -58,6 +63,8 @@ def load_config() -> Config:
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
         ollama_model=os.getenv("OLLAMA_MODEL", "llama3.2"),
         ollama_api_key=os.getenv("OLLAMA_API_KEY", ""),
+        google_api_key=os.getenv("GOOGLE_API_KEY", ""),
+        google_model=os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"),
         headless=os.getenv("HEADLESS", "false").lower() == "true",
         home_page_url=os.getenv("HOME_PAGE_URL", "https://www.google.com"),
         viewport_width=int(os.getenv("VIEWPORT_WIDTH", "1280")),

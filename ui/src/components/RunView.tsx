@@ -5,7 +5,7 @@ import { cancelRun, listWebsites } from '@/api'
 import { useRunStream } from '@/hooks/useRunStream'
 import RunStats from '@/components/RunStats'
 import StepCard from '@/components/StepCard'
-import AtomicProgressPanel from '@/components/AtomicProgressPanel'
+import CompletedStepsPanel from '@/components/CompletedStepsPanel'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -137,12 +137,7 @@ export default function RunView({ runId, onRunComplete }: Props) {
             </p>
           )}
           <div className="flex flex-row gap-3 items-stretch">
-            <AtomicProgressPanel
-              extractedSteps={run?.extracted_steps}
-              currentStep={run?.current_atomic_step ?? run?.progress?.current_atomic_step}
-              atomicProgress={run?.progress?.atomic_progress}
-              screenSummary={run?.progress?.screen_summary}
-            />
+            <CompletedStepsPanel steps={run?.steps} isRunning={isRunning} />
             <RunStats
               stepCount={run?.steps.length}
               status={run?.status}

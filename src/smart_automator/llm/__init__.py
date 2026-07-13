@@ -1,5 +1,5 @@
 from .base import BaseLLM
-from .groq import GroqLLM
+from .groq import GroqLLM, OpenAICompatLLM
 from .ollama import OllamaLLM
 
-__all__ = ["BaseLLM", "GroqLLM", "OllamaLLM"]
+__all__ = ["BaseLLM", "GroqLLM", "OpenAICompatLLM", "OllamaLLM"]
