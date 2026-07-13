@@ -1,0 +1,132 @@
+import { Card, CardContent } from '@/components/ui/card'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
+import { Loader2 } from 'lucide-react'
+
+interface Props {
+  stepCount?: number
+  status?: string
+  elapsedS?: number
+  tokens?: number
+  promptTokens?: number
+  completionTokens?: number
+  cacheTokens?: number
+  costUsd?: number | null
+  turnTiming?: {
+    snapshot_ms?: number
+    llm_navigator_ms?: number
+    batch_ms?: number
+    settle_ms?: number
+    turn_ms?: number
+  }
+}
+
+export default function RunStats({
+  stepCount,
+  status,
+  elapsedS,
+  tokens,
+  promptTokens,
+  completionTokens,
+  cacheTokens,
+  costUsd,
+  turnTiming,
+}: Props) {
+  const isRunning = status === 'running' || status === 'pending'
+
+  const elapsed =
+    elapsedS !== undefined
+      ? elapsedS < 60
+        ? `${Math.round(elapsedS)}s`
+        : `${Math.floor(elapsedS / 60)}m ${Math.round(elapsedS % 60)}s`
+      : null
+
+  return (
+    <Card className="flex-[1] min-w-[10rem]">
+      <CardContent className="p-4 space-y-2">
+        <StatRow label="Status">
+          {isRunning ? (
+            <span className="flex items-center gap-1.5 text-xs text-brand-blue">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              Running
+            </span>
+          ) : status === 'pass' ? (
+            <span className="text-xs text-success">Pass</span>
+          ) : status === 'fail' || status === 'error' ? (
+            <span className="text-xs text-destructive">{status}</span>
+          ) : status === 'cancelled' ? (
+            <span className="text-xs text-muted-foreground">Cancelled</span>
+          ) : (
+            <span className="text-xs text-muted-foreground">—</span>
+          )}
+        </StatRow>
+        {stepCount !== undefined && (
+          <StatRow label="Steps">
+            <span className="text-xs mono">{stepCount}</span>
+          </StatRow>
+        )}
+        {elapsed && (
+          <StatRow label="Elapsed">
+            <span className="text-xs mono">{elapsed}</span>
+          </StatRow>
+        )}
+        {tokens !== undefined && tokens > 0 && (
+          <StatRow label="Tokens">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="text-xs mono cursor-help border-b border-dotted border-muted-foreground">
+                  {tokens.toLocaleString()}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="left" className="space-y-1">
+                <p>Prompt: {(promptTokens ?? 0).toLocaleString()}</p>
+                <p>Completion: {(completionTokens ?? 0).toLocaleString()}</p>
+                <p>Cache: {(cacheTokens ?? 0).toLocaleString()}</p>
+              </TooltipContent>
+            </Tooltip>
+          </StatRow>
+        )}
+        {tokens !== undefined && tokens > 0 && (
+          <StatRow label="Cost">
+            <span className="text-xs mono">
+              {costUsd === null || costUsd === undefined
+                ? '—'
+                : costUsd === 0
+                  ? 'free'
+                  : `$${costUsd.toFixed(4)}`}
+            </span>
+          </StatRow>
+        )}
+        {turnTiming?.turn_ms !== undefined && (
+          <StatRow label="Last turn">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="text-xs mono cursor-help border-b border-dotted border-muted-foreground">
+                  {turnTiming.turn_ms}ms
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="left" className="space-y-1">
+                <p>Snapshot: {turnTiming.snapshot_ms ?? 0}ms</p>
+                <p>LLM: {turnTiming.llm_navigator_ms ?? 0}ms</p>
+                <p>Batch: {turnTiming.batch_ms ?? 0}ms</p>
+                <p>Settle: {turnTiming.settle_ms ?? 0}ms</p>
+              </TooltipContent>
+            </Tooltip>
+          </StatRow>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function StatRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      {children}
+    </div>
+  )
+}

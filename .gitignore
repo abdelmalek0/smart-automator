@@ -1,0 +1,23 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Environment / secrets
+.env
+
+# Virtual environments
+.venv
+
+# UI
+ui/node_modules/
+ui/dist/
+
+# Runtime data
+data/screenshots/
+websites.json
+llm_settings.json
+pricing.json
