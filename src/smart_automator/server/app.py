@@ -39,7 +39,7 @@ from .models import (
     WebsiteTaskUpdateRequest,
     WebsiteUpdateRequest,
 )
-from .paths import ENV_FILE, SCREENSHOT_DIR, UI_DIST
+from .paths import ENV_FILE, REPORT_DIR, SCREENSHOT_DIR, UI_DIST
 from .run_state import RunState, add_run, get_run, list_runs
 from .runner import run_automation
 from .step_mapper import compose_task
@@ -99,6 +99,7 @@ app.add_middleware(
 )
 
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
 _website_store: WebsiteStore | None = None
 
@@ -163,7 +164,21 @@ async def api_get_run(run_id: str):
 
 @app.get("/api/runs/{run_id}/report")
 async def download_report(run_id: str):
-    raise HTTPException(status_code=404, detail="Report not yet available")
+    run = get_run(run_id)
+    if not run or not run.report_path:
+        raise HTTPException(status_code=404, detail="Report not yet available")
+    report_file = Path(run.report_path)
+    if not report_file.is_file():
+        candidate = REPORT_DIR / f"{run_id}.html"
+        if candidate.is_file():
+            report_file = candidate
+        else:
+            raise HTTPException(status_code=404, detail="Report not yet available")
+    return FileResponse(
+        report_file,
+        media_type="text/html",
+        filename=f"run-{run_id[:8]}.html",
+    )
 
 
 @app.delete("/api/runs/{run_id}")

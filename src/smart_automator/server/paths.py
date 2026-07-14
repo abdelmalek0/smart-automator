@@ -19,4 +19,5 @@ WEBSITES_FILE = PROJECT_ROOT / "websites.json"
 LLM_SETTINGS_FILE = PROJECT_ROOT / "llm_settings.json"
 PRICING_FILE = PROJECT_ROOT / "pricing.json"
 SCREENSHOT_DIR = Path(os.getenv("SCREENSHOT_DIR", str(PROJECT_ROOT / "data" / "screenshots")))
+REPORT_DIR = Path(os.getenv("REPORT_DIR", str(PROJECT_ROOT / "data" / "reports")))
 UI_DIST = PROJECT_ROOT / "ui" / "dist"

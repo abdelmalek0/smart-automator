@@ -18,4 +18,5 @@ ui/dist/
 
 # Runtime data
 data/screenshots/
+data/reports/
 websites.json

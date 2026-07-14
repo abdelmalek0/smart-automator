@@ -14,9 +14,10 @@ from ..agents.errors import (
 from ..browser.context import BrowserContext
 from ..main import create_llm
 from .config_service import config_for_run
-from .paths import SCREENSHOT_DIR
+from .paths import REPORT_DIR, SCREENSHOT_DIR
 from .run_state import RunState
 from .step_mapper import navigator_to_step
+from ..reporting import generate_run_report
 
 log = logging.getLogger(__name__)
 
@@ -75,9 +76,43 @@ def _handle_event(run: RunState, browser_context: BrowserContext, event: dict[st
     run.broadcast(event)
 
 
+def _generate_report(run: RunState, executor: Executor | None, config) -> None:
+    if executor is None:
+        return
+    try:
+        context = executor.context
+        failed_actions = [
+            {
+                "url": record.url,
+                "action": record.action_name,
+                "args": record.action_args,
+                "error": record.error,
+            }
+            for record in context.failed_actions
+        ]
+        planner_model = getattr(config, "planner_model", None) or config.active_model
+        report_path = generate_run_report(
+            run,
+            context.history,
+            llm_provider=getattr(config, "active_provider", None) or config.llm_provider,
+            llm_model=config.active_model,
+            planner_model=planner_model,
+            failed_actions=failed_actions,
+        )
+        run.report_path = str(report_path)
+        run.broadcast({
+            "type": "report_ready",
+            "report_path": f"/api/runs/{run.run_id}/report",
+        })
+        log.info("[run:%s] report written to %s", run.run_id[:8], report_path)
+    except Exception as exc:
+        log.warning("[run:%s] report generation failed: %s", run.run_id[:8], exc, exc_info=True)
+
+
 def run_automation(run: RunState) -> None:
     browser_context: BrowserContext | None = None
     executor: Executor | None = None
+    config = None
 
     try:
         run.status = "running"
@@ -179,6 +214,9 @@ def run_automation(run: RunState) -> None:
             run.broadcast({"type": "done", "status": "error", "summary": run.summary})
             log.error("[run:%s] error: %s", run.run_id[:8], exc, exc_info=True)
     finally:
+        if run.finished_at is None:
+            run.finished_at = time.time()
+        _generate_report(run, executor, config)
         run.executor = None
         if executor is not None:
             try:

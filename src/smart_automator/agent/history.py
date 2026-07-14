@@ -8,6 +8,25 @@ from ..browser.views import TabInfo
 from .context import ActionResult
 
 
+def action_result_to_dict(result: ActionResult) -> dict[str, Any]:
+    element = result.interacted_element
+    interacted: dict[str, Any] | None = None
+    if element is not None and hasattr(element, "to_dict"):
+        interacted = element.to_dict()
+    return {
+        "isDone": result.is_done,
+        "success": result.success,
+        "extractedContent": result.extracted_content,
+        "error": result.error,
+        "includeInMemory": result.include_in_memory,
+        "actionName": result.action_name,
+        "actionIndex": result.action_index,
+        "verificationStatus": result.verification_status,
+        "verificationEvidence": result.verification_evidence,
+        "interactedElement": interacted,
+    }
+
+
 @dataclass
 class BrowserStateHistory:
     url: str
@@ -53,16 +72,7 @@ class AgentStepRecord:
     def to_dict(self) -> dict[str, Any]:
         return {
             "modelOutput": self.model_output,
-            "result": [
-                {
-                    "isDone": r.is_done,
-                    "success": r.success,
-                    "extractedContent": r.extracted_content,
-                    "error": r.error,
-                    "includeInMemory": r.include_in_memory,
-                }
-                for r in self.result
-            ],
+            "result": [action_result_to_dict(r) for r in self.result],
             "state": self.state.to_dict(),
             "metadata": self.metadata,
         }
