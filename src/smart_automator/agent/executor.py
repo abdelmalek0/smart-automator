@@ -164,28 +164,53 @@ class Executor:
             except Exception:
                 pass
 
+    def _llm_usage_sources(self) -> list[tuple[BaseLLM, str, str]]:
+        navigator_provider = self._config.active_provider or self._config.llm_provider
+        navigator_model = self._config.active_model or self._llm.model_name or ""
+        planner_provider = self._config.planner_llm_provider or navigator_provider
+        planner_model = (
+            getattr(self._config, "planner_model", None)
+            or self._planner_llm.model_name
+            or navigator_model
+        )
+        seen: dict[int, tuple[BaseLLM, str, str]] = {}
+        for llm, provider, model in (
+            (self._llm, navigator_provider, navigator_model),
+            (self._planner_llm, planner_provider, planner_model),
+        ):
+            seen[id(llm)] = (llm, provider, model)
+        return list(seen.values())
+
     def _emit_tokens(self) -> None:
         total = self._context.message_manager.history.total_tokens
         prompt_tokens = 0
         completion_tokens = 0
         cache_tokens = 0
-        for llm in (self._llm, self._planner_llm):
+        cost_parts: list[float | None] = []
+        for llm, provider, model in self._llm_usage_sources():
             usage = llm.get_accumulated_usage()
-            prompt_tokens += usage.get("prompt_tokens", 0)
-            completion_tokens += usage.get("completion_tokens", 0)
-            cache_tokens += usage.get("cache_tokens", 0)
+            llm_prompt = usage.get("prompt_tokens", 0)
+            llm_completion = usage.get("completion_tokens", 0)
+            llm_cache = usage.get("cache_tokens", 0)
+            prompt_tokens += llm_prompt
+            completion_tokens += llm_completion
+            cache_tokens += llm_cache
+            cost_parts.append(
+                compute_cost_usd(
+                    provider,
+                    model,
+                    prompt_tokens=llm_prompt,
+                    completion_tokens=llm_completion,
+                    cache_tokens=llm_cache,
+                )
+            )
         if prompt_tokens == 0 and completion_tokens == 0:
             prompt_tokens = total
         tokens = prompt_tokens + completion_tokens
-        provider = self._config.active_provider or self._config.llm_provider
-        model = self._config.active_model or self._llm.model_name or ""
-        cost_usd = compute_cost_usd(
-            provider,
-            model,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            cache_tokens=cache_tokens,
-        )
+        if any(part is not None for part in cost_parts):
+            cost_usd = sum(part or 0.0 for part in cost_parts)
+        else:
+            cost_usd = None
         self._emit(
             {
                 "type": "tokens_update",
@@ -196,6 +221,10 @@ class Executor:
                 "cost_usd": cost_usd,
             }
         )
+
+    def flush_token_usage(self) -> None:
+        """Emit a cumulative token snapshot for all LLM calls so far."""
+        self._emit_tokens()
 
     def add_follow_up_task(self, task: str) -> None:
         self._tasks.append(task)
@@ -396,6 +425,7 @@ class Executor:
             )
         )
         suggestion = self._action_critic.suggest_actions(reason)
+        self._emit_tokens()
         if not suggestion:
             return
         if not suggestion.get("actions"):

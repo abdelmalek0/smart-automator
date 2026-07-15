@@ -216,6 +216,8 @@ def run_automation(run: RunState) -> None:
     finally:
         if run.finished_at is None:
             run.finished_at = time.time()
+        if executor is not None:
+            executor.flush_token_usage()
         _generate_report(run, executor, config)
         run.executor = None
         if executor is not None:

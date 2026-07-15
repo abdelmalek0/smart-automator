@@ -58,6 +58,12 @@ def _render_metadata(data: dict[str, Any]) -> str:
 
 def _render_stats(data: dict[str, Any]) -> str:
     tokens = data.get("tokens") or {}
+    input_tokens = int(tokens.get("input", tokens.get("prompt", 0)) or 0)
+    output_tokens = int(tokens.get("output", tokens.get("completion", 0)) or 0)
+    cache_tokens = int(tokens.get("cache", 0) or 0)
+    cache_sub = (
+        f'<div class="stat-sub">cache {cache_tokens:,}</div>' if cache_tokens > 0 else ""
+    )
     timing = data.get("turn_timing") or {}
     return f"""
     <div class="stat-grid">
@@ -72,7 +78,15 @@ def _render_stats(data: dict[str, Any]) -> str:
       <div class="stat-card">
         <div class="stat-label">Total tokens</div>
         <div class="stat-value">{tokens.get("total", 0):,}</div>
-        <div class="stat-sub">prompt {tokens.get("prompt", 0):,} · completion {tokens.get("completion", 0):,}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Input tokens</div>
+        <div class="stat-value">{input_tokens:,}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Output tokens</div>
+        <div class="stat-value">{output_tokens:,}</div>
+        {cache_sub}
       </div>
       <div class="stat-card">
         <div class="stat-label">Est. cost</div>

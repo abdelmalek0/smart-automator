@@ -88,6 +88,8 @@ class TestReportBuilder(unittest.TestCase):
             llm_model="llama-3.3-70b-versatile",
         )
         self.assertEqual(data["tokens"]["total"], 1200)
+        self.assertEqual(data["tokens"]["input"], 800)
+        self.assertEqual(data["tokens"]["output"], 400)
         self.assertEqual(data["status"], "pass")
         self.assertEqual(len(data["action_timeline"]), 1)
         self.assertIn("12.5s", data["duration_label"])
@@ -102,6 +104,8 @@ class TestReportBuilder(unittest.TestCase):
         self.assertIn("Automation Run Report", html)
         self.assertIn("DOM / XPath Action Timeline", html)
         self.assertIn("Total tokens", html)
+        self.assertIn("Input tokens", html)
+        self.assertIn("Output tokens", html)
         self.assertIn("Test task", html)
 
     def test_generate_run_report_writes_file(self):

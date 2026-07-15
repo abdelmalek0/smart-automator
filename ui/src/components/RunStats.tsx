@@ -69,11 +69,6 @@ export default function RunStats({
             <span className="text-xs mono">{stepCount}</span>
           </StatRow>
         )}
-        {elapsed && (
-          <StatRow label="Elapsed">
-            <span className="text-xs mono">{elapsed}</span>
-          </StatRow>
-        )}
         {tokens !== undefined && tokens > 0 && (
           <StatRow label="Tokens">
             <Tooltip>
@@ -83,9 +78,11 @@ export default function RunStats({
                 </span>
               </TooltipTrigger>
               <TooltipContent side="left" className="space-y-1">
-                <p>Prompt: {(promptTokens ?? 0).toLocaleString()}</p>
-                <p>Completion: {(completionTokens ?? 0).toLocaleString()}</p>
-                <p>Cache: {(cacheTokens ?? 0).toLocaleString()}</p>
+                <p>Input tokens: {(promptTokens ?? 0).toLocaleString()}</p>
+                <p>Output tokens: {(completionTokens ?? 0).toLocaleString()}</p>
+                {(cacheTokens ?? 0) > 0 && (
+                  <p>Cache tokens: {(cacheTokens ?? 0).toLocaleString()}</p>
+                )}
               </TooltipContent>
             </Tooltip>
           </StatRow>
@@ -101,21 +98,9 @@ export default function RunStats({
             </span>
           </StatRow>
         )}
-        {turnTiming?.turn_ms !== undefined && (
-          <StatRow label="Last turn">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="text-xs mono cursor-help border-b border-dotted border-muted-foreground">
-                  {formatDurationMs(turnTiming.turn_ms)}
-                </span>
-              </TooltipTrigger>
-              <TooltipContent side="left" className="space-y-1">
-                <p>Snapshot: {formatDurationMs(turnTiming.snapshot_ms ?? 0)}</p>
-                <p>LLM: {formatDurationMs(turnTiming.llm_navigator_ms ?? 0)}</p>
-                <p>Batch: {formatDurationMs(turnTiming.batch_ms ?? 0)}</p>
-                <p>Settle: {formatDurationMs(turnTiming.settle_ms ?? 0)}</p>
-              </TooltipContent>
-            </Tooltip>
+        {elapsed && (
+          <StatRow label="Total time">
+            <span className="text-xs mono">{elapsed}</span>
           </StatRow>
         )}
       </CardContent>

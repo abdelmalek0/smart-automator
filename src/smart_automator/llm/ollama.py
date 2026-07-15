@@ -71,7 +71,15 @@ class OllamaLLM(BaseLLM):
             json=payload,
         )
         response.raise_for_status()
-        return response.json()["message"]["content"]
+        body = response.json()
+        self._record_usage(
+            {
+                "prompt_tokens": int(body.get("prompt_eval_count", 0) or 0),
+                "completion_tokens": int(body.get("eval_count", 0) or 0),
+                "cache_tokens": 0,
+            }
+        )
+        return body["message"]["content"]
 
     def __del__(self):
         try:

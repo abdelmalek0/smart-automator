@@ -111,6 +111,8 @@ def build_report_data(
         "step_elapsed_ms": step_elapsed_ms,
         "tokens": {
             "total": run.tokens,
+            "input": run.prompt_tokens,
+            "output": run.completion_tokens,
             "prompt": run.prompt_tokens,
             "completion": run.completion_tokens,
             "cache": run.cache_tokens,
