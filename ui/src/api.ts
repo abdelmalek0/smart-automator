@@ -1,4 +1,4 @@
-import type { Config, PricingEntry, RunDetails, RunSummary, Tool, Website, WebsiteTask } from './types'
+import type { Config, PricingEntry, RunDetails, RunSummary, Website, WebsiteTask } from './types'
 import { normalizeProvider } from './providers'
 
 const BASE = '/api'
@@ -51,12 +51,6 @@ export async function startRun(payload: {
 
 export async function cancelRun(runId: string): Promise<void> {
   await request(`/runs/${runId}`, { method: 'DELETE' })
-}
-
-// ── Tools ─────────────────────────────────────────────────────────────────────
-
-export function listTools(): Promise<Tool[]> {
-  return request('/tools')
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────

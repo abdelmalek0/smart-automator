@@ -100,12 +100,6 @@ export interface RunDetails extends RunSummary {
   turn_timing?: TurnTiming
 }
 
-export interface Tool {
-  name: string
-  doc: string
-  signature: string
-}
-
 export interface WebsiteTask {
   id: string
   task: string

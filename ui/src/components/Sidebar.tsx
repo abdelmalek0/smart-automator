@@ -5,7 +5,6 @@ import {
   Plus,
   RotateCcw,
   Settings,
-  Wrench,
 } from 'lucide-react'
 import logoUrl from '../../logo.jpeg'
 import type { RunSummary, RunStatus } from '@/types'
@@ -120,7 +119,6 @@ export default function Sidebar({ runs, activeRunId }: Props) {
       <div className="border-t border-border p-2 space-y-0.5">
         <NavLink to="/" icon={Home} label="Home" end />
         <NavLink to="/websites" icon={Globe} label="Websites" />
-        <NavLink to="/tools" icon={Wrench} label="Tools" />
         <NavLink to="/settings" icon={Settings} label="Settings" />
       </div>
     </aside>
