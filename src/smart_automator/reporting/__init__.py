@@ -4,9 +4,9 @@ from pathlib import Path
 from typing import Any
 
 from ..agent.history import AgentStepHistory
-from ..server.paths import REPORT_DIR
+from ..server.paths import REPORT_DIR, SCREENSHOT_DIR
 from ..server.run_state import RunState
-from .builder import build_report_data
+from .builder import build_report_data, embed_step_screenshots
 from .html_report import render_html_report
 
 
@@ -32,6 +32,7 @@ def generate_run_report(
         planner_model=planner_model,
         failed_actions=failed_actions,
     )
+    data["steps"] = embed_step_screenshots(data.get("steps") or [], SCREENSHOT_DIR)
     html_content = render_html_report(data)
     report_path = report_dir / f"{run.run_id}.html"
     report_path.write_text(html_content, encoding="utf-8")

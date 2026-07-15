@@ -34,37 +34,88 @@ def _fmt_cost(cost: float | None) -> str:
     return f"${cost:.4f}"
 
 
-def _render_metadata(data: dict[str, Any]) -> str:
-    llm = data.get("llm") or {}
-    rows = [
-        ("Run ID", data.get("run_id")),
-        ("Status", data.get("status")),
-        ("Website ID", data.get("website_id") or "—"),
-        ("Headless", "yes" if data.get("headless") else "no"),
-        ("Max steps", data.get("max_steps")),
-        ("CDP URL", data.get("cdp_url") or "—"),
-        ("Fresh profile", "yes" if data.get("fresh_profile") else "no"),
-        ("Started", _fmt_time(data.get("started_at"))),
-        ("Finished", _fmt_time(data.get("finished_at"))),
-        ("LLM provider", llm.get("provider") or "—"),
-        ("Navigator model", llm.get("model") or "—"),
-        ("Planner model", llm.get("planner_model") or llm.get("model") or "—"),
-    ]
-    return "\n".join(
-        f"<tr><th>{_esc(label)}</th><td>{_esc(value)}</td></tr>"
-        for label, value in rows
+def _fmt_duration_ms(ms: float | int | None) -> str:
+    if ms is None:
+        return "—"
+    ms = float(ms)
+    if ms <= 0:
+        return "0s"
+    secs = ms / 1000
+    if secs < 10:
+        return f"{secs:.1f}s"
+    if secs < 60:
+        return f"{round(secs)}s"
+    minutes = int(secs // 60)
+    remainder = round(secs % 60)
+    return f"{minutes}m {remainder}s"
+
+
+def _truncate(text: str, max_len: int = 80) -> str:
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1] + "…"
+
+
+def _render_summary_strip(data: dict[str, Any]) -> str:
+    status = data.get("status", "unknown")
+
+    header_line = " · ".join(
+        part
+        for part in [
+            f'<span class="badge {_status_class(status)}">{_esc(status)}</span>',
+            f'<span class="mono">{_esc(data.get("run_id", "")[:8])}</span>',
+        ]
+        if part
     )
 
+    context_lines: list[str] = []
+    website_name = data.get("website_name")
+    website_url = data.get("website_url")
+    if website_name and website_url:
+        context_lines.append(
+            f'<p class="context-line">Website: <strong>{_esc(website_name)}</strong> '
+            f'→ <a href="{_esc(website_url)}" target="_blank" rel="noopener">{_esc(website_url)}</a></p>'
+        )
+    elif website_url:
+        context_lines.append(
+            f'<p class="context-line">URL: <a href="{_esc(website_url)}" target="_blank" rel="noopener">{_esc(website_url)}</a></p>'
+        )
+    elif data.get("detected_urls"):
+        urls = data["detected_urls"]
+        links = ", ".join(
+            f'<a href="{_esc(url)}" target="_blank" rel="noopener">{_esc(url)}</a>'
+            for url in urls[:3]
+        )
+        context_lines.append(f'<p class="context-line">Detected URLs: {links}</p>')
 
-def _render_stats(data: dict[str, Any]) -> str:
+    context_prompt = data.get("context_prompt")
+    if context_prompt:
+        context_lines.append(f'<p class="context-prompt">{_esc(context_prompt)}</p>')
+
+    task_only = data.get("task_only") or data.get("task") or ""
+    context_lines.append(f'<p class="task">{_esc(task_only)}</p>')
+
+    return f"""
+    <div class="summary-strip">
+      <div class="header-line">{header_line}</div>
+      {"".join(context_lines)}
+    </div>
+    """
+
+
+def _render_stat_cards(data: dict[str, Any]) -> str:
     tokens = data.get("tokens") or {}
     input_tokens = int(tokens.get("input", tokens.get("prompt", 0)) or 0)
     output_tokens = int(tokens.get("output", tokens.get("completion", 0)) or 0)
     cache_tokens = int(tokens.get("cache", 0) or 0)
-    cache_sub = (
-        f'<div class="stat-sub">cache {cache_tokens:,}</div>' if cache_tokens > 0 else ""
-    )
+    total_tokens = int(tokens.get("total", 0) or 0)
     timing = data.get("turn_timing") or {}
+
+    token_sub_parts = [f"{input_tokens:,} in / {output_tokens:,} out"]
+    if cache_tokens > 0:
+        token_sub_parts.append(f"cache {cache_tokens:,}")
+    token_sub = f'<div class="stat-sub">{" · ".join(token_sub_parts)}</div>'
+
     return f"""
     <div class="stat-grid">
       <div class="stat-card">
@@ -77,16 +128,8 @@ def _render_stats(data: dict[str, Any]) -> str:
       </div>
       <div class="stat-card">
         <div class="stat-label">Total tokens</div>
-        <div class="stat-value">{tokens.get("total", 0):,}</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Input tokens</div>
-        <div class="stat-value">{input_tokens:,}</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Output tokens</div>
-        <div class="stat-value">{output_tokens:,}</div>
-        {cache_sub}
+        <div class="stat-value">{total_tokens:,}</div>
+        {token_sub if total_tokens > 0 else ""}
       </div>
       <div class="stat-card">
         <div class="stat-label">Est. cost</div>
@@ -94,48 +137,70 @@ def _render_stats(data: dict[str, Any]) -> str:
       </div>
       <div class="stat-card">
         <div class="stat-label">Step time (sum)</div>
-        <div class="stat-value">{(data.get("step_elapsed_ms") or 0) / 1000:.1f}s</div>
+        <div class="stat-value">{_esc(_fmt_duration_ms(data.get("step_elapsed_ms")))}</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">Last turn timing</div>
-        <div class="stat-value">{timing.get("turn_ms") or "—"} ms</div>
-        <div class="stat-sub">DOM {timing.get("snapshot_ms") or "—"} · LLM {timing.get("llm_navigator_ms") or "—"} ms</div>
+        <div class="stat-value">{_esc(_fmt_duration_ms(timing.get("turn_ms")))}</div>
+        <div class="stat-sub">DOM {_esc(_fmt_duration_ms(timing.get("snapshot_ms")))} · LLM {_esc(_fmt_duration_ms(timing.get("llm_navigator_ms")))}</div>
       </div>
     </div>
     """
 
 
-def _render_steps(steps: list[dict[str, Any]]) -> str:
-    if not steps:
-        return '<p class="muted">No steps recorded.</p>'
-    blocks: list[str] = []
-    for step in steps:
-        status = step.get("status", "")
-        screenshot = step.get("screenshot_url")
-        img_html = ""
-        if screenshot:
-            img_html = f'<img class="step-screenshot" src="{_esc(screenshot)}" alt="Step {step.get("index")} screenshot" />'
-        args_json = json.dumps(step.get("args") or {}, indent=2, default=str)
-        blocks.append(
-            f"""
-            <article class="step-card">
-              <header>
-                <span class="step-index">Step {step.get("index")}</span>
-                <span class="badge {_status_class(status)}">{_esc(status)}</span>
-                <span class="step-elapsed">{step.get("elapsed_ms", 0)} ms</span>
-              </header>
-              <p class="step-thought">{_esc(step.get("thought"))}</p>
-              <p><strong>Action:</strong> <code>{_esc(step.get("action"))}</code></p>
-              <details>
-                <summary>Args</summary>
-                <pre>{_esc(args_json)}</pre>
-              </details>
-              <p><strong>Result:</strong> {_esc(step.get("result"))}</p>
-              {img_html}
-            </article>
-            """
-        )
-    return "\n".join(blocks)
+def _render_run_config(data: dict[str, Any]) -> str:
+    llm = data.get("llm") or {}
+    rows = [
+        ("Run ID", data.get("run_id")),
+        ("Website ID", data.get("website_id") or "—"),
+        ("Headless", "yes" if data.get("headless") else "no"),
+        ("Max steps", data.get("max_steps")),
+        ("CDP URL", data.get("cdp_url") or "—"),
+        ("Fresh profile", "yes" if data.get("fresh_profile") else "no"),
+        ("Started", _fmt_time(data.get("started_at"))),
+        ("Finished", _fmt_time(data.get("finished_at"))),
+        ("LLM provider", llm.get("provider") or "—"),
+        ("Navigator model", llm.get("model") or "—"),
+        ("Planner model", llm.get("planner_model") or llm.get("model") or "—"),
+    ]
+    table_rows = "\n".join(
+        f"<tr><th>{_esc(label)}</th><td>{_esc(value)}</td></tr>"
+        for label, value in rows
+    )
+    return f"""
+    <details class="config-details">
+      <summary>Run configuration</summary>
+      <table class="meta">
+        {table_rows}
+      </table>
+    </details>
+    """
+
+
+def _render_screenshot_thumb(step: dict[str, Any]) -> str:
+    screenshot_src = step.get("screenshot_src")
+    if not screenshot_src:
+        return '<span class="muted">—</span>'
+    if step.get("screenshot_missing"):
+        return '<span class="muted" title="Screenshot file missing">missing</span>'
+    index = step.get("index", "")
+    return (
+        f'<img class="step-thumb" src="{_esc(screenshot_src)}" '
+        f'alt="Step {index} screenshot" loading="lazy" />'
+    )
+
+
+def _render_screenshot_full(step: dict[str, Any]) -> str:
+    screenshot_src = step.get("screenshot_src")
+    if not screenshot_src:
+        return ""
+    if step.get("screenshot_missing"):
+        return '<p class="muted">Screenshot file not found on disk.</p>'
+    index = step.get("index", "")
+    return (
+        f'<img class="step-screenshot" src="{_esc(screenshot_src)}" '
+        f'alt="Step {index} screenshot" />'
+    )
 
 
 def _render_element(element: dict[str, Any] | None) -> str:
@@ -153,39 +218,112 @@ def _render_element(element: dict[str, Any] | None) -> str:
     """
 
 
-def _render_action_timeline(timeline: list[dict[str, Any]]) -> str:
-    if not timeline:
-        return '<p class="muted">No DOM/XPath actions recorded.</p>'
+def _render_step_actions(actions: list[dict[str, Any]]) -> str:
+    if not actions:
+        return ""
     rows: list[str] = []
-    for entry in timeline:
-        status = entry.get("verification_status") or ("pass" if entry.get("success") else "fail")
+    for entry in actions:
+        status = entry.get("verification_status") or ("pass" if entry.get("executed") else "fail")
         if entry.get("error"):
             status = "error"
+        outcome = (
+            entry.get("verification_evidence")
+            or entry.get("extracted_content")
+            or entry.get("error")
+            or ""
+        )
         rows.append(
             f"""
             <tr>
-              <td>{entry.get("step")}.{entry.get("action_num")}</td>
+              <td>{entry.get("action_num")}</td>
               <td><code>{_esc(entry.get("action"))}</code></td>
               <td class="mono">{_esc(json.dumps(entry.get("args") or {}, default=str))}</td>
               <td class="url-cell">{_esc(entry.get("url"))}</td>
               <td>{_render_element(entry.get("element"))}</td>
               <td><span class="badge {_status_class(status)}">{_esc(status)}</span></td>
-              <td>{_esc(entry.get("verification_evidence") or entry.get("extracted_content") or entry.get("error"))}</td>
+              <td>{_esc(outcome)}</td>
             </tr>
             """
         )
     return f"""
+    <div class="step-actions">
+      <h4>Actions</h4>
+      <div class="table-wrap">
+        <table class="timeline-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Action</th>
+              <th>Args</th>
+              <th>Page URL</th>
+              <th>DOM / XPath</th>
+              <th>Verification</th>
+              <th>Outcome</th>
+            </tr>
+          </thead>
+          <tbody>
+            {"".join(rows)}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    """
+
+
+def _render_steps(steps: list[dict[str, Any]], timeline_by_step: dict[int, list[dict[str, Any]]]) -> str:
+    if not steps:
+        return '<p class="muted">No steps recorded.</p>'
+
+    rows: list[str] = []
+    for step in steps:
+        status = step.get("status", "")
+        index = int(step.get("index") or 0)
+        thought = str(step.get("thought") or "")
+        args_json = json.dumps(step.get("args") or {}, indent=2, default=str)
+        step_actions = timeline_by_step.get(index, [])
+        details_id = f"step-details-{index}"
+
+        rows.append(
+            f"""
+            <tr class="step-row">
+              <td class="step-num">{index}</td>
+              <td><span class="badge {_status_class(status)}">{_esc(status)}</span></td>
+              <td class="mono"><code>{_esc(step.get("action"))}</code></td>
+              <td class="thought-cell" title="{_esc(thought)}">{_esc(_truncate(thought))}</td>
+              <td class="thumb-cell">{_render_screenshot_thumb(step)}</td>
+              <td class="elapsed-cell">{_esc(_fmt_duration_ms(step.get("elapsed_ms")))}</td>
+            </tr>
+            <tr class="step-expand">
+              <td colspan="6">
+                <details class="step-details" id="{details_id}">
+                  <summary>Details</summary>
+                  <div class="step-detail-body">
+                    <p class="step-thought"><strong>Thought:</strong> {_esc(thought)}</p>
+                    <p><strong>Result:</strong> {_esc(step.get("result"))}</p>
+                    <details>
+                      <summary>Args</summary>
+                      <pre>{_esc(args_json)}</pre>
+                    </details>
+                    {_render_step_actions(step_actions)}
+                    {_render_screenshot_full(step)}
+                  </div>
+                </details>
+              </td>
+            </tr>
+            """
+        )
+
+    return f"""
     <div class="table-wrap">
-      <table class="timeline-table">
+      <table class="step-table">
         <thead>
           <tr>
             <th>#</th>
+            <th>Status</th>
             <th>Action</th>
-            <th>Args</th>
-            <th>Page URL</th>
-            <th>DOM / XPath</th>
-            <th>Verification</th>
-            <th>Outcome</th>
+            <th>Thought</th>
+            <th>Screenshot</th>
+            <th>Time</th>
           </tr>
         </thead>
         <tbody>
@@ -202,7 +340,10 @@ def _render_plan(plan: dict[str, Any]) -> str:
     completed = plan.get("completed") or []
     remaining = plan.get("remaining") or []
     in_progress = plan.get("in_progress")
-    parts = ["<section><h2>Plan</h2>"]
+    if not completed and not remaining and not in_progress:
+        return ""
+
+    parts = ['<details class="plan-details"><summary>Plan</summary>']
     if completed:
         parts.append("<h3>Completed</h3><ul>")
         parts.extend(f"<li>{_esc(item)}</li>" for item in completed)
@@ -213,27 +354,27 @@ def _render_plan(plan: dict[str, Any]) -> str:
         parts.append("<h3>Remaining</h3><ul>")
         parts.extend(f"<li>{_esc(item)}</li>" for item in remaining)
         parts.append("</ul>")
-    parts.append("</section>")
+    parts.append("</details>")
     return "\n".join(parts)
 
 
 def _render_replay_script(data: dict[str, Any]) -> str:
     script = data.get("replay_script") or ""
     if not script.strip():
-        return '<p class="muted">No replayable actions recorded.</p>'
+        return ""
     return f"""
-    <section>
-      <h2>Replay Code</h2>
+    <details class="replay-details">
+      <summary>Replay Code</summary>
       <p class="muted">Copy-paste Playwright Python script for LLM-free replay.</p>
       <div class="code-block">
         <pre><code class="language-python">{_esc(script)}</code></pre>
       </div>
-    </section>
+    </details>
     """
 
 
 def render_html_report(data: dict[str, Any]) -> str:
-    status = data.get("status", "unknown")
+    timeline_by_step = data.get("timeline_by_step") or {}
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -259,27 +400,23 @@ def render_html_report(data: dict[str, Any]) -> str:
       background: var(--bg);
       color: var(--text);
       line-height: 1.5;
-      padding: 2rem;
+      padding: 1.5rem;
     }}
-    h1, h2, h3 {{ margin-top: 0; }}
-    h1 {{ font-size: 1.75rem; }}
-    h2 {{ font-size: 1.25rem; margin: 2rem 0 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.5rem; }}
-    .header {{
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      gap: 1rem;
-      flex-wrap: wrap;
-      margin-bottom: 1.5rem;
-    }}
+    h1, h2, h3, h4 {{ margin-top: 0; }}
+    h1 {{ font-size: 1.5rem; margin-bottom: 0.75rem; }}
+    h2 {{ font-size: 1.1rem; margin: 1.25rem 0 0.75rem; border-bottom: 1px solid var(--border); padding-bottom: 0.35rem; }}
+    h3 {{ font-size: 0.95rem; margin: 0.75rem 0 0.35rem; color: var(--muted); }}
+    h4 {{ font-size: 0.85rem; margin: 0.75rem 0 0.35rem; color: var(--muted); }}
+    a {{ color: var(--accent); }}
     .badge {{
       display: inline-block;
-      padding: 0.15rem 0.55rem;
+      padding: 0.1rem 0.45rem;
       border-radius: 999px;
-      font-size: 0.75rem;
+      font-size: 0.7rem;
       font-weight: 600;
       text-transform: uppercase;
       background: var(--border);
+      white-space: nowrap;
     }}
     .status-pass {{ background: rgba(52,168,83,0.2); color: var(--pass); }}
     .status-fail {{ background: rgba(234,67,53,0.2); color: var(--fail); }}
@@ -288,64 +425,133 @@ def render_html_report(data: dict[str, Any]) -> str:
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 8px;
-      padding: 1rem 1.25rem;
-      margin-bottom: 1.5rem;
+      padding: 0.75rem 1rem;
+      margin-bottom: 1rem;
+    }}
+    .summary-strip {{
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      margin-bottom: 1rem;
+    }}
+    .header-line {{
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.85rem;
+      margin-bottom: 0.35rem;
     }}
     .stat-grid {{
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-      gap: 0.75rem;
-      margin-bottom: 1.5rem;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 0.65rem;
+      margin-bottom: 1rem;
     }}
     .stat-card {{
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 8px;
-      padding: 0.85rem 1rem;
+      padding: 0.7rem 0.85rem;
     }}
-    .stat-label {{ color: var(--muted); font-size: 0.8rem; }}
-    .stat-value {{ font-size: 1.35rem; font-weight: 700; margin-top: 0.15rem; }}
-    .stat-sub {{ color: var(--muted); font-size: 0.75rem; margin-top: 0.25rem; }}
-    table.meta {{ border-collapse: collapse; width: 100%; max-width: 720px; }}
-    table.meta th, table.meta td {{
-      text-align: left;
-      padding: 0.4rem 0.75rem 0.4rem 0;
-      border-bottom: 1px solid var(--border);
-      vertical-align: top;
+    .stat-label {{ color: var(--muted); font-size: 0.75rem; }}
+    .stat-value {{ font-size: 1.2rem; font-weight: 700; margin-top: 0.1rem; }}
+    .stat-sub {{ color: var(--muted); font-size: 0.72rem; margin-top: 0.2rem; }}
+    .context-line {{ margin: 0.25rem 0; font-size: 0.85rem; }}
+    .context-prompt {{
+      margin: 0.25rem 0;
+      font-size: 0.8rem;
+      color: var(--muted);
+      white-space: pre-wrap;
     }}
-    table.meta th {{ color: var(--muted); width: 180px; font-weight: 500; }}
-    .task {{ color: var(--accent); white-space: pre-wrap; }}
-    .step-card {{
+    .task {{ color: var(--accent); white-space: pre-wrap; margin: 0.35rem 0 0; font-size: 0.9rem; }}
+    .config-details, .plan-details, .replay-details {{
+      margin: 0.75rem 0;
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 8px;
-      padding: 1rem;
-      margin-bottom: 1rem;
+      padding: 0.5rem 0.75rem;
     }}
-    .step-card header {{
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      margin-bottom: 0.5rem;
+    .config-details summary, .plan-details summary, .replay-details summary, .step-details summary {{
+      cursor: pointer;
+      color: var(--accent);
+      font-size: 0.85rem;
+      user-select: none;
     }}
-    .step-index {{ font-weight: 700; }}
-    .step-elapsed {{ margin-left: auto; color: var(--muted); font-size: 0.85rem; }}
-    .step-thought {{ color: var(--muted); font-style: italic; }}
+    table.meta {{
+      border-collapse: collapse;
+      width: 100%;
+      margin-top: 0.5rem;
+      font-size: 0.8rem;
+    }}
+    table.meta th, table.meta td {{
+      text-align: left;
+      padding: 0.3rem 0.6rem 0.3rem 0;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }}
+    table.meta th {{ color: var(--muted); width: 140px; font-weight: 500; }}
+    .table-wrap {{ overflow-x: auto; }}
+    .step-table {{
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }}
+    .step-table th, .step-table td {{
+      border: 1px solid var(--border);
+      padding: 0.4rem 0.55rem;
+      vertical-align: middle;
+    }}
+    .step-table th {{
+      background: var(--surface);
+      text-align: left;
+      color: var(--muted);
+      font-size: 0.75rem;
+      font-weight: 600;
+    }}
+    .step-row td {{ background: var(--surface); }}
+    .step-expand td {{
+      padding: 0;
+      border-top: none;
+      background: #12151c;
+    }}
+    .step-num {{ width: 2rem; text-align: center; font-weight: 700; }}
+    .thought-cell {{
+      max-width: 280px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--muted);
+      font-style: italic;
+    }}
+    .thumb-cell {{ width: 90px; text-align: center; }}
+    .elapsed-cell {{ width: 70px; text-align: right; color: var(--muted); font-size: 0.75rem; white-space: nowrap; }}
+    .step-thumb {{
+      max-height: 48px;
+      max-width: 80px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      vertical-align: middle;
+    }}
+    .step-details {{ padding: 0.5rem 0.75rem; }}
+    .step-detail-body {{ padding: 0.5rem 0; }}
+    .step-thought {{ color: var(--muted); font-style: italic; font-size: 0.85rem; }}
     .step-screenshot {{
       max-width: 100%;
       border-radius: 6px;
       border: 1px solid var(--border);
-      margin-top: 0.75rem;
+      margin-top: 0.5rem;
     }}
-    .table-wrap {{ overflow-x: auto; }}
+    .step-actions {{ margin-top: 0.75rem; }}
     .timeline-table {{
       width: 100%;
       border-collapse: collapse;
-      font-size: 0.85rem;
+      font-size: 0.78rem;
     }}
     .timeline-table th, .timeline-table td {{
       border: 1px solid var(--border);
-      padding: 0.5rem 0.65rem;
+      padding: 0.35rem 0.5rem;
       vertical-align: top;
     }}
     .timeline-table th {{
@@ -353,39 +559,35 @@ def render_html_report(data: dict[str, Any]) -> str:
       text-align: left;
       color: var(--muted);
     }}
-    .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.8rem; word-break: break-all; }}
+    .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.78rem; word-break: break-all; }}
     .xpath {{ color: #c58af9; }}
     .css {{ color: #80cbc4; }}
-    .attrs {{ color: var(--muted); font-size: 0.75rem; margin-top: 0.25rem; }}
-    .url-cell {{ max-width: 200px; word-break: break-all; }}
-    .element-block {{ min-width: 220px; }}
+    .attrs {{ color: var(--muted); font-size: 0.72rem; margin-top: 0.2rem; }}
+    .url-cell {{ max-width: 180px; word-break: break-all; }}
+    .element-block {{ min-width: 180px; }}
     pre {{
       background: #0b0d12;
       border: 1px solid var(--border);
       border-radius: 6px;
-      padding: 0.75rem;
+      padding: 0.6rem;
       overflow-x: auto;
-      font-size: 0.8rem;
+      font-size: 0.78rem;
     }}
     .muted {{ color: var(--muted); }}
     details summary {{ cursor: pointer; color: var(--accent); }}
-    .replay-script {{
-      font-size: 0.85rem;
-      user-select: all;
-      line-height: 1.6;
-    }}
     .code-block {{
       background: #0b0d12;
       border: 1px solid var(--border);
       border-radius: 8px;
       overflow: hidden;
+      margin-top: 0.5rem;
     }}
     .code-block pre {{
       margin: 0;
-      padding: 1rem 1.25rem;
+      padding: 0.75rem 1rem;
       overflow-x: auto;
-      font-size: 0.82rem;
-      line-height: 1.55;
+      font-size: 0.78rem;
+      line-height: 1.5;
       user-select: all;
     }}
     .code-block code {{
@@ -395,42 +597,27 @@ def render_html_report(data: dict[str, Any]) -> str:
   </style>
 </head>
 <body>
-  <div class="header">
-    <div>
-      <h1>Automation Run Report</h1>
-      <p class="task">{_esc(data.get("task"))}</p>
-    </div>
-    <span class="badge {_status_class(status)}">{_esc(status)}</span>
-  </div>
+  <h1>Automation Run Report</h1>
+
+  {_render_summary_strip(data)}
+
+  {_render_stat_cards(data)}
 
   <div class="summary-box">
     <strong>Summary</strong>
-    <p>{_esc(data.get("summary") or "—")}</p>
+    <p style="margin:0.35rem 0 0">{_esc(data.get("summary") or "—")}</p>
   </div>
 
-  {_render_stats(data)}
-
-  <section>
-    <h2>Metadata</h2>
-    <table class="meta">
-      {_render_metadata(data)}
-    </table>
-  </section>
+  {_render_run_config(data)}
 
   {_render_plan(data.get("plan") or {})}
 
   <section>
     <h2>Steps</h2>
-    {_render_steps(data.get("steps") or [])}
+    {_render_steps(data.get("steps") or [], timeline_by_step)}
   </section>
 
   {_render_replay_script(data)}
-
-  <section>
-    <h2>DOM / XPath Action Timeline</h2>
-    <p class="muted">Every browser action from start to finish, with element locators and verification.</p>
-    {_render_action_timeline(data.get("action_timeline") or [])}
-  </section>
 </body>
 </html>
 """

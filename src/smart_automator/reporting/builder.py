@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
 import json
+import re
+from pathlib import Path
 from typing import Any
 
 from ..actions.builder import parse_actions
@@ -12,6 +15,10 @@ from .replay_script import (
     count_skipped_actions,
     format_replay_script,
 )
+
+
+_URL_RE = re.compile(r"https?://[^\s<>\"']+")
+_WEBSITE_RE = re.compile(r"^Website:\s*(.+?)\s*\((https?://[^)]+)\)\s*$", re.MULTILINE)
 
 
 def _format_duration(seconds: float | None) -> str:
@@ -77,6 +84,94 @@ def build_action_timeline(history: AgentStepHistory) -> list[dict[str, Any]]:
     return timeline
 
 
+def group_timeline_by_step(timeline: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for entry in timeline:
+        step_num = int(entry.get("step") or 0)
+        grouped.setdefault(step_num, []).append(entry)
+    return grouped
+
+
+def _extract_block(text: str, label: str) -> str | None:
+    prefix = f"{label}:"
+    for line in text.splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix) :].strip()
+    return None
+
+
+def extract_run_context(
+    task: str,
+    effective_task: str,
+    website_id: str | None,
+    timeline: list[dict[str, Any]],
+) -> dict[str, Any]:
+    website_name: str | None = None
+    website_url: str | None = None
+    context_prompt: str | None = None
+    task_only = task.strip()
+
+    match = _WEBSITE_RE.search(effective_task)
+    if match:
+        website_name = match.group(1).strip()
+        website_url = match.group(2).strip()
+
+    context_prompt = _extract_block(effective_task, "Context")
+    parsed_task = _extract_block(effective_task, "Task")
+    if parsed_task:
+        task_only = parsed_task
+
+    detected_urls = _URL_RE.findall(task) if not website_url else []
+
+    start_url: str | None = None
+    for entry in timeline:
+        if entry.get("action") == "go_to_url":
+            url = (entry.get("args") or {}).get("url")
+            if url:
+                start_url = str(url)
+                break
+        if entry.get("url"):
+            start_url = str(entry["url"])
+            break
+
+    return {
+        "website_id": website_id,
+        "website_name": website_name,
+        "website_url": website_url or start_url,
+        "context_prompt": context_prompt,
+        "task_only": task_only,
+        "detected_urls": detected_urls,
+        "start_url": start_url,
+    }
+
+
+def embed_step_screenshots(
+    steps: list[dict[str, Any]],
+    screenshot_dir: Path,
+) -> list[dict[str, Any]]:
+    embedded: list[dict[str, Any]] = []
+    for step in steps:
+        step_copy = dict(step)
+        screenshot_url = step_copy.get("screenshot_url")
+        screenshot_src: str | None = None
+        screenshot_missing = False
+
+        if screenshot_url and isinstance(screenshot_url, str):
+            filename = screenshot_url.rsplit("/", 1)[-1]
+            path = screenshot_dir / filename
+            if path.is_file():
+                encoded = base64.standard_b64encode(path.read_bytes()).decode("ascii")
+                screenshot_src = f"data:image/png;base64,{encoded}"
+            else:
+                screenshot_missing = True
+                screenshot_src = screenshot_url
+
+        step_copy["screenshot_src"] = screenshot_src
+        step_copy["screenshot_missing"] = screenshot_missing
+        embedded.append(step_copy)
+    return embedded
+
+
 def build_report_data(
     run: RunState,
     history: AgentStepHistory,
@@ -92,12 +187,19 @@ def build_report_data(
     timeline = build_action_timeline(history)
     replay_steps = build_replay_steps(timeline)
     skipped_failed, skipped_done = count_skipped_actions(timeline)
+    context = extract_run_context(
+        run.task,
+        run.effective_task,
+        run.website_id,
+        timeline,
+    )
 
     return {
         "run_id": run.run_id,
         "task": run.task,
         "effective_task": run.effective_task,
         "website_id": run.website_id,
+        **context,
         "status": run.status,
         "summary": run.summary,
         "headless": run.headless,
@@ -127,6 +229,7 @@ def build_report_data(
         "plan": run.plan,
         "steps": run.steps,
         "action_timeline": timeline,
+        "timeline_by_step": group_timeline_by_step(timeline),
         "replay_steps": replay_steps,
         "replay_script": format_replay_script(
             replay_steps,

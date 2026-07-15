@@ -5,7 +5,13 @@ import tempfile
 from smart_automator.agent.context import ActionResult
 from smart_automator.agent.history import AgentStepHistory, AgentStepRecord, BrowserStateHistory
 from smart_automator.browser.history import DOMHistoryElement
-from smart_automator.reporting.builder import build_action_timeline, build_report_data
+from smart_automator.reporting.builder import (
+    build_action_timeline,
+    build_report_data,
+    embed_step_screenshots,
+    extract_run_context,
+    group_timeline_by_step,
+)
 from smart_automator.reporting.html_report import render_html_report
 from smart_automator.reporting.replay_script import build_replay_steps, format_replay_script
 from smart_automator.reporting import generate_run_report
@@ -102,16 +108,130 @@ class TestReportBuilder(unittest.TestCase):
         data = build_report_data(run, AgentStepHistory())
         html = render_html_report(data)
         self.assertIn("Automation Run Report", html)
-        self.assertIn("DOM / XPath Action Timeline", html)
+        self.assertIn("Run configuration", html)
+        self.assertIn("stat-card", html)
         self.assertIn("Total tokens", html)
-        self.assertIn("Input tokens", html)
-        self.assertIn("Output tokens", html)
+        self.assertIn("Est. cost", html)
         self.assertIn("Test task", html)
+        self.assertNotIn("DOM / XPath Action Timeline", html)
+
+    def test_extract_website_context_from_effective_task(self):
+        effective_task = (
+            "Website: Deligo POS (https://posdemo.example.com/)\n\n"
+            "Context: Use test credentials\n\n"
+            "Task: Check categories"
+        )
+        context = extract_run_context(
+            task="Check categories",
+            effective_task=effective_task,
+            website_id="site-1",
+            timeline=[],
+        )
+        self.assertEqual(context["website_name"], "Deligo POS")
+        self.assertEqual(context["website_url"], "https://posdemo.example.com/")
+        self.assertEqual(context["context_prompt"], "Use test credentials")
+        self.assertEqual(context["task_only"], "Check categories")
+
+    def test_extract_detected_urls_from_task(self):
+        context = extract_run_context(
+            task="Go to https://example.com and log in",
+            effective_task="Go to https://example.com and log in",
+            website_id=None,
+            timeline=[],
+        )
+        self.assertEqual(context["detected_urls"], ["https://example.com"])
+
+    def test_embed_screenshots_in_html(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            screenshot_dir = Path(tmp)
+            png_bytes = (
+                b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+                b"\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx"
+                b"\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
+            )
+            (screenshot_dir / "test_step_1.png").write_bytes(png_bytes)
+            steps = embed_step_screenshots(
+                [{"index": 1, "screenshot_url": "/screenshots/test_step_1.png"}],
+                screenshot_dir,
+            )
+            self.assertTrue(steps[0]["screenshot_src"].startswith("data:image/png;base64,"))
+            html = render_html_report({
+                "run_id": "test",
+                "status": "pass",
+                "task": "t",
+                "task_only": "t",
+                "steps": steps,
+                "timeline_by_step": {},
+                "tokens": {},
+            })
+            self.assertIn("data:image/png;base64,", html)
+
+    def test_render_html_merged_actions_in_step_details(self):
+        run = RunState(run_id="abc-123", task="Test", headless=True, max_steps=5)
+        run.status = "pass"
+        run.summary = "Done"
+        run.finished_at = run.started_at + 1
+        run.steps = [
+            {
+                "index": 1,
+                "thought": "Click submit",
+                "action": "click_element",
+                "args": {},
+                "result": "Clicked",
+                "status": "pass",
+                "elapsed_ms": 100,
+            }
+        ]
+        data = build_report_data(run, self._sample_history())
+        html = render_html_report(data)
+        self.assertIn("/html/body/button[1]", html)
+        self.assertIn("DOM update", html)
+        self.assertIn("step-actions", html)
+
+    def test_render_html_shows_website_url(self):
+        run = RunState(
+            run_id="abc-123",
+            task="Check categories",
+            effective_task=(
+                "Website: Deligo POS (https://posdemo.example.com/)\n\n"
+                "Task: Check categories"
+            ),
+            website_id="site-1",
+            headless=True,
+            max_steps=5,
+        )
+        run.status = "pass"
+        run.finished_at = run.started_at + 1
+        data = build_report_data(run, AgentStepHistory())
+        html = render_html_report(data)
+        self.assertIn("Deligo POS", html)
+        self.assertIn("https://posdemo.example.com/", html)
+
+    def test_group_timeline_by_step(self):
+        timeline = [
+            {"step": 1, "action_num": 1, "action": "click"},
+            {"step": 1, "action_num": 2, "action": "wait"},
+            {"step": 2, "action_num": 1, "action": "done"},
+        ]
+        grouped = group_timeline_by_step(timeline)
+        self.assertEqual(len(grouped[1]), 2)
+        self.assertEqual(len(grouped[2]), 1)
 
     def test_generate_run_report_writes_file(self):
         run = RunState(run_id="file-run", task="Write report", headless=True, max_steps=5)
         run.status = "pass"
         run.finished_at = run.started_at + 1
+        run.steps = [
+            {
+                "index": 1,
+                "thought": "Click submit",
+                "action": "click_element",
+                "args": {"click_element": {"index": 2}},
+                "result": "Clicked element 2",
+                "status": "pass",
+                "elapsed_ms": 1500,
+            }
+        ]
         with tempfile.TemporaryDirectory() as tmp:
             path = generate_run_report(
                 run,
