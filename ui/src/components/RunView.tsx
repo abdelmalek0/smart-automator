@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ExternalLink, Globe, Loader2 } from 'lucide-react'
+import { ExternalLink, Globe, Loader2, RotateCcw } from 'lucide-react'
 import { cancelRun, listWebsites } from '@/api'
 import { useRunStream } from '@/hooks/useRunStream'
 import RunStats from '@/components/RunStats'
@@ -8,6 +8,8 @@ import StepCard from '@/components/StepCard'
 import CompletedStepsPanel from '@/components/CompletedStepsPanel'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { useRunModal } from '@/contexts/RunModalContext'
+import { runSummaryToDraft } from '@/lib/run-draft'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -38,6 +40,7 @@ export default function RunView({ runId, onRunComplete }: Props) {
   } = useRunStream(runId)
   const bottomRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
+  const { openNewRun } = useRunModal()
   const { data: websites = [] } = useQuery({
     queryKey: ['websites'],
     queryFn: listWebsites,
@@ -123,6 +126,16 @@ export default function RunView({ runId, onRunComplete }: Props) {
                 <ExternalLink className="h-3.5 w-3.5" />
                 Report
               </a>
+            </Button>
+          )}
+          {run && !isRunning && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => openNewRun(runSummaryToDraft(run))}
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              Re-run
             </Button>
           )}
         </div>

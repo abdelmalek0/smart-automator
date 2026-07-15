@@ -10,10 +10,23 @@ export type RunStatus =
 
 export type StepStatus = 'running' | 'pass' | 'fail' | 'error'
 
+export interface RunDraft {
+  task: string
+  website_id?: string
+  headless?: boolean
+  max_steps?: number
+  cdp_url?: string
+  fresh_profile?: boolean
+}
+
 export interface RunSummary {
   run_id: string
   task: string
   website_id?: string | null
+  headless?: boolean
+  max_steps?: number
+  cdp_url?: string | null
+  fresh_profile?: boolean
   status: RunStatus
   step_count: number
   started_at: number

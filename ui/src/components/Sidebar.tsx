@@ -3,6 +3,7 @@ import {
   Globe,
   Home,
   Plus,
+  RotateCcw,
   Settings,
   Wrench,
 } from 'lucide-react'
@@ -10,15 +11,15 @@ import logoUrl from '../../logo.jpeg'
 import type { RunSummary, RunStatus } from '@/types'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Separator } from '@/components/ui/separator'
 import { NavLink } from '@/components/layout/AppShell'
+import { useRunModal } from '@/contexts/RunModalContext'
+import { runSummaryToDraft } from '@/lib/run-draft'
 import { elapsedSeconds, formatElapsed } from '@/lib/run-status'
 import { cn } from '@/lib/utils'
 
 interface Props {
   runs: RunSummary[]
   activeRunId: string | null
-  onNewRun?: () => void
 }
 
 function StatusDot({ status }: { status: RunStatus }) {
@@ -37,7 +38,9 @@ function StatusDot({ status }: { status: RunStatus }) {
   )
 }
 
-export default function Sidebar({ runs, activeRunId, onNewRun }: Props) {
+export default function Sidebar({ runs, activeRunId }: Props) {
+  const { openNewRun } = useRunModal()
+
   return (
     <aside className="w-64 flex-shrink-0 bg-card border-r border-border flex flex-col h-full">
       <div className="px-4 py-4 border-b border-border">
@@ -57,19 +60,10 @@ export default function Sidebar({ runs, activeRunId, onNewRun }: Props) {
             </span>
           </div>
         </Link>
-        {onNewRun ? (
-          <Button onClick={onNewRun} className="w-full" size="sm">
-            <Plus className="h-4 w-4" />
-            New Run
-          </Button>
-        ) : (
-          <Button asChild className="w-full" size="sm">
-            <Link to="/?new=1">
-              <Plus className="h-4 w-4" />
-              New Run
-            </Link>
-          </Button>
-        )}
+        <Button onClick={() => openNewRun()} className="w-full" size="sm">
+          <Plus className="h-4 w-4" />
+          New Run
+        </Button>
       </div>
 
       <ScrollArea className="flex-1 py-2">
@@ -80,25 +74,43 @@ export default function Sidebar({ runs, activeRunId, onNewRun }: Props) {
             {runs.map((run) => {
               const active = activeRunId === run.run_id
               return (
-                <Link
+                <div
                   key={run.run_id}
-                  to={`/runs/${run.run_id}`}
                   className={cn(
-                    'block w-full text-left px-3 py-2.5 rounded-md transition-colors border-l-2',
+                    'group relative rounded-md transition-colors border-l-2',
                     active
                       ? 'bg-accent/60 border-primary'
                       : 'border-transparent hover:bg-accent/30',
                   )}
                 >
-                  <div className="flex items-center gap-2 mb-0.5">
-                    <StatusDot status={run.status} />
-                    <span className="text-xs text-muted-foreground mono">
-                      {formatElapsed(elapsedSeconds(run.started_at, run.finished_at))}
-                    </span>
-                    <span className="ml-auto text-xs text-muted-foreground">{run.step_count}s</span>
-                  </div>
-                  <p className="text-xs text-foreground truncate leading-snug">{run.task}</p>
-                </Link>
+                  <Link
+                    to={`/runs/${run.run_id}`}
+                    className="block w-full text-left px-3 py-2.5 pr-9"
+                  >
+                    <div className="flex items-center gap-2 mb-0.5">
+                      <StatusDot status={run.status} />
+                      <span className="text-xs text-muted-foreground mono">
+                        {formatElapsed(elapsedSeconds(run.started_at, run.finished_at))}
+                      </span>
+                      <span className="ml-auto text-xs text-muted-foreground">{run.step_count}s</span>
+                    </div>
+                    <p className="text-xs text-foreground truncate leading-snug">{run.task}</p>
+                  </Link>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity"
+                    title="Re-run"
+                    onClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      openNewRun(runSummaryToDraft(run))
+                    }}
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
               )
             })}
           </div>

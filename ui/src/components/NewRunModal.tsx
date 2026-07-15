@@ -25,23 +25,29 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Card } from '@/components/ui/card'
+import type { RunDraft } from '@/types'
 
 const NO_WEBSITE = '__none__'
 
 interface Props {
   onClose: () => void
   redirectOnStart?: boolean
+  initialValues?: RunDraft
 }
 
-export default function NewRunModal({ onClose, redirectOnStart = true }: Props) {
+export default function NewRunModal({
+  onClose,
+  redirectOnStart = true,
+  initialValues,
+}: Props) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const [task, setTask] = useState('')
-  const [websiteId, setWebsiteId] = useState<string>(NO_WEBSITE)
-  const [headless, setHeadless] = useState(false)
-  const [freshProfile, setFreshProfile] = useState(false)
-  const [maxSteps, setMaxSteps] = useState(100)
-  const [cdpUrl, setCdpUrl] = useState('')
+  const [task, setTask] = useState(initialValues?.task ?? '')
+  const [websiteId, setWebsiteId] = useState<string>(initialValues?.website_id ?? NO_WEBSITE)
+  const [headless, setHeadless] = useState(initialValues?.headless ?? false)
+  const [freshProfile, setFreshProfile] = useState(initialValues?.fresh_profile ?? false)
+  const [maxSteps, setMaxSteps] = useState(initialValues?.max_steps ?? 100)
+  const [cdpUrl, setCdpUrl] = useState(initialValues?.cdp_url ?? '')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saveToWebsite, setSaveToWebsite] = useState(false)
@@ -59,8 +65,18 @@ export default function NewRunModal({ onClose, redirectOnStart = true }: Props) 
     websiteId !== NO_WEBSITE ? websiteList.find((w) => w.id === websiteId) : null
 
   useEffect(() => {
-    if (config) setFreshProfile(config.fresh_profile ?? false)
-  }, [config])
+    if (config && !initialValues) setFreshProfile(config.fresh_profile ?? false)
+  }, [config, initialValues])
+
+  useEffect(() => {
+    if (!initialValues) return
+    setTask(initialValues.task)
+    setWebsiteId(initialValues.website_id ?? NO_WEBSITE)
+    setHeadless(initialValues.headless ?? false)
+    setFreshProfile(initialValues.fresh_profile ?? false)
+    setMaxSteps(initialValues.max_steps ?? 100)
+    setCdpUrl(initialValues.cdp_url ?? '')
+  }, [initialValues])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -115,7 +131,7 @@ export default function NewRunModal({ onClose, redirectOnStart = true }: Props) 
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>New QA Run</DialogTitle>
+          <DialogTitle>{initialValues ? 'Re-run QA Test' : 'New QA Run'}</DialogTitle>
           <DialogDescription>
             Describe what the agent should test. Optionally attach a website for shared context
             like credentials.
@@ -277,7 +293,7 @@ export default function NewRunModal({ onClose, redirectOnStart = true }: Props) 
               ) : (
                 <>
                   <Play className="h-4 w-4" />
-                  Run
+                  {initialValues ? 'Re-run' : 'Run'}
                 </>
               )}
             </Button>

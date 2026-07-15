@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { listRuns } from '@/api'
 import Sidebar from '@/components/Sidebar'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { RunModalProvider } from '@/contexts/RunModalContext'
 
 export default function AppShell() {
   const location = useLocation()
@@ -19,12 +20,14 @@ export default function AppShell() {
 
   return (
     <TooltipProvider delayDuration={200}>
-      <div className="flex h-full bg-background text-foreground">
-        <Sidebar runs={runs} activeRunId={activeRunId} />
-        <main className="flex-1 min-w-0 overflow-hidden flex flex-col">
-          <Outlet />
-        </main>
-      </div>
+      <RunModalProvider>
+        <div className="flex h-full bg-background text-foreground">
+          <Sidebar runs={runs} activeRunId={activeRunId} />
+          <main className="flex-1 min-w-0 overflow-hidden flex flex-col">
+            <Outlet />
+          </main>
+        </div>
+      </RunModalProvider>
     </TooltipProvider>
   )
 }
