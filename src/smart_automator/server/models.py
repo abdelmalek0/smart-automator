@@ -48,6 +48,8 @@ class ConfigUpdate(BaseModel):
     model: Optional[str] = None
     api_key: Optional[str] = None
     fresh_profile: Optional[bool] = None
+    chrome_user_data: Optional[str] = None
+    cdp_url: Optional[str] = None
 
 
 class PricingEntryModel(BaseModel):

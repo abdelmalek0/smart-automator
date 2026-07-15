@@ -154,6 +154,8 @@ export interface ProviderSettings {
   models: string[]
 }
 
+export type BrowserSessionMode = 'cdp' | 'persistent' | 'ephemeral'
+
 export interface Config {
   provider: string
   model: string
@@ -162,8 +164,12 @@ export interface Config {
   provider_keys_set: Record<string, boolean>
   provider_settings: Record<string, ProviderSettings>
   cdp_port: number
+  cdp_url: string
   fresh_profile: boolean
   chrome_user_data: string
+  effective_chrome_user_data: string
+  default_chrome_user_data: string
+  browser_session_mode: BrowserSessionMode
 }
 
 // WebSocket event types

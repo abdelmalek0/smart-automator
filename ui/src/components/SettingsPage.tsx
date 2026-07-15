@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Check, Loader2, Plus, Trash2, X } from 'lucide-react'
 import { checkConfig, getConfig, getPricing, isProviderApiKeySet, savePricing, updateConfig } from '@/api'
 import { defaultBaseUrl, defaultModel, normalizeProvider } from '@/providers'
-import type { Config, PricingEntry } from '@/types'
+import type { BrowserSessionMode, Config, PricingEntry } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -38,6 +38,8 @@ export default function SettingsPage() {
   const [model, setModel] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [freshProfile, setFreshProfile] = useState(false)
+  const [chromeUserData, setChromeUserData] = useState('')
+  const [cdpUrl, setCdpUrl] = useState('')
   const [dirty, setDirty] = useState(false)
   const [checking, setChecking] = useState(false)
   const [checkResult, setCheckResult] = useState<{ ok: boolean; error?: string } | null>(null)
@@ -49,6 +51,8 @@ export default function SettingsPage() {
     setBaseUrl(next.base_url)
     setModel(next.model)
     setFreshProfile(next.fresh_profile ?? false)
+    setChromeUserData(next.chrome_user_data ?? '')
+    setCdpUrl(next.cdp_url ?? '')
   }
 
   useEffect(() => {
@@ -79,6 +83,8 @@ export default function SettingsPage() {
         model,
         api_key: apiKey || undefined,
         fresh_profile: freshProfile,
+        chrome_user_data: chromeUserData,
+        cdp_url: cdpUrl,
       }),
     onSuccess: (saved) => {
       queryClient.setQueryData(['config'], saved)
@@ -226,9 +232,71 @@ export default function SettingsPage() {
 
           <TabsContent value="browser" className="space-y-5">
             <p className="text-sm text-muted-foreground">
-              Default browser session for new runs. Each run opens a dedicated tab in your Chrome
-              session. Enable isolated profile only when you need a throwaway browser.
+              Control how browser state (logins, cookies, history) is kept between runs.
+              Use a persistent on-disk profile by default, attach to Chrome via CDP, or enable
+              isolated profile for a clean throwaway browser each run.
             </p>
+
+            {config && (
+              <Card>
+                <CardContent className="p-0 divide-y divide-border text-sm">
+                  <InfoRow
+                    label="Session mode"
+                    value={sessionModeLabel(config.browser_session_mode)}
+                  />
+                  <InfoRow
+                    label="Active profile"
+                    value={
+                      config.browser_session_mode === 'persistent'
+                        ? config.effective_chrome_user_data
+                        : config.browser_session_mode === 'cdp'
+                          ? 'Attached via CDP'
+                          : 'Ephemeral (discarded after each run)'
+                    }
+                  />
+                </CardContent>
+              </Card>
+            )}
+
+            <div className="space-y-2">
+              <Label htmlFor="cdp-url">CDP URL</Label>
+              <Input
+                id="cdp-url"
+                value={cdpUrl}
+                onChange={(e) => {
+                  setDirty(true)
+                  setCdpUrl(e.target.value)
+                }}
+                placeholder={`ws://127.0.0.1:${config?.cdp_port ?? 9222}`}
+                className="mono text-sm"
+              />
+              <p className="text-xs text-muted-foreground">
+                Optional. Connect to an existing Chrome with remote debugging — uses that
+                browser&apos;s profile and overrides the profile directory below.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="chrome-profile">Profile directory</Label>
+              <Input
+                id="chrome-profile"
+                value={chromeUserData}
+                onChange={(e) => {
+                  setDirty(true)
+                  setChromeUserData(e.target.value)
+                }}
+                placeholder={config?.default_chrome_user_data ?? '~/.local/share/smart-automator-chrome'}
+                className="mono text-sm"
+                disabled={freshProfile || Boolean(cdpUrl.trim())}
+              />
+              <p className="text-xs text-muted-foreground">
+                {freshProfile
+                  ? 'Disabled while isolated profile is on — each run starts with a blank browser.'
+                  : cdpUrl.trim()
+                    ? 'Not used while CDP URL is set.'
+                    : 'Leave empty to use the default directory above. Cookies and history persist between runs.'}
+              </p>
+            </div>
 
             <div className="flex items-start gap-3">
               <Switch
@@ -242,22 +310,10 @@ export default function SettingsPage() {
               <div>
                 <Label htmlFor="fresh-profile" className="font-normal">Isolated Chrome profile</Label>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  Launch separate throwaway browser — off by default
+                  Throw away all browser state after each run — off by default
                 </p>
               </div>
             </div>
-
-            {config && (
-              <Card>
-                <CardContent className="p-0 divide-y divide-border text-sm">
-                  <InfoRow label="CDP Port" value={String(config.cdp_port)} />
-                  <InfoRow
-                    label="Profile dir"
-                    value={freshProfile ? '(ephemeral per run)' : config.chrome_user_data}
-                  />
-                </CardContent>
-              </Card>
-            )}
 
             <SaveBar
               pending={saveMutation.isPending}
@@ -361,10 +417,19 @@ export default function SettingsPage() {
                   <InfoRow label="Model" value={config.model} />
                   <InfoRow label="Base URL" value={config.base_url} />
                   <InfoRow label="CDP Port" value={String(config.cdp_port)} />
+                  <InfoRow label="CDP URL" value={config.cdp_url || '(not set)'} />
                   <InfoRow label="Fresh Profile" value={config.fresh_profile ? 'Yes' : 'No'} />
                   <InfoRow
+                    label="Session Mode"
+                    value={sessionModeLabel(config.browser_session_mode)}
+                  />
+                  <InfoRow
                     label="Profile Dir"
-                    value={config.fresh_profile ? '(ephemeral)' : config.chrome_user_data}
+                    value={
+                      config.browser_session_mode === 'persistent'
+                        ? config.effective_chrome_user_data
+                        : '(not used)'
+                    }
                   />
                   <InfoRow label="API Key Set" value={config.api_key_set ? 'Yes' : 'No'} />
                 </CardContent>
@@ -462,6 +527,17 @@ function ModelField({
       </Select>
     </div>
   )
+}
+
+function sessionModeLabel(mode: BrowserSessionMode): string {
+  switch (mode) {
+    case 'cdp':
+      return 'CDP (attached Chrome)'
+    case 'persistent':
+      return 'Persistent (on-disk profile)'
+    case 'ephemeral':
+      return 'Ephemeral (throwaway per run)'
+  }
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {

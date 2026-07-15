@@ -9,6 +9,8 @@ export type ConfigUpdatePayload = {
   model?: string
   api_key?: string
   fresh_profile?: boolean
+  chrome_user_data?: string
+  cdp_url?: string
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

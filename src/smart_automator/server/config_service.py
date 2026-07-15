@@ -8,7 +8,13 @@ from pathlib import Path
 
 from dotenv import load_dotenv, set_key
 
-from ..config import Config, load_config
+from ..config import (
+    Config,
+    browser_session_mode,
+    default_chrome_user_data,
+    load_config,
+    resolve_chrome_user_data,
+)
 from ..server.paths import ENV_FILE, PRICING_FILE
 from ..server.provider_utils import (
     UI_PROVIDERS,
@@ -64,6 +70,13 @@ def build_config_response() -> dict:
         name: entry.to_dict() for name, entry in settings.providers.items()
     }
     fresh_profile = os.getenv("QA_FRESH_PROFILE", "false").lower() == "true"
+    cdp_url = os.getenv("CDP_URL", "")
+    chrome_user_data = os.getenv("CHROME_USER_DATA", "")
+    session_mode = browser_session_mode(cdp_url=cdp_url, fresh_profile=fresh_profile)
+    effective_chrome_user_data = resolve_chrome_user_data(
+        chrome_user_data,
+        fresh_profile=fresh_profile,
+    )
     return {
         "provider": provider,
         "model": model,
@@ -72,8 +85,12 @@ def build_config_response() -> dict:
         "provider_keys_set": provider_keys_set,
         "provider_settings": provider_settings,
         "cdp_port": int(os.getenv("CDP_PORT", "9222")),
+        "cdp_url": cdp_url,
         "fresh_profile": fresh_profile,
-        "chrome_user_data": os.getenv("CHROME_USER_DATA", ""),
+        "chrome_user_data": chrome_user_data,
+        "effective_chrome_user_data": effective_chrome_user_data,
+        "default_chrome_user_data": default_chrome_user_data(),
+        "browser_session_mode": session_mode,
     }
 
 
@@ -111,6 +128,10 @@ def apply_config_update(update) -> dict:
             set_key(str(ENV_FILE), key_env, update.api_key)
     if update.fresh_profile is not None:
         set_key(str(ENV_FILE), "QA_FRESH_PROFILE", "true" if update.fresh_profile else "false")
+    if update.chrome_user_data is not None:
+        set_key(str(ENV_FILE), "CHROME_USER_DATA", update.chrome_user_data.strip())
+    if update.cdp_url is not None:
+        set_key(str(ENV_FILE), "CDP_URL", update.cdp_url.strip())
 
     reload_runtime_env()
     return build_config_response()

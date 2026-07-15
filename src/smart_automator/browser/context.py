@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from playwright.sync_api import sync_playwright, Browser, BrowserContext as PlaywrightContext
 
-from ..config import Config
+from ..config import Config, resolve_chrome_user_data
 from .dom import DOMState, calc_branch_path_hash_set, mark_new_elements, remove_highlights
 from .page import Page
 from .util import is_url_allowed
@@ -50,7 +50,10 @@ class BrowserContext:
         else:
             launch_kwargs["channel"] = "chrome"
 
-        user_data_dir = (self._config.chrome_user_data or "").strip()
+        user_data_dir = resolve_chrome_user_data(
+            self._config.chrome_user_data,
+            fresh_profile=effective_fresh,
+        )
         if user_data_dir and not effective_fresh:
             self._context = self._playwright.chromium.launch_persistent_context(
                 user_data_dir,

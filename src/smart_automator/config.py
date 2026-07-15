@@ -1,6 +1,10 @@
+from pathlib import Path
+
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 import os
+
+DEFAULT_CHROME_PROFILE_DIR = Path.home() / ".local" / "share" / "smart-automator-chrome"
 
 DEFAULT_INCLUDE_ATTRIBUTES = [
     "title", "type", "checked", "name", "role", "value", "placeholder",
@@ -45,6 +49,31 @@ class Config(BaseModel):
     cdp_url: str = ""
     fresh_profile: bool = False
     chrome_user_data: str = ""
+
+
+def default_chrome_user_data() -> str:
+    return str(DEFAULT_CHROME_PROFILE_DIR)
+
+
+def resolve_chrome_user_data(explicit: str, *, fresh_profile: bool) -> str:
+    if fresh_profile:
+        return ""
+    stripped = (explicit or "").strip()
+    if stripped:
+        return stripped
+    return default_chrome_user_data()
+
+
+def browser_session_mode(
+    *,
+    cdp_url: str = "",
+    fresh_profile: bool = False,
+) -> str:
+    if (cdp_url or "").strip():
+        return "cdp"
+    if fresh_profile:
+        return "ephemeral"
+    return "persistent"
 
 
 def _parse_list(value: str) -> list[str]:
