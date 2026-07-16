@@ -1,4 +1,20 @@
-import type { RunStatus } from '@/types'
+import type { RunStatus, TurnTiming } from '@/types'
+
+export function hasTurnTiming(timing?: TurnTiming | null): timing is TurnTiming {
+  if (!timing) return false
+  return (
+    (timing.turn_ms ?? 0) > 0 ||
+    (timing.snapshot_ms ?? 0) > 0 ||
+    (timing.llm_navigator_ms ?? 0) > 0
+  )
+}
+
+export function actDurationMs(timing: TurnTiming): number {
+  return Math.max(
+    0,
+    (timing.turn_ms ?? 0) - (timing.snapshot_ms ?? 0) - (timing.llm_navigator_ms ?? 0),
+  )
+}
 
 export function statusBadgeVariant(
   status: RunStatus,

@@ -78,6 +78,24 @@ _PAGE_STATE_CHANGING_ACTIONS = _NAVIGATION_ACTIONS | frozenset({
     "send_keys",
 })
 
+_INTERACTION_ACTIONS = frozenset({
+    "click_element",
+    "input_text",
+    "send_keys",
+    "select_dropdown_option",
+})
+
+
+def _needs_inter_action_stable_wait(action: Action, *, is_last_in_batch: bool) -> bool:
+    """One stable wait between batch actions; the final settle is handled by the navigator."""
+    if is_last_in_batch:
+        return False
+    if action.name in _NAVIGATION_ACTIONS:
+        return False
+    if action.name == "wait":
+        return False
+    return action.name in _INTERACTION_ACTIONS
+
 
 def _action_will_navigate(action: Action, page_url: str) -> bool:
     if action.name in ("go_back", "search_google", "open_tab"):
@@ -150,194 +168,198 @@ class NavigatorActionRegistry:
         step_start_snapshot = capture_page_snapshot(page, browser_context.get_all_tab_ids())
         had_commit = False
         page_advanced = False
+        page.set_defer_post_action_stable(True)
 
-        for i, action in enumerate(actions):
-            if context.paused or context.stopped:
-                break
-
-            if action.index is not None and action.index not in selector_map:
-                fresh_state = browser_context.get_state(show_highlights=False, wait_for_stable=False)
-                selector_map = fresh_state.selector_map
-                page_url = fresh_state.url
-                page_title = fresh_state.title
-
-            original = (
-                original_elements.get(action.index)
-                if action.index is not None
-                else None
-            )
-            element = _resolve_element_for_action(
-                action,
-                selector_map,
-                element_tree=getattr(browser_state, "element_tree", None),
-                original_element=original,
-            )
-            # Prefer the observation-time node for locating clicks; indexes can shift after rebuilds.
-            locate_element = original or element
-            tab_ids = browser_context.get_all_tab_ids()
-            before_snapshot = capture_page_snapshot(page, tab_ids)
-            before_element = probe_element(
-                page,
-                locate_element,
-                expected_value=str(action.args.get("text", "")) if action.name == "input_text" else None,
-                expected_selected_text=str(action.args.get("text", ""))
-                if action.name == "select_dropdown_option"
-                else None,
-            )
-
-            if action.name in _NAVIGATION_ACTIONS:
-                browser_context.remove_highlight()
-
-            pending_commit = is_commit_action(action, locate_element)
-            if pending_commit and batch.mutations:
-                ok, issues = reverify_mutations(page, batch)
-                if not ok:
-                    blocked = ActionResult(
-                        extracted_content=(
-                            "Commit blocked: prior mutations no longer verified — "
-                            + "; ".join(issues)
-                        ),
-                        error="Commit blocked due to mutation regression",
-                        include_in_memory=True,
-                        action_name=action.name,
-                        action_index=action.index,
-                        verification_status=VERIFICATION_FAILED,
-                        verification_evidence="; ".join(issues)[:160],
-                    )
-                    results.append(blocked)
+        try:
+            for i, action in enumerate(actions):
+                if context.paused or context.stopped:
                     break
 
-            # Execute against a map that includes the stable observation-time element.
-            exec_map = dict(selector_map)
-            if locate_element is not None and action.index is not None:
-                exec_map[action.index] = locate_element
-            result = self.execute(action, exec_map)
-            if locate_element is not None and action.index is not None:
-                result.interacted_element = convert_dom_element_to_history_element(locate_element)
+                if action.index is not None and action.index not in selector_map:
+                    fresh_state = browser_context.get_state(show_highlights=False, wait_for_stable=False)
+                    selector_map = fresh_state.selector_map
+                    page_url = fresh_state.url
+                    page_title = fresh_state.title
 
-            page.wait_for_page_stable(minimum_wait=0.1)
-            after_snapshot = capture_page_snapshot(page, browser_context.get_all_tab_ids())
-            after_element = probe_element(
-                page,
-                locate_element,
-                expected_value=str(action.args.get("text", "")) if action.name == "input_text" else None,
-                expected_selected_text=str(action.args.get("text", ""))
-                if action.name == "select_dropdown_option"
-                else None,
-            )
-            apply_verification(
-                action,
-                result,
-                before=before_snapshot,
-                after=after_snapshot,
-                before_element=before_element,
-                after_element=after_element,
-                element=locate_element,
-            )
-
-            if (
-                is_mutation_action(action)
-                and locate_element is not None
-                and result.verification_status == VERIFICATION_VERIFIED
-            ):
-                batch.mutations.append(
-                    MutationRecord(
-                        action=action,
-                        element=locate_element,
-                        expected_value=str(action.args.get("text", ""))
-                        if action.name == "input_text"
-                        else None,
-                        expected_selected_text=str(action.args.get("text", ""))
-                        if action.name == "select_dropdown_option"
-                        else None,
-                    )
+                original = (
+                    original_elements.get(action.index)
+                    if action.index is not None
+                    else None
                 )
-                if action.index is not None:
-                    batch.mutation_indices.add(action.index)
-
-            if is_mutation_action(action) and result.extracted_content:
-                related = format_related_control_states(page, selector_map)
-                if related:
-                    result.extracted_content = f"{result.extracted_content}\n{related}"
-
-            if pending_commit:
-                had_commit = True
-                page_advanced = before_snapshot.page_changed(after_snapshot)
-
-            results.append(result)
-
-            if result.error:
-                context.record_failed_action(
-                    page_url,
-                    action.name,
-                    dict(action.args),
-                    result.error,
+                element = _resolve_element_for_action(
+                    action,
+                    selector_map,
+                    element_tree=getattr(browser_state, "element_tree", None),
+                    original_element=original,
+                )
+                # Prefer the observation-time node for locating clicks; indexes can shift after rebuilds.
+                locate_element = original or element
+                tab_ids = browser_context.get_all_tab_ids()
+                before_snapshot = capture_page_snapshot(page, tab_ids)
+                before_element = probe_element(
+                    page,
+                    locate_element,
+                    expected_value=str(action.args.get("text", "")) if action.name == "input_text" else None,
+                    expected_selected_text=str(action.args.get("text", ""))
+                    if action.name == "select_dropdown_option"
+                    else None,
                 )
 
-            if result.is_done:
-                break
-            if result.error or result.verification_status == VERIFICATION_FAILED:
-                err_count += 1
-                if err_count >= 3:
-                    break
-                break
+                if action.name in _NAVIGATION_ACTIONS:
+                    browser_context.remove_highlight()
 
-            # Refresh page metadata for sequence control, but keep using observation-time
-            # element identities for subsequent indexed actions on the same page.
-            post_state = browser_context.get_state(show_highlights=False, wait_for_stable=False)
-            selector_map = post_state.selector_map
-            browser_state = post_state
-            page_url = post_state.url
-            page_title = post_state.title
-
-            if i < len(actions) - 1:
-                next_action = actions[i + 1]
-                if _action_breaks_sequence(
-                    before_snapshot.url,
-                    after_snapshot.url,
-                    before_snapshot.title,
-                    after_snapshot.title,
-                ):
-                    results.append(
-                        ActionResult(
+                pending_commit = is_commit_action(action, locate_element)
+                if pending_commit and batch.mutations:
+                    ok, issues = reverify_mutations(page, batch)
+                    if not ok:
+                        blocked = ActionResult(
                             extracted_content=(
-                                f"Action sequence stopped after action {i + 1}/{len(actions)} due to navigation"
+                                "Commit blocked: prior mutations no longer verified — "
+                                + "; ".join(issues)
                             ),
+                            error="Commit blocked due to mutation regression",
                             include_in_memory=True,
+                            action_name=action.name,
+                            action_index=action.index,
+                            verification_status=VERIFICATION_FAILED,
+                            verification_evidence="; ".join(issues)[:160],
+                        )
+                        results.append(blocked)
+                        break
+
+                # Execute against a map that includes the stable observation-time element.
+                exec_map = dict(selector_map)
+                if locate_element is not None and action.index is not None:
+                    exec_map[action.index] = locate_element
+                result = self.execute(action, exec_map)
+                if locate_element is not None and action.index is not None:
+                    result.interacted_element = convert_dom_element_to_history_element(locate_element)
+
+                is_last_in_batch = i == len(actions) - 1
+                if _needs_inter_action_stable_wait(action, is_last_in_batch=is_last_in_batch):
+                    page.wait_for_page_stable(minimum_wait=0.1)
+                after_snapshot = capture_page_snapshot(page, browser_context.get_all_tab_ids())
+                after_element = probe_element(
+                    page,
+                    locate_element,
+                    expected_value=str(action.args.get("text", "")) if action.name == "input_text" else None,
+                    expected_selected_text=str(action.args.get("text", ""))
+                    if action.name == "select_dropdown_option"
+                    else None,
+                )
+                apply_verification(
+                    action,
+                    result,
+                    before=before_snapshot,
+                    after=after_snapshot,
+                    before_element=before_element,
+                    after_element=after_element,
+                    element=locate_element,
+                )
+
+                if (
+                    is_mutation_action(action)
+                    and locate_element is not None
+                    and result.verification_status == VERIFICATION_VERIFIED
+                ):
+                    batch.mutations.append(
+                        MutationRecord(
+                            action=action,
+                            element=locate_element,
+                            expected_value=str(action.args.get("text", ""))
+                            if action.name == "input_text"
+                            else None,
+                            expected_selected_text=str(action.args.get("text", ""))
+                            if action.name == "select_dropdown_option"
+                            else None,
                         )
                     )
+                    if action.index is not None:
+                        batch.mutation_indices.add(action.index)
+
+                if is_mutation_action(action) and result.extracted_content:
+                    related = format_related_control_states(page, selector_map)
+                    if related:
+                        result.extracted_content = f"{result.extracted_content}\n{related}"
+
+                if pending_commit:
+                    had_commit = True
+                    page_advanced = before_snapshot.page_changed(after_snapshot)
+
+                results.append(result)
+
+                if result.error:
+                    context.record_failed_action(
+                        page_url,
+                        action.name,
+                        dict(action.args),
+                        result.error,
+                    )
+
+                if result.is_done:
+                    break
+                if result.error or result.verification_status == VERIFICATION_FAILED:
+                    err_count += 1
+                    if err_count >= 3:
+                        break
                     break
 
-                if next_action.index is not None and self.has_index(next_action.name):
-                    next_original = original_elements.get(next_action.index)
-                    next_element = _resolve_element_for_action(
-                        next_action,
-                        selector_map,
-                        element_tree=post_state.element_tree,
-                        original_element=next_original,
-                    )
-                    if next_element is None and next_original is None:
+                # Refresh page metadata for sequence control, but keep using observation-time
+                # element identities for subsequent indexed actions on the same page.
+                post_state = browser_context.get_state(show_highlights=False, wait_for_stable=False)
+                selector_map = post_state.selector_map
+                browser_state = post_state
+                page_url = post_state.url
+                page_title = post_state.title
+
+                if i < len(actions) - 1:
+                    next_action = actions[i + 1]
+                    if _action_breaks_sequence(
+                        before_snapshot.url,
+                        after_snapshot.url,
+                        before_snapshot.title,
+                        after_snapshot.title,
+                    ):
                         results.append(
                             ActionResult(
                                 extracted_content=(
-                                    f"Action sequence stopped: index {next_action.index} "
-                                    f"not found after action {i + 1}/{len(actions)}"
+                                    f"Action sequence stopped after action {i + 1}/{len(actions)} due to navigation"
                                 ),
                                 include_in_memory=True,
                             )
                         )
                         break
 
-                time.sleep(action_delay)
-            else:
-                page.wait_for_page_stable()
+                    if next_action.index is not None and self.has_index(next_action.name):
+                        next_original = original_elements.get(next_action.index)
+                        next_element = _resolve_element_for_action(
+                            next_action,
+                            selector_map,
+                            element_tree=post_state.element_tree,
+                            original_element=next_original,
+                        )
+                        if next_element is None and next_original is None:
+                            results.append(
+                                ActionResult(
+                                    extracted_content=(
+                                        f"Action sequence stopped: index {next_action.index} "
+                                        f"not found after action {i + 1}/{len(actions)}"
+                                    ),
+                                    include_in_memory=True,
+                                )
+                            )
+                            break
 
-        record_commit_outcome(
-            context,
-            snapshot=step_start_snapshot,
-            had_commit=had_commit,
-            page_advanced=page_advanced,
-        )
+                    time.sleep(action_delay)
+
+            record_commit_outcome(
+                context,
+                snapshot=step_start_snapshot,
+                had_commit=had_commit,
+                page_advanced=page_advanced,
+            )
+        finally:
+            page.set_defer_post_action_stable(False)
 
         return results
 

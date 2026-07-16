@@ -260,17 +260,22 @@ class NavigatorAgent(BaseAgent):
             model_output = {"current_state": current_state, "action": self._actions_to_dicts(actions)}
             self._context.message_manager.add_model_output(model_output)
 
+            batch_start = time.perf_counter()
             action_results = self._action_registry.execute_multi(
                 actions,
                 self._context,
                 browser_state=browser_state,
             )
+            batch_ms = (time.perf_counter() - batch_start) * 1000
             self._context.action_results = action_results
 
+            settle_start = time.perf_counter()
             after_state = self._context.browser_context.get_state(
                 show_highlights=False,
                 wait_for_stable=True,
             )
+            settle_ms = (time.perf_counter() - settle_start) * 1000
+            self._context.browser_context.remove_highlight()
             submit_hint = build_submit_completeness_hint(actions, browser_state, after_state)
             verification_hint = format_verification_hints(action_results)
             submit_hint_fired = False
@@ -290,6 +295,8 @@ class NavigatorAgent(BaseAgent):
             self._context.last_step_metrics = {
                 "dom_ms": round(dom_ms, 1),
                 "llm_ms": round(llm_ms, 1),
+                "batch_ms": round(batch_ms, 1),
+                "settle_ms": round(settle_ms, 1),
                 "prompt_chars": prompt_chars,
                 "observation_chars": observation_chars,
                 "num_highlights": num_elements,

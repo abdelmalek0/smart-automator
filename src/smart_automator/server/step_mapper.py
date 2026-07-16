@@ -51,6 +51,7 @@ def navigator_to_step(
     *,
     screenshot_url: str | None = None,
     elapsed_ms: int = 0,
+    metrics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     current_state = nav_result.get("current_state") or {}
     thought = (
@@ -73,6 +74,15 @@ def navigator_to_step(
     if nav_result.get("error"):
         status = "error"
 
+    turn_timing: dict[str, float | int] | None = None
+    if metrics:
+        turn_timing = {
+            "snapshot_ms": metrics.get("dom_ms"),
+            "llm_navigator_ms": metrics.get("llm_ms"),
+            "batch_ms": metrics.get("batch_ms"),
+            "settle_ms": metrics.get("settle_ms"),
+        }
+
     return {
         "index": index,
         "thought": str(thought),
@@ -82,6 +92,7 @@ def navigator_to_step(
         "status": status,
         "screenshot_url": screenshot_url,
         "elapsed_ms": elapsed_ms,
+        "turn_timing": turn_timing,
     }
 
 

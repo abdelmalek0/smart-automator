@@ -21,7 +21,7 @@ class AgentOptions:
     max_input_tokens: int = 64000
     planning_interval: int = 3
     include_attributes: list[str] = field(default_factory=lambda: list(DEFAULT_INCLUDE_ATTRIBUTES))
-    action_delay_seconds: float = 1.0
+    action_delay_seconds: float = 0.5
     max_observation_elements: int = 80
     max_observation_chars: int = 12000
 

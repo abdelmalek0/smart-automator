@@ -92,6 +92,8 @@ def _format_navigator_panel(nav_result: dict) -> str:
             "[dim]"
             f"dom={metrics.get('dom_ms')}ms "
             f"llm={metrics.get('llm_ms')}ms "
+            f"batch={metrics.get('batch_ms')}ms "
+            f"settle={metrics.get('settle_ms')}ms "
             f"prompt={metrics.get('prompt_chars')}ch "
             f"obs={metrics.get('observation_chars', '?')}ch "
             f"highlights={metrics.get('num_highlights')} "
@@ -530,6 +532,7 @@ class Executor:
                         "type": "step_end",
                         "index": step_index,
                         "nav_result": result,
+                        "metrics": metrics,
                     }
                 )
                 self._emit_tokens()
@@ -539,6 +542,8 @@ class Executor:
                             "type": "turn_timing",
                             "snapshot_ms": metrics.get("dom_ms"),
                             "llm_navigator_ms": metrics.get("llm_ms"),
+                            "batch_ms": metrics.get("batch_ms"),
+                            "settle_ms": metrics.get("settle_ms"),
                             "turn_ms": int((time.time() - nav_started) * 1000),
                         }
                     )

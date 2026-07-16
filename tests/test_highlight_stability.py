@@ -73,7 +73,7 @@ class TestGetDomStateHighlightStability(unittest.TestCase):
         )
         remove_highlights.assert_not_called()
 
-    def test_skips_redraw_when_only_branch_hashes_shrink(self):
+    def test_redraws_when_branch_hashes_shrink(self):
         page = Page.__new__(Page)
         page._page = MagicMock()
         page._viewport_expansion = 0
@@ -91,14 +91,17 @@ class TestGetDomStateHighlightStability(unittest.TestCase):
             patch.object(page, "url", return_value="https://example.com"),
             patch.object(page, "title", return_value="Example"),
             patch.object(page, "_highlights_visible", return_value=True),
-            patch("smart_automator.browser.page.build_dom_tree", return_value=dom_state) as build_dom_tree,
+            patch(
+                "smart_automator.browser.page.build_dom_tree",
+                side_effect=[dom_state, dom_state],
+            ) as build_dom_tree,
             patch("smart_automator.browser.page.remove_highlights") as remove_highlights,
         ):
             result = page.get_dom_state(show_highlights=True)
 
         self.assertIs(result, dom_state)
-        build_dom_tree.assert_called_once()
-        remove_highlights.assert_not_called()
+        self.assertEqual(build_dom_tree.call_count, 2)
+        remove_highlights.assert_called_once_with(page._page)
 
     def test_redraws_when_new_interactive_elements_appear(self):
         page = Page.__new__(Page)

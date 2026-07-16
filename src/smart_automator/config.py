@@ -43,7 +43,7 @@ class Config(BaseModel):
     minimum_wait_page_load_time: float = 0.25
     wait_for_network_idle_page_load_time: float = 0.5
     maximum_wait_page_load_time: float = 5.0
-    action_delay_seconds: float = 1.0
+    action_delay_seconds: float = 0.5
     allowed_urls: list[str] = Field(default_factory=list)
     denied_urls: list[str] = Field(default_factory=list)
     cdp_url: str = ""
@@ -112,7 +112,7 @@ def load_config() -> Config:
         minimum_wait_page_load_time=float(os.getenv("MINIMUM_WAIT_PAGE_LOAD_TIME", "0.25")),
         wait_for_network_idle_page_load_time=float(os.getenv("WAIT_FOR_NETWORK_IDLE_PAGE_LOAD_TIME", "0.5")),
         maximum_wait_page_load_time=float(os.getenv("MAXIMUM_WAIT_PAGE_LOAD_TIME", "5.0")),
-        action_delay_seconds=float(os.getenv("ACTION_DELAY_SECONDS", "1.0")),
+        action_delay_seconds=float(os.getenv("ACTION_DELAY_SECONDS", "0.5")),
         allowed_urls=_parse_list(os.getenv("ALLOWED_URLS", "")),
         denied_urls=_parse_list(os.getenv("DENIED_URLS", "")),
         cdp_url=os.getenv("CDP_URL", ""),

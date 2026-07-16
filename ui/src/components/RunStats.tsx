@@ -5,7 +5,8 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { Loader2 } from 'lucide-react'
-import { formatDurationMs } from '@/lib/run-status'
+import { actDurationMs, formatDurationMs, hasTurnTiming } from '@/lib/run-status'
+import type { TurnTiming } from '@/types'
 
 interface Props {
   stepCount?: number
@@ -16,13 +17,7 @@ interface Props {
   completionTokens?: number
   cacheTokens?: number
   costUsd?: number | null
-  turnTiming?: {
-    snapshot_ms?: number
-    llm_navigator_ms?: number
-    batch_ms?: number
-    settle_ms?: number
-    turn_ms?: number
-  }
+  turnTiming?: TurnTiming
 }
 
 export default function RunStats({
@@ -44,6 +39,9 @@ export default function RunStats({
         ? `${Math.round(elapsedS)}s`
         : `${Math.floor(elapsedS / 60)}m ${Math.round(elapsedS % 60)}s`
       : null
+
+  const showTurnTiming = hasTurnTiming(turnTiming)
+  const actMs = turnTiming ? actDurationMs(turnTiming) : 0
 
   return (
     <Card className="flex-[1] min-w-[10rem]">
@@ -101,6 +99,28 @@ export default function RunStats({
         {elapsed && (
           <StatRow label="Total time">
             <span className="text-xs mono">{elapsed}</span>
+          </StatRow>
+        )}
+        {showTurnTiming && turnTiming && (
+          <StatRow label="Last turn">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="text-xs mono cursor-help border-b border-dotted border-muted-foreground">
+                  {formatDurationMs(turnTiming.turn_ms ?? 0)}
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="left" className="space-y-1">
+                <p>DOM: {formatDurationMs(turnTiming.snapshot_ms ?? 0)}</p>
+                <p>LLM: {formatDurationMs(turnTiming.llm_navigator_ms ?? 0)}</p>
+                <p>Act: {formatDurationMs(actMs)}</p>
+                {(turnTiming.batch_ms ?? 0) > 0 && (
+                  <p>Actions: {formatDurationMs(turnTiming.batch_ms ?? 0)}</p>
+                )}
+                {(turnTiming.settle_ms ?? 0) > 0 && (
+                  <p>Settle: {formatDurationMs(turnTiming.settle_ms ?? 0)}</p>
+                )}
+              </TooltipContent>
+            </Tooltip>
           </StatRow>
         )}
       </CardContent>

@@ -149,10 +149,12 @@ def run_automation(run: RunState) -> None:
             if event.get("type") == "step_end" and browser_context is not None:
                 elapsed_ms = int((time.time() - step_started_at) * 1000)
                 nav_result = event.get("nav_result", {})
+                metrics = event.get("metrics") or {}
                 step = navigator_to_step(
                     event.get("index", len(run.steps)),
                     nav_result,
                     elapsed_ms=elapsed_ms,
+                    metrics=metrics,
                 )
                 _handle_event(run, browser_context, {"type": "step_end", "step": step})
                 step_started_at = time.time()

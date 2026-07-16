@@ -8,9 +8,14 @@ import {
 } from '@/components/ui/accordion'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent } from '@/components/ui/dialog'
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip'
 import { AlertTriangle, Check, Circle, Loader2, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { formatDurationMs } from '@/lib/run-status'
+import { actDurationMs, formatDurationMs, hasTurnTiming } from '@/lib/run-status'
 
 interface Props {
   step: Step
@@ -32,6 +37,8 @@ export default function StepCard({ step, isActive = false }: Props) {
 
   const screenshotSrc = step.screenshot_url ? `${step.screenshot_url}?v=${step.index}` : null
   const isSelfHeal = step.action === 'write_tool' || step.action === 'update_tool'
+  const showStepTiming = hasTurnTiming(step.turn_timing)
+  const stepTiming = step.turn_timing
 
   const borderClass =
     step.status === 'pass'
@@ -65,9 +72,30 @@ export default function StepCard({ step, isActive = false }: Props) {
                 <p className="text-xs text-muted-foreground truncate mt-0.5">{step.thought}</p>
               </div>
               {step.elapsed_ms > 0 && (
-                <span className="text-xs mono text-muted-foreground shrink-0">
-                  {formatDurationMs(step.elapsed_ms)}
-                </span>
+                showStepTiming && stepTiming ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span className="text-xs mono text-muted-foreground shrink-0 cursor-help border-b border-dotted border-muted-foreground/60">
+                        {formatDurationMs(step.elapsed_ms)}
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent side="left" className="space-y-1">
+                      <p>DOM: {formatDurationMs(stepTiming.snapshot_ms ?? 0)}</p>
+                      <p>LLM: {formatDurationMs(stepTiming.llm_navigator_ms ?? 0)}</p>
+                      <p>Act: {formatDurationMs(actDurationMs(stepTiming))}</p>
+                      {(stepTiming.batch_ms ?? 0) > 0 && (
+                        <p>Actions: {formatDurationMs(stepTiming.batch_ms ?? 0)}</p>
+                      )}
+                      {(stepTiming.settle_ms ?? 0) > 0 && (
+                        <p>Settle: {formatDurationMs(stepTiming.settle_ms ?? 0)}</p>
+                      )}
+                    </TooltipContent>
+                  </Tooltip>
+                ) : (
+                  <span className="text-xs mono text-muted-foreground shrink-0">
+                    {formatDurationMs(step.elapsed_ms)}
+                  </span>
+                )
               )}
             </div>
           </AccordionTrigger>

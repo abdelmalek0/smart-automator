@@ -11,7 +11,6 @@ from .dom import (
     DOMElementNode,
     DOMState,
     HIGHLIGHT_CONTAINER_ID,
-    branch_hash_is_subset_of,
     build_dom_tree,
     calc_branch_path_hash_set,
     inject_build_dom_tree_script,
@@ -81,7 +80,16 @@ class Page:
         self._denied_urls = denied_urls or []
         self._home_page_url = home_page_url
         self._last_highlight_signature: tuple[str, str, frozenset[str]] | None = None
+        self._defer_post_action_stable = False
         self._ensure_script_injection()
+
+    def set_defer_post_action_stable(self, defer: bool) -> None:
+        """When True, interaction handlers skip their stable wait; batch settle handles it."""
+        self._defer_post_action_stable = defer
+
+    def _maybe_wait_after_interaction(self) -> None:
+        if not self._defer_post_action_stable:
+            self.wait_for_page_stable()
 
     def _ensure_script_injection(self) -> None:
         script_path = str(BUILD_DOM_TREE_SCRIPT_PATH)
@@ -211,7 +219,7 @@ class Page:
     ) -> bool:
         if last_signature[0] != new_signature[0] or last_signature[1] != new_signature[1]:
             return False
-        return branch_hash_is_subset_of(new_signature[2], last_signature[2])
+        return last_signature[2] == new_signature[2]
 
     def _clear_highlight_signature(self) -> None:
         self._last_highlight_signature = None
@@ -465,13 +473,13 @@ class Page:
         self._scroll_into_view_if_needed(handle)
         try:
             handle.click(timeout=2000)
-            self.wait_for_page_stable()
+            self._maybe_wait_after_interaction()
             self._check_and_handle_navigation()
         except URLNotAllowedError:
             raise
         except Exception:
             handle.evaluate("el => el.click()")
-            self.wait_for_page_stable()
+            self._maybe_wait_after_interaction()
             self._check_and_handle_navigation()
         self._cached_state = None
 
@@ -522,7 +530,7 @@ class Page:
                 }""",
                 text,
             )
-        self.wait_for_page_stable()
+        self._maybe_wait_after_interaction()
         self._cached_state = None
 
     def send_keys(self, keys: str):
@@ -544,7 +552,7 @@ class Page:
         self._page.keyboard.press(key_map.get(main_key.lower(), main_key))
         for part in reversed(modifiers):
             self._page.keyboard.up(key_map.get(part.lower(), part))
-        self.wait_for_page_stable()
+        self._maybe_wait_after_interaction()
         self._cached_state = None
 
     def _scroll_element(self, handle: ElementHandle, js: str):

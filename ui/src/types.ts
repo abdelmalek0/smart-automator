@@ -49,6 +49,7 @@ export interface Step {
   screenshot_url: string | null
   elapsed_ms: number
   atomic_step?: number | null
+  turn_timing?: TurnTiming | null
 }
 
 export interface AtomicStep {
