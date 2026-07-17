@@ -18,19 +18,28 @@ class RunState:
         task: str,
         headless: bool,
         max_steps: int,
+        success_criteria: str,
         website_id: Optional[str] = None,
         effective_task: Optional[str] = None,
         cdp_url: Optional[str] = None,
         fresh_profile: bool = False,
+        name: Optional[str] = None,
+        source_run_id: Optional[str] = None,
+        use_replay_script: bool = False,
     ):
         self.run_id = run_id
         self.task = task
+        self.name = name
+        self.success_criteria = success_criteria
+        self.source_run_id = source_run_id
+        self.use_replay_script = use_replay_script
         self.website_id = website_id
         self.effective_task = effective_task or task
         self.headless = headless
         self.max_steps = max_steps
         self.cdp_url = cdp_url
         self.fresh_profile = fresh_profile
+        self.criteria_verdict: dict[str, Any] = {}
         self.status = "pending"
         self.steps: list[dict[str, Any]] = []
         self.plan: dict[str, Any] = {}
@@ -73,7 +82,11 @@ class RunState:
     def to_summary(self) -> dict[str, Any]:
         return {
             "run_id": self.run_id,
+            "name": self.name,
             "task": self.task,
+            "success_criteria": self.success_criteria,
+            "source_run_id": self.source_run_id,
+            "use_replay_script": self.use_replay_script,
             "website_id": self.website_id,
             "headless": self.headless,
             "max_steps": self.max_steps,
@@ -89,6 +102,7 @@ class RunState:
             "completion_tokens": self.completion_tokens,
             "cache_tokens": self.cache_tokens,
             "cost_usd": self.cost_usd,
+            "criteria_verdict": self.criteria_verdict,
         }
 
     def to_dict(self) -> dict[str, Any]:

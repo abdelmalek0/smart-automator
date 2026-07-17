@@ -13,7 +13,9 @@ from ..agent.submit_hint import build_submit_completeness_hint
 from ..agent.compound_integrity import build_post_commit_no_wait_hint
 from ..agent.verification import count_verification_issues, format_verification_hints
 from ..agent.stuck_recovery import should_block_navigator_done
-from ..browser.history import find_history_element_in_tree
+from ..browser.history import find_history_element_in_tree, resolve_history_element_in_tree
+from ..browser.dom import DOMElementNode
+from ..reporting.replay_script import DOM_ACTIONS
 from ..browser.views import BrowserState
 from ..utils.prompts import build_browser_state_message, get_navigator_system_prompt
 from .base import BaseAgent
@@ -542,6 +544,104 @@ class NavigatorAgent(BaseAgent):
             return {action_name: updated_args}
         return action_dict
 
+    @staticmethod
+    def _is_indexed_dom_action(raw_action: dict[str, Any]) -> bool:
+        if len(raw_action) != 1:
+            return False
+        action_name, action_args = next(iter(raw_action.items()))
+        return (
+            action_name in DOM_ACTIONS
+            and isinstance(action_args, dict)
+            and "index" in action_args
+        )
+
+    def _replay_show_highlights(self) -> bool:
+        return self._context.options.replay_show_highlights
+
+    def _remap_single_history_action(
+        self,
+        historical_element,
+        raw_action: dict[str, Any],
+        browser_state: BrowserState,
+    ) -> tuple[dict[str, Any] | None, dict[int, DOMElementNode], BrowserState]:
+        overrides: dict[int, DOMElementNode] = {}
+
+        updated = self.update_action_indices(historical_element, raw_action, browser_state)
+        if updated is not None:
+            return updated, overrides, browser_state
+
+        if not self._is_indexed_dom_action(raw_action):
+            return None, overrides, browser_state
+
+        action_name, action_args = next(iter(raw_action.items()))
+        original_index = action_args.get("index")
+
+        browser_state = self._context.browser_context.get_state(
+            show_highlights=self._replay_show_highlights(),
+            wait_for_stable=True,
+        )
+        updated = self.update_action_indices(historical_element, raw_action, browser_state)
+        if updated is not None:
+            return updated, overrides, browser_state
+
+        if historical_element is None:
+            return None, overrides, browser_state
+
+        resolved = resolve_history_element_in_tree(
+            historical_element,
+            browser_state.element_tree,
+        )
+
+        if resolved is None:
+            return None, overrides, browser_state
+
+        map_index = resolved.highlight_index if resolved.highlight_index is not None else original_index
+        if map_index is None:
+            return None, overrides, browser_state
+
+        map_index = int(map_index)
+        overrides[map_index] = resolved
+        final_args = dict(action_args)
+        final_args["index"] = map_index
+        return {action_name: final_args}, overrides, browser_state
+
+    def _collect_remapped_actions(
+        self,
+        history_item: AgentStepRecord,
+        actions_to_replay: list[Any],
+        browser_state: BrowserState,
+        *,
+        only_indices: set[int] | None = None,
+    ) -> tuple[list[Action], dict[int, DOMElementNode], BrowserState, list[str], set[int]]:
+        remapped_actions: list[Action] = []
+        selector_overrides: dict[int, DOMElementNode] = {}
+        failed_actions: list[str] = []
+        failed_indices: set[int] = set()
+
+        for index, raw_action in enumerate(actions_to_replay):
+            if raw_action is None:
+                continue
+            if only_indices is not None and index not in only_indices:
+                continue
+
+            historical_element = None
+            if index < len(history_item.state.interacted_elements):
+                historical_element = history_item.state.interacted_elements[index]
+            updated, overrides, browser_state = self._remap_single_history_action(
+                historical_element,
+                raw_action,
+                browser_state,
+            )
+            if updated is None:
+                if self._is_indexed_dom_action(raw_action):
+                    failed_actions.append(next(iter(raw_action.keys())))
+                    failed_indices.add(index)
+                continue
+            selector_overrides.update(overrides)
+            remapped_actions.extend(parse_actions([updated], self._context.options.max_actions_per_step))
+
+        return remapped_actions, selector_overrides, browser_state, failed_actions, failed_indices
+
     def execute_history_actions(
         self,
         history_item: AgentStepRecord,
@@ -549,28 +649,60 @@ class NavigatorAgent(BaseAgent):
         delay_seconds: float,
     ) -> list[ActionResult]:
         browser_state = self._context.browser_context.get_state(
-            show_highlights=True,
+            show_highlights=self._replay_show_highlights(),
             wait_for_stable=True,
         )
-        remapped_actions: list[Action] = []
-        for index, raw_action in enumerate(actions_to_replay):
-            if raw_action is None:
-                continue
-            historical_element = None
-            if index < len(history_item.state.interacted_elements):
-                historical_element = history_item.state.interacted_elements[index]
-            updated = self.update_action_indices(historical_element, raw_action, browser_state)
-            if updated is None:
-                continue
-            remapped_actions.extend(parse_actions([updated], self._context.options.max_actions_per_step))
+        remapped_actions, selector_overrides, browser_state, failed_actions, failed_indices = (
+            self._collect_remapped_actions(
+                history_item,
+                actions_to_replay,
+                browser_state,
+            )
+        )
+
+        retry_wait = self._context.options.replay_action_retry_wait_seconds
+        if (
+            not remapped_actions
+            and failed_indices
+            and retry_wait > 0
+            and not self._context.stopped
+            and not self._context.paused
+        ):
+            time.sleep(retry_wait)
+            if not self._context.stopped and not self._context.paused:
+                browser_state = self._context.browser_context.get_state(
+                    show_highlights=False,
+                    wait_for_stable=True,
+                )
+                retry_actions, retry_overrides, browser_state, retry_failed, _retry_indices = (
+                    self._collect_remapped_actions(
+                        history_item,
+                        actions_to_replay,
+                        browser_state,
+                        only_indices=failed_indices,
+                    )
+                )
+                remapped_actions.extend(retry_actions)
+                selector_overrides.update(retry_overrides)
+                failed_actions = retry_failed
 
         if not remapped_actions:
-            return [ActionResult(error="No replayable actions after index remapping")]
+            page_url = history_item.state.url or "unknown"
+            failed_label = ", ".join(failed_actions) if failed_actions else "all actions"
+            return [
+                ActionResult(
+                    error=(
+                        f"No replayable actions at {page_url} after remapping ({failed_label})"
+                    )
+                )
+            ]
 
         return self._action_registry.execute_multi(
             remapped_actions,
             self._context,
             browser_state=browser_state,
+            selector_overrides=selector_overrides or None,
+            action_retry_wait_seconds=self._context.options.replay_action_retry_wait_seconds,
         )
 
     def execute_history_step(

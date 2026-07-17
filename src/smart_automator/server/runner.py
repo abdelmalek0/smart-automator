@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import logging
 import time
-from pathlib import Path
 from typing import Any
 
 from ..agent.executor import Executor
+from ..agent.history import AgentStepHistory
+from ..agents.criteria_checker import CriteriaCheckerAgent
 from ..agents.errors import (
     MaxFailuresReachedError,
     MaxStepsReachedError,
@@ -14,10 +15,15 @@ from ..agents.errors import (
 from ..browser.context import BrowserContext
 from ..main import create_llm
 from .config_service import config_for_run
+from .history_store import load_run_history, save_run_history
 from .paths import REPORT_DIR, SCREENSHOT_DIR
+from .replay_store import load_run_replay, save_run_replay
 from .run_state import RunState
-from .step_mapper import navigator_to_step
+from .step_mapper import build_step_start, history_item_to_step, navigator_to_step
 from ..reporting import generate_run_report
+from ..reporting.builder import build_action_timeline
+from ..reporting.replay_executor import execute_replay_steps
+from ..reporting.replay_script import build_replay_steps, count_skipped_actions, format_replay_script
 
 log = logging.getLogger(__name__)
 
@@ -109,15 +115,176 @@ def _generate_report(run: RunState, executor: Executor | None, config) -> None:
         log.warning("[run:%s] report generation failed: %s", run.run_id[:8], exc, exc_info=True)
 
 
+def _set_terminal_status(run: RunState, status: str, summary: str) -> None:
+    run.status = status
+    run.summary = summary
+    run.finished_at = time.time()
+    run.broadcast({"type": "done", "status": status, "summary": summary})
+
+
+def _apply_criteria_verdict(
+    run: RunState,
+    executor: Executor,
+    llm,
+) -> None:
+    context = executor.context
+    checker = CriteriaCheckerAgent(llm)
+    verdict = checker.check(
+        task=run.task,
+        success_criteria=run.success_criteria,
+        state_message=CriteriaCheckerAgent.build_state_message(context),
+        final_answer=context.final_answer or "",
+        test_name=run.name,
+    )
+    run.criteria_verdict = verdict
+    if verdict.get("passed"):
+        summary = (
+            verdict.get("reason")
+            or verdict.get("evidence")
+            or context.final_answer
+            or "Success criteria met."
+        )
+        _set_terminal_status(run, "pass", str(summary))
+        return
+
+    summary = verdict.get("reason") or verdict.get("evidence") or "Success criteria not met."
+    _set_terminal_status(run, "fail", str(summary))
+
+
+def _save_run_replay_data(run: RunState, executor: Executor) -> None:
+    history = executor.context.history
+    if not history.history:
+        return
+    timeline = build_action_timeline(history)
+    replay_steps = build_replay_steps(timeline)
+    if not replay_steps:
+        return
+    skipped_failed, skipped_done = count_skipped_actions(timeline)
+    replay_script = format_replay_script(
+        replay_steps,
+        run_id=run.run_id,
+        status=run.status,
+        skipped_failed=skipped_failed,
+        skipped_done=skipped_done,
+    )
+    save_run_replay(run.run_id, replay_steps, replay_script)
+
+
+def _script_replay_with_events(
+    run: RunState,
+    browser_context: BrowserContext,
+    steps: list[dict[str, Any]],
+    *,
+    action_retry_wait_seconds: float = 0.0,
+) -> list:
+    from ..agent.context import ActionResult
+
+    results: list[ActionResult] = []
+    step_started_at = time.time()
+
+    for index, step in enumerate(steps):
+        _handle_event(
+            run,
+            browser_context,
+            {
+                "type": "step_start",
+                "step": build_step_start(index + 1, f"Replay: {step.get('action', 'action')}"),
+            },
+        )
+        step_started_at = time.time()
+
+        batch_results = execute_replay_steps(
+            browser_context,
+            [step],
+            action_retry_wait_seconds=action_retry_wait_seconds,
+        )
+        results.extend(batch_results)
+        result = batch_results[0] if batch_results else ActionResult(error="No replay result")
+
+        elapsed_ms = int((time.time() - step_started_at) * 1000)
+        _handle_event(
+            run,
+            browser_context,
+            {
+                "type": "step_end",
+                "step": {
+                    "index": index + 1,
+                    "thought": f"Replay step {index + 1}",
+                    "action": step.get("action", ""),
+                    "args": step.get("args") or {},
+                    "result": result.extracted_content or result.error or "",
+                    "status": "fail" if result.error else "pass",
+                    "elapsed_ms": elapsed_ms,
+                },
+            },
+        )
+
+        if result.error:
+            break
+
+    return results
+
+
+def _replay_with_events(
+    run: RunState,
+    executor: Executor,
+    browser_context: BrowserContext,
+    history: AgentStepHistory,
+) -> list:
+    step_started_at = time.time()
+
+    def on_step(index: int, history_item, step_results) -> None:
+        nonlocal step_started_at
+        step_index = index + 1
+        _handle_event(
+            run,
+            browser_context,
+            {
+                "type": "step_start",
+                "step": build_step_start(step_index, "Replaying recorded actions…"),
+            },
+        )
+        elapsed_ms = int((time.time() - step_started_at) * 1000)
+        step = history_item_to_step(
+            step_index,
+            history_item,
+            step_results,
+            elapsed_ms=elapsed_ms,
+        )
+        _handle_event(run, browser_context, {"type": "step_end", "step": step})
+        step_started_at = time.time()
+
+    return executor.replay_history(
+        history,
+        skip_failures=False,
+        on_step=on_step,
+    )
+
+
 def run_automation(run: RunState) -> None:
     browser_context: BrowserContext | None = None
     executor: Executor | None = None
     config = None
+    replay_history: AgentStepHistory | None = None
+    replay_script_data: dict[str, Any] | None = None
 
     try:
         run.status = "running"
         run.broadcast({"type": "status", "status": "running"})
         log.info("[run:%s] started — task: %s", run.run_id[:8], run.effective_task[:120])
+
+        if run.use_replay_script and run.source_run_id:
+            replay_script_data = load_run_replay(run.source_run_id)
+            if replay_script_data is None:
+                raise ValueError(
+                    f"Replay script not found for source run {run.source_run_id}"
+                )
+        elif run.source_run_id:
+            replay_history = load_run_history(run.source_run_id)
+            if replay_history is None:
+                raise ValueError(
+                    f"Replay history not found for source run {run.source_run_id}"
+                )
 
         config = config_for_run()
         config.headless = run.headless
@@ -174,53 +341,75 @@ def run_automation(run: RunState) -> None:
         run.executor = executor
 
         if run._cancelled.is_set():
-            run.status = "cancelled"
-            run.summary = "Run cancelled before execution started."
-            run.finished_at = time.time()
-            run.broadcast({"type": "done", "status": "cancelled", "summary": run.summary})
+            _set_terminal_status(run, "cancelled", "Run cancelled before execution started.")
+            return
+
+        if replay_script_data is not None:
+            browser_context.remove_highlight()
+            replay_results = _script_replay_with_events(
+                run,
+                browser_context,
+                replay_script_data.get("replay_steps") or [],
+                action_retry_wait_seconds=config.replay_action_retry_wait_seconds,
+            )
+            if run.status == "cancelled" or run._cancelled.is_set():
+                return
+            _apply_criteria_verdict(run, executor, llm)
+            return
+
+        if replay_history is not None:
+            replay_results = _replay_with_events(run, executor, browser_context, replay_history)
+            if run.status == "cancelled" or run._cancelled.is_set():
+                return
+            if executor.context.stopped:
+                _set_terminal_status(run, "error", "Run stopped before replay completed.")
+                return
+            if any(result.error for result in replay_results):
+                first_error = next(result.error for result in replay_results if result.error)
+                _set_terminal_status(run, "error", str(first_error))
+                return
+            _apply_criteria_verdict(run, executor, llm)
             return
 
         result = executor.execute()
 
-        if run.status == "cancelled":
-            pass
-        elif result:
-            run.status = "pass"
-            run.summary = result
-            run.finished_at = time.time()
-            run.broadcast({"type": "done", "status": "pass", "summary": run.summary})
+        if run.status == "cancelled" or run._cancelled.is_set():
+            return
+        if result:
+            _apply_criteria_verdict(run, executor, llm)
         else:
-            run.status = "fail"
-            run.summary = run.summary or "Task did not complete within the step limit."
-            run.finished_at = time.time()
-            run.broadcast({"type": "done", "status": "fail", "summary": run.summary})
+            _set_terminal_status(
+                run,
+                "error",
+                run.summary or "Task did not complete within the step limit.",
+            )
 
     except RequestCancelledError:
         if run.status != "cancelled":
-            run.status = "cancelled"
-            run.summary = "Run cancelled."
-            run.finished_at = time.time()
-            run.broadcast({"type": "done", "status": "cancelled", "summary": run.summary})
+            _set_terminal_status(run, "cancelled", "Run cancelled.")
     except (MaxStepsReachedError, MaxFailuresReachedError) as exc:
         if run.status != "cancelled":
-            run.status = "fail"
-            run.summary = str(exc)
-            run.finished_at = time.time()
-            run.broadcast({"type": "done", "status": "fail", "summary": run.summary})
+            _set_terminal_status(run, "error", str(exc))
     except Exception as exc:
         if run.status != "cancelled":
-            run.status = "error"
-            run.summary = str(exc)
-            run.finished_at = time.time()
+            _set_terminal_status(run, "error", str(exc))
             run.broadcast({"type": "error", "message": str(exc)})
-            run.broadcast({"type": "done", "status": "error", "summary": run.summary})
             log.error("[run:%s] error: %s", run.run_id[:8], exc, exc_info=True)
     finally:
         if run.finished_at is None:
             run.finished_at = time.time()
         if executor is not None:
             executor.flush_token_usage()
-        _generate_report(run, executor, config)
+        if run.status != "cancelled" and executor is not None:
+            try:
+                save_run_history(run.run_id, executor.context.history)
+            except Exception as exc:
+                log.warning("[run:%s] history save failed: %s", run.run_id[:8], exc)
+            try:
+                _save_run_replay_data(run, executor)
+            except Exception as exc:
+                log.warning("[run:%s] replay save failed: %s", run.run_id[:8], exc)
+            _generate_report(run, executor, config)
         run.executor = None
         if executor is not None:
             try:

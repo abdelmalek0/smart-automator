@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Globe, Loader2, Play } from 'lucide-react'
+import { ChevronDown, Globe, Loader2, Play } from 'lucide-react'
 import { getConfig, listWebsites, startRun } from '@/api'
 import { useWebsites } from '@/hooks/useWebsites'
 import { Button } from '@/components/ui/button'
@@ -24,7 +24,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Card } from '@/components/ui/card'
+import { cn } from '@/lib/utils'
 import type { RunDraft } from '@/types'
 
 const NO_WEBSITE = '__none__'
@@ -42,7 +42,9 @@ export default function NewRunModal({
 }: Props) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const [name, setName] = useState(initialValues?.name ?? '')
   const [task, setTask] = useState(initialValues?.task ?? '')
+  const [successCriteria, setSuccessCriteria] = useState(initialValues?.success_criteria ?? '')
   const [websiteId, setWebsiteId] = useState<string>(initialValues?.website_id ?? NO_WEBSITE)
   const [headless, setHeadless] = useState(initialValues?.headless ?? false)
   const [freshProfile, setFreshProfile] = useState(initialValues?.fresh_profile ?? false)
@@ -51,6 +53,10 @@ export default function NewRunModal({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saveToWebsite, setSaveToWebsite] = useState(false)
+  const [useReplayScript, setUseReplayScript] = useState(
+    initialValues?.use_replay_script ?? Boolean(initialValues?.source_run_id),
+  )
+  const [advancedOpen, setAdvancedOpen] = useState(false)
   const [websiteMode, setWebsiteMode] = useState<'new' | 'existing'>('existing')
   const [newWebsiteName, setNewWebsiteName] = useState('')
   const [saveWebsiteId, setSaveWebsiteId] = useState('')
@@ -61,6 +67,7 @@ export default function NewRunModal({
     queryFn: listWebsites,
   })
 
+  const isRerun = Boolean(initialValues?.source_run_id)
   const selectedWebsite =
     websiteId !== NO_WEBSITE ? websiteList.find((w) => w.id === websiteId) : null
 
@@ -70,29 +77,42 @@ export default function NewRunModal({
 
   useEffect(() => {
     if (!initialValues) return
+    setName(initialValues.name ?? '')
     setTask(initialValues.task)
+    setSuccessCriteria(initialValues.success_criteria)
     setWebsiteId(initialValues.website_id ?? NO_WEBSITE)
     setHeadless(initialValues.headless ?? false)
     setFreshProfile(initialValues.fresh_profile ?? false)
     setMaxSteps(initialValues.max_steps ?? 100)
     setCdpUrl(initialValues.cdp_url ?? '')
+    setUseReplayScript(
+      initialValues.use_replay_script ?? Boolean(initialValues.source_run_id),
+    )
   }, [initialValues])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!task.trim()) return
+    if (!task.trim() || !successCriteria.trim()) return
     setLoading(true)
     setError(null)
     try {
       let runWebsiteId = websiteId !== NO_WEBSITE ? websiteId : undefined
 
       const payload = {
+        name: name.trim() || undefined,
         task: task.trim(),
+        success_criteria: successCriteria.trim(),
         headless,
         max_steps: maxSteps,
         cdp_url: cdpUrl.trim() || undefined,
         fresh_profile: freshProfile,
         website_id: runWebsiteId,
+        ...(useReplayScript && initialValues?.source_run_id
+          ? {
+              source_run_id: initialValues.source_run_id,
+              use_replay_script: true,
+            }
+          : { use_replay_script: false }),
       }
 
       if (saveToWebsite) {
@@ -105,7 +125,9 @@ export default function NewRunModal({
         if (targetWebsiteId) {
           await addTaskToWebsite({
             websiteId: targetWebsiteId,
+            name: payload.name,
             task: payload.task,
+            success_criteria: payload.success_criteria,
             headless: payload.headless,
             max_steps: payload.max_steps,
             cdp_url: payload.cdp_url,
@@ -129,162 +151,284 @@ export default function NewRunModal({
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>{initialValues ? 'Re-run QA Test' : 'New QA Run'}</DialogTitle>
+      <DialogContent className="max-w-xl max-h-[90vh] flex flex-col gap-0 p-0 overflow-hidden">
+        <DialogHeader className="flex-shrink-0 px-6 pt-6 pb-4 border-b border-border">
+          <DialogTitle>{isRerun ? 'Re-run QA Test' : 'New QA Run'}</DialogTitle>
           <DialogDescription>
-            Describe what the agent should test. Optionally attach a website for shared context
-            like credentials.
+            What should the agent do, and how do you know it passed?
           </DialogDescription>
-        </DialogHeader>
-
-        <form onSubmit={handleSubmit} className="space-y-5">
-          <div className="space-y-2">
-            <Label htmlFor="website">Website <span className="text-muted-foreground font-normal">(optional)</span></Label>
-            <Select value={websiteId} onValueChange={setWebsiteId}>
-              <SelectTrigger id="website">
-                <SelectValue placeholder="No website — run standalone" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={NO_WEBSITE}>No website</SelectItem>
-                {websites.map((w) => (
-                  <SelectItem key={w.id} value={w.id}>
-                    {w.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {selectedWebsite && (selectedWebsite.url || selectedWebsite.context_prompt) && (
-              <div className="text-xs text-muted-foreground border border-border rounded-md p-3 space-y-1 bg-muted/30">
-                <p className="flex items-center gap-1 text-foreground font-medium">
-                  <Globe className="h-3 w-3 text-primary" />
-                  {selectedWebsite.name} — passed to the agent
-                </p>
-                {selectedWebsite.url && (
-                  <p className="mono text-primary break-all">{selectedWebsite.url}</p>
-                )}
-                {selectedWebsite.context_prompt && (
-                  <p className="whitespace-pre-wrap leading-relaxed">{selectedWebsite.context_prompt}</p>
-                )}
-              </div>
-            )}
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="task">Test task</Label>
-            <Textarea
-              id="task"
-              value={task}
-              onChange={(e) => setTask(e.target.value)}
-              placeholder="e.g. Verify checkout completes after adding an item to cart."
-              rows={4}
-              required
-            />
-          </div>
-
-          <div className="flex flex-wrap items-start gap-6">
-            <div className="flex items-center gap-2">
-              <Switch id="headless" checked={headless} onCheckedChange={setHeadless} />
-              <Label htmlFor="headless" className="font-normal">Headless</Label>
-            </div>
-            <div className="flex items-center gap-2">
-              <Switch id="fresh" checked={freshProfile} onCheckedChange={setFreshProfile} />
-              <Label htmlFor="fresh" className="font-normal">Isolated profile</Label>
-            </div>
-            <div className="flex-1 min-w-[10rem]">
-              <Label className="text-xs text-muted-foreground">
-                Max Steps: <span className="mono text-primary">{maxSteps}</span>
-              </Label>
-              <input
-                type="range"
-                min={10}
-                max={200}
-                step={10}
-                value={maxSteps}
-                onChange={(e) => setMaxSteps(Number(e.target.value))}
-                className="w-full accent-primary mt-1"
-              />
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="cdp">CDP URL <span className="text-muted-foreground font-normal">(optional)</span></Label>
-            <Input
-              id="cdp"
-              value={cdpUrl}
-              onChange={(e) => setCdpUrl(e.target.value)}
-              placeholder="ws://localhost:9222/devtools/browser/..."
-              className="mono text-sm"
-            />
-          </div>
-
-          {error && (
-            <p className="text-destructive text-sm bg-destructive/10 border border-destructive/30 rounded-md px-3 py-2">
-              {error}
+          {isRerun && initialValues?.source_run_id && (
+            <p className="pt-1 text-xs text-muted-foreground">
+              From{' '}
+              <Link
+                to={`/runs/${initialValues.source_run_id}`}
+                className="mono text-primary hover:underline underline-offset-2"
+                onClick={onClose}
+              >
+                {initialValues.source_run_id.slice(0, 8)}
+              </Link>
             </p>
           )}
+        </DialogHeader>
 
-          <Card className="p-3 space-y-3">
-            <div className="flex items-center gap-2">
-              <Switch id="save-website" checked={saveToWebsite} onCheckedChange={setSaveToWebsite} />
-              <Label htmlFor="save-website" className="font-normal">Save test to website</Label>
-            </div>
-            {saveToWebsite && (
-              <div className="space-y-2 pl-1">
-                <div className="flex gap-4">
-                  <label className="flex items-center gap-1.5 cursor-pointer text-sm">
-                    <input
-                      type="radio"
-                      checked={websiteMode === 'new'}
-                      onChange={() => setWebsiteMode('new')}
-                      className="accent-primary"
-                    />
-                    New website
-                  </label>
-                  <label
-                    className={`flex items-center gap-1.5 text-sm ${
-                      websites.length === 0 ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      checked={websiteMode === 'existing'}
-                      onChange={() => setWebsiteMode('existing')}
-                      disabled={websites.length === 0}
-                      className="accent-primary"
-                    />
-                    Existing website
-                  </label>
+        <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+          <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+            <div className="space-y-2">
+              <Label htmlFor="website">
+                Website <span className="text-muted-foreground font-normal">(optional)</span>
+              </Label>
+              <Select value={websiteId} onValueChange={setWebsiteId}>
+                <SelectTrigger id="website">
+                  <SelectValue placeholder="No website — run standalone" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NO_WEBSITE}>No website</SelectItem>
+                  {websites.map((w) => (
+                    <SelectItem key={w.id} value={w.id}>
+                      {w.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {selectedWebsite && (selectedWebsite.url || selectedWebsite.context_prompt) && (
+                <div className="text-xs text-muted-foreground border border-border rounded-md p-3 space-y-1 bg-muted/30">
+                  <p className="flex items-center gap-1 text-foreground font-medium">
+                    <Globe className="h-3 w-3 text-primary" />
+                    {selectedWebsite.name} — passed to the agent
+                  </p>
+                  {selectedWebsite.url && (
+                    <p className="mono text-primary break-all">{selectedWebsite.url}</p>
+                  )}
+                  {selectedWebsite.context_prompt && (
+                    <p className="whitespace-pre-wrap leading-relaxed line-clamp-4">
+                      {selectedWebsite.context_prompt}
+                    </p>
+                  )}
                 </div>
-                {websiteMode === 'new' ? (
-                  <Input
-                    value={newWebsiteName}
-                    onChange={(e) => setNewWebsiteName(e.target.value)}
-                    placeholder="Website name…"
-                  />
-                ) : (
-                  <Select value={saveWebsiteId} onValueChange={setSaveWebsiteId}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select a website…" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {websites.map((w) => (
-                        <SelectItem key={w.id} value={w.id}>
-                          {w.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="name">
+                Test name <span className="text-muted-foreground font-normal">(optional)</span>
+              </Label>
+              <Input
+                id="name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. Checkout smoke test"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="task">Test task</Label>
+              <Textarea
+                id="task"
+                value={task}
+                onChange={(e) => setTask(e.target.value)}
+                placeholder="e.g. Add an item to cart and proceed to checkout."
+                rows={3}
+                required
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="success-criteria">Success criteria</Label>
+              <Textarea
+                id="success-criteria"
+                value={successCriteria}
+                onChange={(e) => setSuccessCriteria(e.target.value)}
+                placeholder="e.g. Order confirmation page shows with order total visible."
+                rows={3}
+                required
+              />
+            </div>
+
+            {isRerun && (
+              <div className="space-y-2">
+                <Label>Run mode</Label>
+                <div
+                  className="grid grid-cols-2 gap-1 rounded-lg border border-border bg-muted/40 p-1"
+                  role="group"
+                  aria-label="Run mode"
+                >
+                  <button
+                    type="button"
+                    onClick={() => setUseReplayScript(true)}
+                    className={cn(
+                      'rounded-md px-3 py-2 text-sm transition-colors',
+                      useReplayScript
+                        ? 'bg-background text-foreground shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground',
+                    )}
+                  >
+                    Replay script
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setUseReplayScript(false)}
+                    className={cn(
+                      'rounded-md px-3 py-2 text-sm transition-colors',
+                      !useReplayScript
+                        ? 'bg-background text-foreground shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground',
+                    )}
+                  >
+                    Fresh exploration
+                  </button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {useReplayScript
+                    ? 'Runs the saved Playwright steps, then checks criteria.'
+                    : 'Fresh LLM run with element highlights.'}
+                </p>
               </div>
             )}
-          </Card>
 
-          <DialogFooter>
+            <div className="border border-border rounded-lg overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setAdvancedOpen((open) => !open)}
+                className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-sm text-left hover:bg-muted/40 transition-colors"
+                aria-expanded={advancedOpen}
+              >
+                <span className="font-medium">Advanced</span>
+                <ChevronDown
+                  className={cn(
+                    'h-4 w-4 text-muted-foreground transition-transform',
+                    advancedOpen && 'rotate-180',
+                  )}
+                />
+              </button>
+              {advancedOpen && (
+                <div className="space-y-4 border-t border-border px-3 py-4">
+                  <div className="flex flex-wrap gap-x-6 gap-y-3">
+                    <div className="flex items-center gap-2">
+                      <Switch id="headless" checked={headless} onCheckedChange={setHeadless} />
+                      <Label htmlFor="headless" className="font-normal">
+                        Headless
+                      </Label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        id="fresh"
+                        checked={freshProfile}
+                        onCheckedChange={setFreshProfile}
+                      />
+                      <Label htmlFor="fresh" className="font-normal">
+                        Isolated profile
+                      </Label>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-muted-foreground">
+                      Max steps: <span className="mono text-primary">{maxSteps}</span>
+                    </Label>
+                    <input
+                      type="range"
+                      min={10}
+                      max={200}
+                      step={10}
+                      value={maxSteps}
+                      onChange={(e) => setMaxSteps(Number(e.target.value))}
+                      className="w-full accent-primary"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="cdp">
+                      CDP URL{' '}
+                      <span className="text-muted-foreground font-normal">(optional)</span>
+                    </Label>
+                    <Input
+                      id="cdp"
+                      value={cdpUrl}
+                      onChange={(e) => setCdpUrl(e.target.value)}
+                      placeholder="ws://localhost:9222/devtools/browser/..."
+                      className="mono text-sm"
+                    />
+                  </div>
+
+                  <div className="space-y-3 pt-1 border-t border-border">
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        id="save-website"
+                        checked={saveToWebsite}
+                        onCheckedChange={setSaveToWebsite}
+                      />
+                      <Label htmlFor="save-website" className="font-normal">
+                        Save test to website
+                      </Label>
+                    </div>
+                    {saveToWebsite && (
+                      <div className="space-y-2">
+                        <div className="flex gap-4">
+                          <label className="flex items-center gap-1.5 cursor-pointer text-sm">
+                            <input
+                              type="radio"
+                              checked={websiteMode === 'new'}
+                              onChange={() => setWebsiteMode('new')}
+                              className="accent-primary"
+                            />
+                            New website
+                          </label>
+                          <label
+                            className={`flex items-center gap-1.5 text-sm ${
+                              websites.length === 0
+                                ? 'opacity-40 cursor-not-allowed'
+                                : 'cursor-pointer'
+                            }`}
+                          >
+                            <input
+                              type="radio"
+                              checked={websiteMode === 'existing'}
+                              onChange={() => setWebsiteMode('existing')}
+                              disabled={websites.length === 0}
+                              className="accent-primary"
+                            />
+                            Existing website
+                          </label>
+                        </div>
+                        {websiteMode === 'new' ? (
+                          <Input
+                            value={newWebsiteName}
+                            onChange={(e) => setNewWebsiteName(e.target.value)}
+                            placeholder="Website name…"
+                          />
+                        ) : (
+                          <Select value={saveWebsiteId} onValueChange={setSaveWebsiteId}>
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select a website…" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {websites.map((w) => (
+                                <SelectItem key={w.id} value={w.id}>
+                                  {w.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {error && (
+              <p className="text-destructive text-sm bg-destructive/10 border border-destructive/30 rounded-md px-3 py-2">
+                {error}
+              </p>
+            )}
+          </div>
+
+          <DialogFooter className="flex-shrink-0 px-6 py-4 border-t border-border sm:justify-end">
             <Button type="button" variant="ghost" onClick={onClose}>
               Cancel
             </Button>
-            <Button type="submit" disabled={loading || !task.trim()}>
+            <Button type="submit" disabled={loading || !task.trim() || !successCriteria.trim()}>
               {loading ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -293,7 +437,7 @@ export default function NewRunModal({
               ) : (
                 <>
                   <Play className="h-4 w-4" />
-                  {initialValues ? 'Re-run' : 'Run'}
+                  {isRerun ? 'Re-run' : 'Run'}
                 </>
               )}
             </Button>

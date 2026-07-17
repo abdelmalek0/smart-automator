@@ -95,6 +95,30 @@ def _render_summary_strip(data: dict[str, Any]) -> str:
     task_only = data.get("task_only") or data.get("task") or ""
     context_lines.append(f'<p class="task">{_esc(task_only)}</p>')
 
+    test_name = data.get("name")
+    if test_name:
+        context_lines.append(f'<p class="context-line">Test name: <strong>{_esc(test_name)}</strong></p>')
+
+    success_criteria = data.get("success_criteria")
+    if success_criteria:
+        context_lines.append(
+            f'<p class="context-line">Success criteria: {_esc(success_criteria)}</p>'
+        )
+
+    verdict = data.get("criteria_verdict") or {}
+    if verdict:
+        passed = verdict.get("passed")
+        verdict_status = "pass" if passed else "fail"
+        context_lines.append(
+            f'<p class="context-line">Criteria verdict: '
+            f'<span class="badge {_status_class(verdict_status)}">'
+            f'{"passed" if passed else "failed"}</span></p>'
+        )
+        if verdict.get("reason"):
+            context_lines.append(f'<p class="context-prompt">{_esc(verdict["reason"])}</p>')
+        if verdict.get("evidence"):
+            context_lines.append(f'<p class="context-prompt muted">Evidence: {_esc(verdict["evidence"])}</p>')
+
     return f"""
     <div class="summary-strip">
       <div class="header-line">{header_line}</div>
@@ -152,6 +176,9 @@ def _render_run_config(data: dict[str, Any]) -> str:
     llm = data.get("llm") or {}
     rows = [
         ("Run ID", data.get("run_id")),
+        ("Test name", data.get("name") or "—"),
+        ("Success criteria", data.get("success_criteria") or "—"),
+        ("Source run", data.get("source_run_id") or "—"),
         ("Website ID", data.get("website_id") or "—"),
         ("Headless", "yes" if data.get("headless") else "no"),
         ("Max steps", data.get("max_steps")),

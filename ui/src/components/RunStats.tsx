@@ -54,8 +54,10 @@ export default function RunStats({
             </span>
           ) : status === 'pass' ? (
             <span className="text-xs text-success">Pass</span>
-          ) : status === 'fail' || status === 'error' ? (
-            <span className="text-xs text-destructive">{status}</span>
+          ) : status === 'fail' ? (
+            <span className="text-xs text-destructive">Fail</span>
+          ) : status === 'error' ? (
+            <span className="text-xs text-warning">Error</span>
           ) : status === 'cancelled' ? (
             <span className="text-xs text-muted-foreground">Cancelled</span>
           ) : (

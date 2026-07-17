@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import re
 from typing import Any
+
+_FLUTTER_ID_IN_CSS = re.compile(r'\[id="flt-semantic-node-\d+"\]')
 
 DOM_ACTIONS = frozenset({
     "click_element",
@@ -35,7 +38,7 @@ def _format_element_label(element: dict[str, Any] | None) -> str | None:
     return f"<{tag}>"
 
 
-def _build_replay_args(
+def build_replay_action_args(
     action: str,
     args: dict[str, Any],
     element: dict[str, Any] | None,
@@ -51,6 +54,14 @@ def _build_replay_args(
         if replay_args.get("xpath") or replay_args.get("css_selector"):
             replay_args.pop("index", None)
     return replay_args
+
+
+def _build_replay_args(
+    action: str,
+    args: dict[str, Any],
+    element: dict[str, Any] | None,
+) -> dict[str, Any]:
+    return build_replay_action_args(action, args, element)
 
 
 def _is_replayable(entry: dict[str, Any]) -> bool:
@@ -92,6 +103,21 @@ def _element_attrs(step: dict[str, Any]) -> dict[str, str]:
     return {str(key): str(value) for key, value in attrs.items()}
 
 
+def _is_unstable_flutter_id(element_id: str) -> bool:
+    return element_id.startswith("flt-semantic-node-")
+
+
+def _sanitize_css_for_flutter(css: str) -> str:
+    return _FLUTTER_ID_IN_CSS.sub("", css)
+
+
+def _normalize_xpath(xpath: str) -> str:
+    xpath_target = xpath if xpath.startswith(("xpath=", "/")) else f"xpath=/{xpath.lstrip('/')}"
+    if not xpath_target.startswith("xpath="):
+        xpath_target = f"xpath={xpath_target}"
+    return xpath_target
+
+
 def _playwright_locator(step: dict[str, Any]) -> str:
     args = step.get("args") or {}
     attrs = _element_attrs(step)
@@ -100,15 +126,23 @@ def _playwright_locator(step: dict[str, Any]) -> str:
         return f'page.get_by_label({label!r})'
     if placeholder := attrs.get("placeholder"):
         return f'page.get_by_placeholder({placeholder!r})'
-    if attrs.get("id"):
-        return f'page.locator({("#" + attrs["id"])!r})'
-    if css := args.get("css_selector"):
+
+    element_id = attrs.get("id")
+    css = args.get("css_selector")
+    xpath = args.get("xpath")
+
+    if element_id and _is_unstable_flutter_id(element_id):
+        if css:
+            return f"page.locator({_sanitize_css_for_flutter(css)!r})"
+        if xpath:
+            return f"page.locator({_normalize_xpath(xpath)!r})"
+    elif element_id:
+        return f'page.locator({("#" + element_id)!r})'
+
+    if css:
         return f"page.locator({css!r})"
-    if xpath := args.get("xpath"):
-        xpath_target = xpath if xpath.startswith(("xpath=", "/")) else f"xpath=/{xpath.lstrip('/')}"
-        if not xpath_target.startswith("xpath="):
-            xpath_target = f"xpath={xpath_target}"
-        return f"page.locator({xpath_target!r})"
+    if xpath:
+        return f"page.locator({_normalize_xpath(xpath)!r})"
     if text := args.get("text"):
         if step.get("action") == "scroll_to_text":
             return f'page.get_by_text({text!r})'

@@ -17,6 +17,5 @@ ui/node_modules/
 ui/dist/
 
 # Runtime data
-data/screenshots/
-data/reports/
+data/*
 websites.json

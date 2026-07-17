@@ -39,7 +39,9 @@ from .models import (
     WebsiteTaskUpdateRequest,
     WebsiteUpdateRequest,
 )
-from .paths import ENV_FILE, REPORT_DIR, SCREENSHOT_DIR, UI_DIST
+from .paths import ENV_FILE, HISTORY_DIR, REPLAY_DIR, REPORT_DIR, SCREENSHOT_DIR, UI_DIST
+from .history_store import load_run_history
+from .replay_store import load_run_replay
 from .run_state import RunState, add_run, get_run, list_runs
 from .runner import run_automation
 from .step_mapper import compose_task
@@ -100,6 +102,8 @@ app.add_middleware(
 
 SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 REPORT_DIR.mkdir(parents=True, exist_ok=True)
+HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+REPLAY_DIR.mkdir(parents=True, exist_ok=True)
 
 _website_store: WebsiteStore | None = None
 
@@ -117,7 +121,32 @@ async def start_run(req: StartRunRequest):
     display_task = req.task.strip()
     if not display_task:
         raise HTTPException(status_code=400, detail="Task is required")
+    success_criteria = req.success_criteria.strip()
+    if not success_criteria:
+        raise HTTPException(status_code=400, detail="Success criteria is required")
+    if req.use_replay_script:
+        if not req.source_run_id:
+            raise HTTPException(
+                status_code=400,
+                detail="source_run_id is required when use_replay_script is true",
+            )
+        if load_run_replay(req.source_run_id) is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Replay script not found for source run {req.source_run_id}",
+            )
+        source_run_id = req.source_run_id
+    elif req.source_run_id:
+        if load_run_history(req.source_run_id) is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Replay history not found for source run {req.source_run_id}",
+            )
+        source_run_id = req.source_run_id
+    else:
+        source_run_id = None
 
+    test_name = req.name.strip() if req.name else None
     effective_task = display_task
     website_id = req.website_id
     if website_id:
@@ -129,6 +158,17 @@ async def start_run(req: StartRunRequest):
             name=website.name,
             url=website.url,
             context_prompt=website.context_prompt,
+            success_criteria=success_criteria,
+            test_name=test_name,
+        )
+    else:
+        effective_task = compose_task(
+            display_task,
+            name="",
+            url="",
+            context_prompt="",
+            success_criteria=success_criteria,
+            test_name=test_name,
         )
 
     run = RunState(
@@ -136,10 +176,14 @@ async def start_run(req: StartRunRequest):
         task=display_task,
         headless=req.headless,
         max_steps=req.max_steps,
+        success_criteria=success_criteria,
         website_id=website_id,
         effective_task=effective_task,
         cdp_url=req.cdp_url,
         fresh_profile=req.fresh_profile,
+        name=test_name,
+        source_run_id=source_run_id,
+        use_replay_script=req.use_replay_script,
     )
     run._loop = asyncio.get_event_loop()
     add_run(run)
@@ -244,9 +288,13 @@ async def delete_website(website_id: str):
 async def create_website_task(website_id: str, req: WebsiteTaskCreateRequest):
     if not req.task.strip():
         raise HTTPException(status_code=400, detail="Task is required")
+    if not req.success_criteria.strip():
+        raise HTTPException(status_code=400, detail="Success criteria is required")
     task = _websites().add_task(
         website_id,
         task=req.task,
+        success_criteria=req.success_criteria,
+        name=req.name,
         headless=req.headless,
         max_steps=req.max_steps,
         cdp_url=req.cdp_url,
@@ -263,6 +311,8 @@ async def update_website_task(website_id: str, task_id: str, req: WebsiteTaskUpd
         website_id,
         task_id,
         task=req.task,
+        success_criteria=req.success_criteria,
+        name=req.name,
         headless=req.headless,
         max_steps=req.max_steps,
         cdp_url=req.cdp_url,
@@ -380,12 +430,18 @@ if UI_DIST.exists():
 
 def main() -> None:
     import uvicorn
+    from pathlib import Path
+
+    # Only watch package source. Writing under data/ (histories, reports, replays/*.py)
+    # must not restart the process — that wipes in-memory run history in the sidebar.
+    package_dir = str(Path(__file__).resolve().parent.parent)
 
     uvicorn.run(
         "smart_automator.server.app:app",
         host="0.0.0.0",
         port=8400,
         reload=True,
+        reload_dirs=[package_dir],
         reload_excludes=[
             "**/__pycache__/**",
             "**/*.pyc",

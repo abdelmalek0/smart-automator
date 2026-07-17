@@ -36,12 +36,16 @@ export function getRun(runId: string): Promise<RunDetails> {
 }
 
 export async function startRun(payload: {
+  name?: string
   task: string
+  success_criteria: string
   headless: boolean
   max_steps: number
   cdp_url?: string
   fresh_profile?: boolean
   website_id?: string
+  source_run_id?: string
+  use_replay_script?: boolean
 }): Promise<RunSummary> {
   return request('/runs', {
     method: 'POST',

@@ -22,6 +22,8 @@ class AgentOptions:
     planning_interval: int = 3
     include_attributes: list[str] = field(default_factory=lambda: list(DEFAULT_INCLUDE_ATTRIBUTES))
     action_delay_seconds: float = 0.5
+    replay_action_retry_wait_seconds: float = 15.0
+    replay_show_highlights: bool = False
     max_observation_elements: int = 80
     max_observation_chars: int = 12000
 

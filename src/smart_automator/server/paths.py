@@ -20,4 +20,6 @@ LLM_SETTINGS_FILE = PROJECT_ROOT / "llm_settings.json"
 PRICING_FILE = PROJECT_ROOT / "pricing.json"
 SCREENSHOT_DIR = Path(os.getenv("SCREENSHOT_DIR", str(PROJECT_ROOT / "data" / "screenshots")))
 REPORT_DIR = Path(os.getenv("REPORT_DIR", str(PROJECT_ROOT / "data" / "reports")))
+HISTORY_DIR = Path(os.getenv("HISTORY_DIR", str(PROJECT_ROOT / "data" / "histories")))
+REPLAY_DIR = Path(os.getenv("REPLAY_DIR", str(PROJECT_ROOT / "data" / "replays")))
 UI_DIST = PROJECT_ROOT / "ui" / "dist"

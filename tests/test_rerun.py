@@ -18,6 +18,7 @@ def test_run_summary_includes_config(client: TestClient) -> None:
         "/api/runs",
         json={
             "task": "Smoke test",
+            "success_criteria": "Page loads successfully",
             "headless": True,
             "max_steps": 25,
             "cdp_url": "ws://localhost:9222",
@@ -30,6 +31,7 @@ def test_run_summary_includes_config(client: TestClient) -> None:
     assert body["max_steps"] == 25
     assert body["cdp_url"] == "ws://localhost:9222"
     assert body["fresh_profile"] is True
+    assert body["success_criteria"] == "Page loads successfully"
 
     run_id = body["run_id"]
     get_res = client.get(f"/api/runs/{run_id}")

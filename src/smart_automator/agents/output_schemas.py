@@ -34,6 +34,14 @@ class PlannerOutput(BaseModel):
     web_task: bool = True
 
 
+class CriteriaCheckerOutput(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    passed: bool = False
+    evidence: str = ""
+    reason: str = ""
+
+
 def _coerce_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -138,6 +146,19 @@ def validate_planner_output(parsed: dict[str, Any]) -> dict[str, Any]:
     }
     try:
         validated = PlannerOutput.model_validate(payload)
+    except ValidationError:
+        return payload
+    return validated.model_dump()
+
+
+def validate_criteria_output(parsed: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "passed": _coerce_bool(parsed.get("passed", False)),
+        "evidence": str(parsed.get("evidence", "") or ""),
+        "reason": str(parsed.get("reason", "") or ""),
+    }
+    try:
+        validated = CriteriaCheckerOutput.model_validate(payload)
     except ValidationError:
         return payload
     return validated.model_dump()

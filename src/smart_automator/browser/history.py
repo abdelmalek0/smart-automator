@@ -132,6 +132,91 @@ def find_history_element_in_tree(
     return process_node(tree)
 
 
+def _normalize_xpath(xpath: str) -> str:
+    return (xpath or "").strip().lstrip("/")
+
+
+def find_element_by_xpath_in_tree(xpath: str, tree: DOMElementNode) -> DOMElementNode | None:
+    target = _normalize_xpath(xpath)
+    if not target:
+        return None
+
+    def walk(node: DOMElementNode) -> DOMElementNode | None:
+        if _normalize_xpath(node.xpath or "") == target:
+            return node
+        for child in node.children:
+            if isinstance(child, DOMElementNode):
+                found = walk(child)
+                if found is not None:
+                    return found
+        return None
+
+    return walk(tree)
+
+
+def find_element_by_id_in_tree(element_id: str, tree: DOMElementNode) -> DOMElementNode | None:
+    target_id = (element_id or "").strip()
+    if not target_id:
+        return None
+
+    def walk(node: DOMElementNode) -> DOMElementNode | None:
+        if node.attributes.get("id") == target_id:
+            return node
+        for child in node.children:
+            if isinstance(child, DOMElementNode):
+                found = walk(child)
+                if found is not None:
+                    return found
+        return None
+
+    return walk(tree)
+
+
+def find_element_by_aria_label_in_tree(label: str, tree: DOMElementNode) -> DOMElementNode | None:
+    target_label = (label or "").strip()
+    if not target_label:
+        return None
+
+    def walk(node: DOMElementNode) -> DOMElementNode | None:
+        if node.attributes.get("aria-label") == target_label:
+            return node
+        for child in node.children:
+            if isinstance(child, DOMElementNode):
+                found = walk(child)
+                if found is not None:
+                    return found
+        return None
+
+    return walk(tree)
+
+
+def resolve_history_element_in_tree(
+    dom_history_element: DOMHistoryElement,
+    tree: DOMElementNode,
+) -> DOMElementNode | None:
+    """Resolve a recorded element using the same fallback order as replay scripts."""
+    resolved = find_history_element_in_tree(dom_history_element, tree)
+    if resolved is not None:
+        return resolved
+
+    aria_label = dom_history_element.attributes.get("aria-label")
+    if aria_label:
+        resolved = find_element_by_aria_label_in_tree(aria_label, tree)
+        if resolved is not None:
+            return resolved
+
+    element_id = dom_history_element.attributes.get("id")
+    if element_id:
+        resolved = find_element_by_id_in_tree(element_id, tree)
+        if resolved is not None:
+            return resolved
+
+    if dom_history_element.xpath:
+        return find_element_by_xpath_in_tree(dom_history_element.xpath, tree)
+
+    return None
+
+
 def is_file_uploader(element_node: DOMElementNode, max_depth: int = 3, current_depth: int = 0) -> bool:
     if current_depth > max_depth:
         return False

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from ..actions.schemas import Action
@@ -7,6 +8,9 @@ from ..agent.compound_integrity import (
     format_action_results_with_verification,
     format_all_actions_args,
 )
+from ..agent.history import AgentStepRecord
+from ..actions.builder import parse_actions
+from ..agent.messages.utils import fix_actions
 
 
 def planner_to_plan(plan_result: dict[str, Any]) -> dict[str, Any]:
@@ -96,11 +100,70 @@ def navigator_to_step(
     }
 
 
-def compose_task(task: str, *, name: str, url: str, context_prompt: str) -> str:
+def history_item_to_step(
+    index: int,
+    history_item: AgentStepRecord,
+    action_results: list[Any],
+    *,
+    screenshot_url: str | None = None,
+    elapsed_ms: int = 0,
+) -> dict[str, Any]:
+    thought = "Replaying recorded actions…"
+    actions: list[Action] = []
+    if history_item.model_output:
+        try:
+            parsed = json.loads(history_item.model_output)
+            current_state = parsed.get("current_state") or {}
+            thought = (
+                current_state.get("next_goal")
+                or current_state.get("memory")
+                or thought
+            )
+            raw_actions = fix_actions(parsed)
+            actions = parse_actions(raw_actions, max_actions=20)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+
+    if len(actions) > 1:
+        action_name = ", ".join(action.name for action in actions)
+    elif actions:
+        action_name = actions[0].name
+    else:
+        action_name = "replay"
+
+    has_error = any(getattr(result, "error", None) for result in action_results)
+    status = "fail" if has_error else "pass"
+
+    return {
+        "index": index,
+        "thought": str(thought),
+        "action": action_name,
+        "args": format_all_actions_args(actions) if actions else {},
+        "result": format_action_results_with_verification(action_results),
+        "status": status,
+        "screenshot_url": screenshot_url,
+        "elapsed_ms": elapsed_ms,
+        "turn_timing": None,
+    }
+
+
+def compose_task(
+    task: str,
+    *,
+    name: str,
+    url: str,
+    context_prompt: str,
+    success_criteria: str = "",
+    test_name: str | None = None,
+) -> str:
     parts: list[str] = []
+    if test_name and test_name.strip():
+        parts.append(f"Test: {test_name.strip()}")
     if url.strip():
         parts.append(f"Website: {name} ({url.strip()})")
     if context_prompt.strip():
         parts.append(f"Context: {context_prompt.strip()}")
     parts.append(f"Task: {task.strip()}")
+    if success_criteria.strip():
+        parts.append(f"Success criteria: {success_criteria.strip()}")
     return "\n\n".join(parts)

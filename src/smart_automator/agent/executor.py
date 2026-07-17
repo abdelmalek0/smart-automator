@@ -131,6 +131,8 @@ class Executor:
             planning_interval=config.planning_interval,
             include_attributes=config.include_attributes,
             action_delay_seconds=config.action_delay_seconds,
+            replay_action_retry_wait_seconds=config.replay_action_retry_wait_seconds,
+            replay_show_highlights=config.replay_show_highlights,
             max_observation_elements=config.max_observation_elements,
             max_observation_chars=config.max_observation_chars,
         )
@@ -300,12 +302,15 @@ class Executor:
         max_retries: int = 3,
         skip_failures: bool = True,
         delay_between_actions: float = 2.0,
+        on_step: Callable[[int, Any, list], None] | None = None,
     ) -> list:
         from ..agent.context import ActionResult
 
         results: list[ActionResult] = []
         if not history.history:
             raise ValueError("History is empty")
+
+        self._context.browser_context.remove_highlight()
 
         for index, history_item in enumerate(history.history):
             if self._context.stopped:
@@ -319,7 +324,11 @@ class Executor:
                 skip_failures=skip_failures,
             )
             results.extend(step_results)
+            if on_step is not None:
+                on_step(index, history_item, step_results)
             if self._context.stopped:
+                break
+            if any(result.error for result in step_results):
                 break
         return results
 

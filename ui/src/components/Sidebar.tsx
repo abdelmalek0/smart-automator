@@ -93,7 +93,9 @@ export default function Sidebar({ runs, activeRunId }: Props) {
                       </span>
                       <span className="ml-auto text-xs text-muted-foreground">{run.step_count}s</span>
                     </div>
-                    <p className="text-xs text-foreground truncate leading-snug">{run.task}</p>
+                    <p className="text-xs text-foreground truncate leading-snug">
+                      {run.name || run.task}
+                    </p>
                   </Link>
                   <Button
                     type="button"

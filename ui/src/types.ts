@@ -11,17 +11,31 @@ export type RunStatus =
 export type StepStatus = 'running' | 'pass' | 'fail' | 'error'
 
 export interface RunDraft {
+  name?: string
   task: string
+  success_criteria: string
   website_id?: string
   headless?: boolean
   max_steps?: number
   cdp_url?: string
   fresh_profile?: boolean
+  source_run_id?: string
+  use_replay_script?: boolean
+}
+
+export interface CriteriaVerdict {
+  passed: boolean
+  evidence: string
+  reason: string
 }
 
 export interface RunSummary {
   run_id: string
+  name?: string | null
   task: string
+  success_criteria: string
+  source_run_id?: string | null
+  use_replay_script?: boolean
   website_id?: string | null
   headless?: boolean
   max_steps?: number
@@ -37,6 +51,7 @@ export interface RunSummary {
   completion_tokens: number
   cache_tokens: number
   cost_usd: number | null
+  criteria_verdict?: CriteriaVerdict
 }
 
 export interface Step {
@@ -103,7 +118,9 @@ export interface RunDetails extends RunSummary {
 
 export interface WebsiteTask {
   id: string
+  name?: string | null
   task: string
+  success_criteria: string
   headless: boolean
   max_steps: number
   cdp_url?: string

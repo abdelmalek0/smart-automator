@@ -196,12 +196,16 @@ def build_report_data(
 
     return {
         "run_id": run.run_id,
+        "name": run.name,
         "task": run.task,
+        "success_criteria": run.success_criteria,
+        "source_run_id": run.source_run_id,
         "effective_task": run.effective_task,
         "website_id": run.website_id,
         **context,
         "status": run.status,
         "summary": run.summary,
+        "criteria_verdict": run.criteria_verdict,
         "headless": run.headless,
         "max_steps": run.max_steps,
         "cdp_url": run.cdp_url,

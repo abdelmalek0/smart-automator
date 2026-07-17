@@ -16,19 +16,26 @@ from ..server.paths import WEBSITES_FILE
 class WebsiteTask:
     id: str
     task: str
+    success_criteria: str = ""
+    name: str | None = None
     headless: bool = False
     max_steps: int = 100
     cdp_url: str | None = None
     fresh_profile: bool = False
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        if data.get("name") is None:
+            data.pop("name", None)
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> WebsiteTask:
         return cls(
             id=str(data["id"]),
             task=str(data["task"]),
+            success_criteria=str(data.get("success_criteria") or ""),
+            name=data.get("name") or None,
             headless=bool(data.get("headless", False)),
             max_steps=int(data.get("max_steps", 100)),
             cdp_url=data.get("cdp_url") or None,
@@ -152,6 +159,8 @@ class WebsiteStore:
         website_id: str,
         *,
         task: str,
+        success_criteria: str,
+        name: str | None = None,
         headless: bool = False,
         max_steps: int = 100,
         cdp_url: str | None = None,
@@ -160,6 +169,8 @@ class WebsiteStore:
         new_task = WebsiteTask(
             id=str(uuid.uuid4()),
             task=task.strip(),
+            success_criteria=success_criteria.strip(),
+            name=name.strip() if name else None,
             headless=headless,
             max_steps=max_steps,
             cdp_url=cdp_url or None,
@@ -192,6 +203,11 @@ class WebsiteStore:
                         continue
                     if "task" in fields and fields["task"] is not None:
                         task_data["task"] = str(fields["task"]).strip()
+                    if "success_criteria" in fields and fields["success_criteria"] is not None:
+                        task_data["success_criteria"] = str(fields["success_criteria"]).strip()
+                    if "name" in fields:
+                        name_value = fields["name"]
+                        task_data["name"] = name_value.strip() if name_value else None
                     if "headless" in fields and fields["headless"] is not None:
                         task_data["headless"] = bool(fields["headless"])
                     if "max_steps" in fields and fields["max_steps"] is not None:

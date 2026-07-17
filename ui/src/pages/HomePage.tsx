@@ -58,7 +58,7 @@ export default function HomePage() {
                   <div className="flex items-start justify-between gap-3">
                     <Link to={`/runs/${run.run_id}`} className="min-w-0 text-left flex-1">
                       <CardTitle className="text-sm font-medium line-clamp-2 mb-1">
-                        {run.task}
+                        {run.name || run.task}
                       </CardTitle>
                       <CardDescription className="text-xs">
                         {formatElapsed(elapsedSeconds(run.started_at, run.finished_at))} ·{' '}

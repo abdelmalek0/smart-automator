@@ -7,11 +7,15 @@ from pydantic import BaseModel
 
 class StartRunRequest(BaseModel):
     task: str
+    success_criteria: str
+    name: Optional[str] = None
     headless: bool = False
     max_steps: int = 100
     cdp_url: Optional[str] = None
     fresh_profile: bool = False
     website_id: Optional[str] = None
+    source_run_id: Optional[str] = None
+    use_replay_script: bool = False
 
 
 class WebsiteCreateRequest(BaseModel):
@@ -28,6 +32,8 @@ class WebsiteUpdateRequest(BaseModel):
 
 class WebsiteTaskCreateRequest(BaseModel):
     task: str
+    success_criteria: str
+    name: Optional[str] = None
     headless: bool = False
     max_steps: int = 100
     cdp_url: Optional[str] = None
@@ -36,6 +42,8 @@ class WebsiteTaskCreateRequest(BaseModel):
 
 class WebsiteTaskUpdateRequest(BaseModel):
     task: Optional[str] = None
+    success_criteria: Optional[str] = None
+    name: Optional[str] = None
     headless: Optional[bool] = None
     max_steps: Optional[int] = None
     cdp_url: Optional[str] = None

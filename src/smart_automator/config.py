@@ -44,6 +44,8 @@ class Config(BaseModel):
     wait_for_network_idle_page_load_time: float = 0.5
     maximum_wait_page_load_time: float = 5.0
     action_delay_seconds: float = 0.5
+    replay_action_retry_wait_seconds: float = 15.0
+    replay_show_highlights: bool = False
     allowed_urls: list[str] = Field(default_factory=list)
     denied_urls: list[str] = Field(default_factory=list)
     cdp_url: str = ""
@@ -113,6 +115,10 @@ def load_config() -> Config:
         wait_for_network_idle_page_load_time=float(os.getenv("WAIT_FOR_NETWORK_IDLE_PAGE_LOAD_TIME", "0.5")),
         maximum_wait_page_load_time=float(os.getenv("MAXIMUM_WAIT_PAGE_LOAD_TIME", "5.0")),
         action_delay_seconds=float(os.getenv("ACTION_DELAY_SECONDS", "0.5")),
+        replay_action_retry_wait_seconds=float(
+            os.getenv("REPLAY_ACTION_RETRY_WAIT_SECONDS", "15.0")
+        ),
+        replay_show_highlights=os.getenv("REPLAY_SHOW_HIGHLIGHTS", "false").lower() == "true",
         allowed_urls=_parse_list(os.getenv("ALLOWED_URLS", "")),
         denied_urls=_parse_list(os.getenv("DENIED_URLS", "")),
         cdp_url=os.getenv("CDP_URL", ""),

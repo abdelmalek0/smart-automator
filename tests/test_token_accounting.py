@@ -232,7 +232,7 @@ class TestExecutorTokenEmission(unittest.TestCase):
 
 class TestRunnerTokenHandling(unittest.TestCase):
     def test_tokens_update_replaces_run_state_with_cumulative_snapshot(self):
-        run = RunState(run_id="run-1", task="task", headless=True, max_steps=5)
+        run = RunState(run_id="run-1", task="task", headless=True, max_steps=5, success_criteria="Done")
         browser_context = MagicMock()
 
         _handle_event(
@@ -267,7 +267,7 @@ class TestRunnerTokenHandling(unittest.TestCase):
         self.assertEqual(run.cost_usd, 0.004)
 
     def test_report_data_uses_final_run_token_snapshot(self):
-        run = RunState(run_id="run-1", task="task", headless=True, max_steps=5)
+        run = RunState(run_id="run-1", task="task", headless=True, max_steps=5, success_criteria="Done")
         run.status = "pass"
         run.tokens = 400
         run.prompt_tokens = 300

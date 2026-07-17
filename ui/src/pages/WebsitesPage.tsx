@@ -70,7 +70,9 @@ export default function WebsitesPage() {
     setRunningId(task.id)
     try {
       const run = await startRun({
+        name: task.name ?? undefined,
         task: task.task,
+        success_criteria: task.success_criteria,
         headless: task.headless,
         max_steps: task.max_steps,
         cdp_url: task.cdp_url,
@@ -295,7 +297,17 @@ export default function WebsitesPage() {
                             )}
                           >
                             <div className="flex-1 min-w-0">
-                              <p className="text-sm leading-snug line-clamp-2">{task.task}</p>
+                              <p className="text-sm font-medium leading-snug line-clamp-1">
+                                {task.name || 'Untitled test'}
+                              </p>
+                              <p className="text-sm leading-snug line-clamp-2 text-muted-foreground mt-0.5">
+                                {task.task}
+                              </p>
+                              {task.success_criteria && (
+                                <p className="text-xs text-muted-foreground line-clamp-2 mt-1">
+                                  Criteria: {task.success_criteria}
+                                </p>
+                              )}
                               <CardDescription className="flex gap-3 mt-1 text-[10px]">
                                 <span className="mono">{task.max_steps} steps</span>
                                 {task.headless && <span>headless</span>}

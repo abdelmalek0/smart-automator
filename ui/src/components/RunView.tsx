@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, Globe, Loader2, RotateCcw } from 'lucide-react'
 import { cancelRun, listWebsites } from '@/api'
@@ -87,7 +88,28 @@ export default function RunView({ runId, onRunComplete }: Props) {
               {websiteName}
             </Badge>
           )}
-          <h2 className="text-sm font-medium leading-snug line-clamp-5">{run?.task ?? '…'}</h2>
+          <h2 className="text-sm font-medium leading-snug line-clamp-5">
+            {run?.name || run?.task || '…'}
+          </h2>
+          {run?.success_criteria && (
+            <p className="mt-1 text-xs text-muted-foreground line-clamp-3">
+              <span className="font-medium text-foreground">Criteria:</span> {run.success_criteria}
+            </p>
+          )}
+          {run?.source_run_id && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {run.use_replay_script ? 'Script replay' : 'Replay'} from{' '}
+              <Link
+                to={`/runs/${run.source_run_id}`}
+                className="mono text-primary hover:underline underline-offset-2"
+              >
+                {run.source_run_id.slice(0, 8)}
+              </Link>
+            </p>
+          )}
+          {run?.use_replay_script && !run?.source_run_id && (
+            <p className="mt-1 text-xs text-muted-foreground">Script replay</p>
+          )}
           {streamError && run?.status === 'error' && (
             <p className="mt-1 text-xs text-destructive break-words">{streamError}</p>
           )}
@@ -193,10 +215,15 @@ export default function RunView({ runId, onRunComplete }: Props) {
                 className={`rounded-lg px-4 py-3 border text-sm ${
                   run.status === 'pass'
                     ? 'bg-success/10 border-success/30 text-success'
-                    : 'bg-destructive/10 border-destructive/30 text-destructive'
+                    : run.status === 'error'
+                      ? 'bg-warning/10 border-warning/30 text-warning'
+                      : 'bg-destructive/10 border-destructive/30 text-destructive'
                 }`}
               >
                 <strong>Summary:</strong> {run.summary}
+                {run.criteria_verdict?.evidence && (
+                  <p className="mt-1 text-xs opacity-90">{run.criteria_verdict.evidence}</p>
+                )}
               </div>
             )}
 
