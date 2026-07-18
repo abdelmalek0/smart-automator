@@ -1,18 +1,18 @@
 {
-  "provider": "ollama-cloud",
+  "provider": "groq",
   "providers": {
     "groq": {
       "base_url": "https://api.groq.com/openai/v1",
       "model": "openai/gpt-oss-120b",
       "models": [
-        "openai/gpt-oss-120b"
+        "openai/gpt-oss-120b",
+        "qwen/qwen3.6-27b"
       ]
     },
     "ollama": {
-      "base_url": "https://ollama.com",
-      "model": "gemma4:31b-cloud",
+      "base_url": "http://localhost:11434",
+      "model": "llama3.2",
       "models": [
-        "gemma4:31b-cloud",
         "llama3.2"
       ]
     },
@@ -25,8 +25,9 @@
     },
     "ollama-cloud": {
       "base_url": "https://ollama.com",
-      "model": "gemma4:31b-cloud",
+      "model": "qwen3.5:cloud",
       "models": [
+        "qwen3.5:cloud",
         "gemma4:31b-cloud"
       ]
     }

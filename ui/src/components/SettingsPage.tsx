@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Check, Loader2, Plus, Trash2, X } from 'lucide-react'
 import { checkConfig, getConfig, getPricing, isProviderApiKeySet, savePricing, updateConfig } from '@/api'
-import { defaultBaseUrl, defaultModel, normalizeProvider } from '@/providers'
+import { defaultBaseUrl, defaultModel, isValidBaseUrlForProvider, normalizeProvider, providerUsesApiKey } from '@/providers'
 import type { BrowserSessionMode, Config, PricingEntry } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -67,8 +67,11 @@ export default function SettingsPage() {
     setProvider(canonical)
     setApiKey('')
     const saved = config?.provider_settings?.[canonical]
-    setBaseUrl(saved?.base_url || defaultBaseUrl(canonical))
-    setModel(saved?.model || defaultModel(canonical))
+    const savedBaseUrl = saved?.base_url || ''
+    const savedModel = saved?.model || ''
+    const baseUrlValid = isValidBaseUrlForProvider(canonical, savedBaseUrl)
+    setBaseUrl(baseUrlValid ? savedBaseUrl : defaultBaseUrl(canonical))
+    setModel(baseUrlValid && savedModel ? savedModel : defaultModel(canonical))
   }
 
   useEffect(() => {
@@ -116,7 +119,12 @@ export default function SettingsPage() {
   async function handleCheck() {
     setChecking(true)
     setCheckResult(null)
-    const result = await checkConfig().catch((e) => ({ ok: false, error: String(e) }))
+    const result = await checkConfig({
+      provider,
+      base_url: baseUrl,
+      model,
+      api_key: apiKey || undefined,
+    }).catch((e) => ({ ok: false, error: String(e) }))
     setCheckResult(result)
     setChecking(false)
   }
@@ -185,22 +193,26 @@ export default function SettingsPage() {
             />
 
             <div className="space-y-2">
-              <Label>
-                API Key{' '}
-                {providerApiKeySet && (
-                  <span className="text-success font-normal text-xs">(set)</span>
-                )}
-              </Label>
-              <Input
-                type="password"
-                value={apiKey}
-                onChange={(e) => {
-                  setDirty(true)
-                  setApiKey(e.target.value)
-                }}
-                placeholder={providerApiKeySet ? '••••••••••••' : 'Enter API key…'}
-                className="mono"
-              />
+              {providerUsesApiKey(provider) && (
+                <>
+                  <Label>
+                    API Key{' '}
+                    {providerApiKeySet && (
+                      <span className="text-success font-normal text-xs">(set)</span>
+                    )}
+                  </Label>
+                  <Input
+                    type="password"
+                    value={apiKey}
+                    onChange={(e) => {
+                      setDirty(true)
+                      setApiKey(e.target.value)
+                    }}
+                    placeholder={providerApiKeySet ? '••••••••••••' : 'Enter API key…'}
+                    className="mono"
+                  />
+                </>
+              )}
             </div>
 
             <div className="flex items-center gap-3">

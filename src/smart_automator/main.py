@@ -3,6 +3,7 @@ from .browser.context import BrowserContext
 from .llm.base import BaseLLM
 from .llm.groq import OpenAICompatLLM
 from .llm.ollama import OllamaLLM
+from .server.provider_utils import runtime_provider
 from .agent.executor import Executor
 from rich.console import Console
 from rich.panel import Panel
@@ -12,7 +13,7 @@ console = Console()
 
 
 def create_llm(config: Config, provider: str | None = None) -> BaseLLM:
-    selected = (provider or config.llm_provider or "groq").strip().lower()
+    selected = runtime_provider(provider or config.llm_provider or "groq")
     if selected == "ollama":
         return OllamaLLM(config)
     return OpenAICompatLLM(config, provider=selected)

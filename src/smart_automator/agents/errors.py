@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import httpx
 
+from ..server.provider_utils import format_llm_connection_error
+
 
 class ChatModelAuthError(Exception):
     def __init__(self, message: str, cause: Exception | None = None):
@@ -76,7 +78,7 @@ def classify_llm_error(error: Exception) -> Exception:
     if is_authentication_error(error):
         return ChatModelAuthError(str(error), error)
     if is_forbidden_error(error):
-        return ChatModelForbiddenError(str(error), error)
+        return ChatModelForbiddenError(format_llm_connection_error(error), error)
     if is_bad_request_error(error):
         return ChatModelBadRequestError(str(error), error)
     if is_aborted_error(error):

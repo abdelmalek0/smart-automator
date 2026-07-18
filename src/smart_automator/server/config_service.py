@@ -18,8 +18,11 @@ from ..config import (
 from ..server.paths import ENV_FILE, PRICING_FILE
 from ..server.provider_utils import (
     UI_PROVIDERS,
+    coerce_provider_base_url,
+    coerce_provider_model,
     default_base_url,
     default_model_for_provider,
+    format_llm_connection_error,
     normalize_provider,
     provider_api_key_env_name,
     provider_api_key_is_set,
@@ -105,6 +108,8 @@ def apply_config_update(update) -> dict:
         base_url=update.base_url,
         model=update.model,
     )
+    settings = settings_store.ensure_loaded()
+    active = settings.get_provider(provider)
 
     if not ENV_FILE.exists():
         ENV_FILE.write_text("")
@@ -113,14 +118,14 @@ def apply_config_update(update) -> dict:
     set_key(str(ENV_FILE), "LLM_PROVIDER", runtime)
     if update.model is not None:
         if runtime == "groq":
-            set_key(str(ENV_FILE), "GROQ_MODEL", update.model)
+            set_key(str(ENV_FILE), "GROQ_MODEL", active.model)
         elif runtime == "google":
-            set_key(str(ENV_FILE), "GOOGLE_MODEL", update.model)
+            set_key(str(ENV_FILE), "GOOGLE_MODEL", active.model)
         else:
-            set_key(str(ENV_FILE), "OLLAMA_MODEL", update.model)
+            set_key(str(ENV_FILE), "OLLAMA_MODEL", active.model)
     if update.base_url is not None:
         if runtime == "ollama":
-            set_key(str(ENV_FILE), "OLLAMA_BASE_URL", update.base_url)
+            set_key(str(ENV_FILE), "OLLAMA_BASE_URL", active.base_url)
     if update.api_key is not None:
         ui_provider = (update.provider or settings.provider or provider).strip().lower()
         key_env = provider_api_key_env_name(ui_provider)
@@ -135,14 +140,6 @@ def apply_config_update(update) -> dict:
 
     reload_runtime_env()
     return build_config_response()
-
-
-def check_llm_connection() -> None:
-    config = config_for_run()
-    from ..main import create_llm
-
-    llm = create_llm(config)
-    llm.chat([{"role": "user", "content": "Reply with OK only."}], temperature=0)
 
 
 def load_pricing() -> list[dict]:
@@ -222,3 +219,73 @@ def config_for_run() -> Config:
         if active.base_url:
             config.ollama_base_url = active.base_url
     return config
+
+
+def _update_has_llm_fields(update) -> bool:
+    if update is None:
+        return False
+    return any(
+        getattr(update, field) is not None
+        for field in ("provider", "base_url", "model", "api_key")
+    )
+
+
+def config_for_check(update=None) -> Config:
+    """Build a Config for connection testing from saved settings or an optional form payload."""
+    reload_runtime_env()
+    config = load_config()
+    settings = LlmSettingsStore().ensure_loaded()
+
+    if not _update_has_llm_fields(update):
+        return config_for_run()
+
+    ui_provider = normalize_provider(
+        update.provider if update.provider is not None else settings.provider or config.llm_provider
+    )
+    active = settings.get_provider(ui_provider)
+    base_url = (
+        coerce_provider_base_url(ui_provider, update.base_url)
+        if update.base_url is not None
+        else coerce_provider_base_url(ui_provider, active.base_url)
+    )
+    model = (
+        coerce_provider_model(ui_provider, update.model, base_url=base_url)
+        if update.model is not None
+        else coerce_provider_model(ui_provider, active.model, base_url=base_url)
+    )
+
+    runtime = runtime_provider(ui_provider)
+    config.llm_provider = runtime
+    config.active_provider = ui_provider
+    config.active_model = model
+
+    if update.api_key is not None:
+        key_env = provider_api_key_env_name(ui_provider)
+        if key_env == "GROQ_API_KEY":
+            config.groq_api_key = update.api_key
+        elif key_env == "GOOGLE_API_KEY":
+            config.google_api_key = update.api_key
+        elif key_env == "OLLAMA_API_KEY":
+            config.ollama_api_key = update.api_key
+
+    if runtime == "groq":
+        config.groq_model = model
+        config.openai_base_url = base_url or default_base_url("groq")
+    elif runtime == "google":
+        config.google_model = model
+        config.openai_base_url = base_url or default_base_url("google")
+    else:
+        config.ollama_model = model
+        config.ollama_base_url = base_url or default_base_url(ui_provider)
+    return config
+
+
+def check_llm_connection(update=None) -> None:
+    config = config_for_check(update)
+    from ..main import create_llm
+
+    try:
+        llm = create_llm(config)
+        llm.chat([{"role": "user", "content": "Reply with OK only."}], temperature=0)
+    except BaseException as exc:
+        raise RuntimeError(format_llm_connection_error(exc)) from exc

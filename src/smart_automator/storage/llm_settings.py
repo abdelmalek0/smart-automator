@@ -10,8 +10,11 @@ from typing import Any
 from ..server.paths import LLM_SETTINGS_FILE
 from ..server.provider_utils import (
     UI_PROVIDERS,
+    coerce_provider_base_url,
+    coerce_provider_model,
     default_base_url,
     default_model_for_provider,
+    is_cloud_ollama_model,
     normalize_provider,
     runtime_provider,
 )
@@ -52,6 +55,12 @@ class ProviderSettings:
         if not models:
             models = [model]
         base_url = str(data.get("base_url") or "").strip() or default_base_url(provider)
+        base_url = coerce_provider_base_url(provider, base_url)
+        model = coerce_provider_model(provider, model, base_url=base_url)
+        if model and model not in models:
+            models = [model] + [m for m in models if m != model]
+        if not models:
+            models = [model]
         return cls(base_url=base_url, model=model, models=models)
 
 
@@ -86,6 +95,31 @@ class LlmSettings:
             self.providers[canonical] = ProviderSettings.from_dict(None, provider=canonical)
         return self.providers[canonical]
 
+    def sanitize_providers(self) -> bool:
+        """Coerce each provider slot to valid base_url/model combos. Returns True if changed."""
+        changed = False
+        for provider in UI_PROVIDERS:
+            entry = self.get_provider(provider)
+            coerced_url = coerce_provider_base_url(provider, entry.base_url)
+            coerced_model = coerce_provider_model(provider, entry.model, base_url=coerced_url)
+            if coerced_url != entry.base_url:
+                entry.base_url = coerced_url
+                changed = True
+            if coerced_model != entry.model:
+                entry.model = coerced_model
+                changed = True
+            models = [m for m in entry.models if not (
+                normalize_provider(provider) == "ollama" and is_cloud_ollama_model(m)
+            )]
+            if coerced_model not in models:
+                models.insert(0, coerced_model)
+            if not models:
+                models = [coerced_model]
+            if models != entry.models:
+                entry.models = models
+                changed = True
+        return changed
+
 
 class LlmSettingsStore:
     def __init__(self, path: Path = LLM_SETTINGS_FILE) -> None:
@@ -113,6 +147,8 @@ class LlmSettingsStore:
             settings = LlmSettings.from_dict(self._load_raw())
         for provider in UI_PROVIDERS:
             settings.get_provider(provider)
+        if settings.sanitize_providers():
+            self.save(settings)
         return settings
 
     def save(self, settings: LlmSettings) -> None:
@@ -132,14 +168,23 @@ class LlmSettingsStore:
                 settings.provider = normalize_provider(provider)
             entry = settings.get_provider(settings.provider)
             if base_url is not None:
-                entry.base_url = base_url.strip() or default_base_url(settings.provider)
+                entry.base_url = coerce_provider_base_url(
+                    settings.provider,
+                    base_url.strip() or default_base_url(settings.provider),
+                )
             if model is not None:
                 name = model.strip()
                 if name:
-                    entry.model = name
-                    models = [m for m in entry.models if m != name]
-                    models.insert(0, name)
+                    coerced_model = coerce_provider_model(
+                        settings.provider,
+                        name,
+                        base_url=entry.base_url,
+                    )
+                    entry.model = coerced_model
+                    models = [m for m in entry.models if m != coerced_model]
+                    models.insert(0, coerced_model)
                     entry.models = models[:_MAX_MODELS_PER_PROVIDER]
+            settings.sanitize_providers()
             self._save_raw(settings.to_dict())
             return settings
 

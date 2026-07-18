@@ -5,9 +5,7 @@ from .retry import call_with_retry
 from .structured_output import ensure_json_keyword_in_messages
 from ..config import Config
 
-
-def _is_ollama_cloud_url(base_url: str) -> bool:
-    return "ollama.com" in base_url.rstrip("/").lower()
+from ..server.provider_utils import is_ollama_cloud_url
 
 
 class OllamaLLM(BaseLLM):
@@ -16,7 +14,7 @@ class OllamaLLM(BaseLLM):
         self._base_url = config.ollama_base_url.rstrip("/")
         self._model = config.ollama_model
         self._api_key = config.ollama_api_key.strip()
-        if _is_ollama_cloud_url(self._base_url) and not self._api_key:
+        if is_ollama_cloud_url(self._base_url) and not self._api_key:
             raise ValueError(
                 "OLLAMA_API_KEY is required for Ollama Cloud (https://ollama.com). "
                 "Create a key at https://ollama.com/settings/keys and set OLLAMA_API_KEY in .env."

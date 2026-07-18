@@ -63,8 +63,16 @@ export function getConfig(): Promise<Config> {
   return request('/config')
 }
 
-export function checkConfig(): Promise<{ ok: boolean; error?: string }> {
-  return request('/config/check')
+export function checkConfig(payload?: {
+  provider?: string
+  base_url?: string
+  model?: string
+  api_key?: string
+}): Promise<{ ok: boolean; error?: string }> {
+  return request('/config/check', {
+    method: 'POST',
+    body: JSON.stringify(payload ?? {}),
+  })
 }
 
 export async function updateConfig(payload: ConfigUpdatePayload): Promise<Config> {

@@ -345,10 +345,10 @@ async def api_update_config(update: ConfigUpdate):
     return apply_config_update(update)
 
 
-@app.get("/api/config/check")
-async def api_check_config():
+@app.post("/api/config/check")
+async def api_check_config(update: ConfigUpdate | None = None):
     try:
-        check_llm_connection()
+        check_llm_connection(update)
         return {"ok": True}
     except BaseException as exc:
         return {"ok": False, "error": str(exc)}
