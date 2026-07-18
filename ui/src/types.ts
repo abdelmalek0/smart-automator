@@ -168,6 +168,14 @@ export interface ProviderSettings {
 
 export type BrowserSessionMode = 'cdp' | 'persistent' | 'ephemeral'
 
+export interface ChromeProfile {
+  id: string
+  browser: string
+  name: string
+  user_data_dir: string
+  profile_directory: string
+}
+
 export interface Config {
   provider: string
   model: string
@@ -179,7 +187,10 @@ export interface Config {
   cdp_url: string
   fresh_profile: boolean
   chrome_user_data: string
+  chrome_profile_directory: string
+  chrome_profile_mirror_path?: string
   effective_chrome_user_data: string
+  effective_chrome_profile: string
   default_chrome_user_data: string
   browser_session_mode: BrowserSessionMode
 }

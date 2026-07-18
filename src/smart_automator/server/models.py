@@ -57,6 +57,7 @@ class ConfigUpdate(BaseModel):
     api_key: Optional[str] = None
     fresh_profile: Optional[bool] = None
     chrome_user_data: Optional[str] = None
+    chrome_profile_directory: Optional[str] = None
     cdp_url: Optional[str] = None
 
 

@@ -23,6 +23,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..storage.websites import WebsiteStore
+from ..browser.chrome_profiles import discover_chrome_profiles
 from .config_service import (
     apply_config_update,
     build_config_response,
@@ -338,6 +339,11 @@ async def api_list_tools():
 @app.get("/api/config")
 async def api_get_config():
     return build_config_response()
+
+
+@app.get("/api/chrome-profiles")
+async def api_list_chrome_profiles():
+    return [profile.to_dict() for profile in discover_chrome_profiles()]
 
 
 @app.put("/api/config")

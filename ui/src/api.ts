@@ -1,4 +1,4 @@
-import type { Config, PricingEntry, RunDetails, RunSummary, Website, WebsiteTask } from './types'
+import type { ChromeProfile, Config, PricingEntry, RunDetails, RunSummary, Website, WebsiteTask } from './types'
 import { normalizeProvider } from './providers'
 
 const BASE = '/api'
@@ -10,6 +10,7 @@ export type ConfigUpdatePayload = {
   api_key?: string
   fresh_profile?: boolean
   chrome_user_data?: string
+  chrome_profile_directory?: string
   cdp_url?: string
 }
 
@@ -61,6 +62,10 @@ export async function cancelRun(runId: string): Promise<void> {
 
 export function getConfig(): Promise<Config> {
   return request('/config')
+}
+
+export function listChromeProfiles(): Promise<ChromeProfile[]> {
+  return request('/chrome-profiles')
 }
 
 export function checkConfig(payload?: {

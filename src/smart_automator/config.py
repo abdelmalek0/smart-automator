@@ -51,6 +51,7 @@ class Config(BaseModel):
     cdp_url: str = ""
     fresh_profile: bool = False
     chrome_user_data: str = ""
+    chrome_profile_directory: str = ""
 
 
 def default_chrome_user_data() -> str:
@@ -124,4 +125,5 @@ def load_config() -> Config:
         cdp_url=os.getenv("CDP_URL", ""),
         fresh_profile=os.getenv("QA_FRESH_PROFILE", "false").lower() == "true",
         chrome_user_data=os.getenv("CHROME_USER_DATA", ""),
+        chrome_profile_directory=os.getenv("CHROME_PROFILE_DIRECTORY", ""),
     )

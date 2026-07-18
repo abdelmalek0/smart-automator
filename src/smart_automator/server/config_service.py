@@ -15,6 +15,14 @@ from ..config import (
     load_config,
     resolve_chrome_user_data,
 )
+from ..browser.chrome_profiles import (
+    discover_chrome_profiles,
+    format_effective_chrome_profile,
+)
+from ..browser.chrome_profile_mirror import (
+    chrome_profile_mirror_path,
+    format_mirrored_chrome_profile,
+)
 from ..server.paths import ENV_FILE, PRICING_FILE
 from ..server.provider_utils import (
     UI_PROVIDERS,
@@ -54,6 +62,16 @@ def reload_runtime_env() -> None:
     load_dotenv(ENV_FILE, override=True)
 
 
+def _chrome_profile_display_name(user_data_dir: str, profile_directory: str) -> str:
+    if not profile_directory:
+        return ""
+    target_id = f"{user_data_dir}|{profile_directory}"
+    for profile in discover_chrome_profiles():
+        if profile.id == target_id:
+            return profile.name
+    return profile_directory
+
+
 def build_config_response() -> dict:
     reload_runtime_env()
     config = load_config()
@@ -75,11 +93,26 @@ def build_config_response() -> dict:
     fresh_profile = os.getenv("QA_FRESH_PROFILE", "false").lower() == "true"
     cdp_url = os.getenv("CDP_URL", "")
     chrome_user_data = os.getenv("CHROME_USER_DATA", "")
+    chrome_profile_directory = os.getenv("CHROME_PROFILE_DIRECTORY", "")
     session_mode = browser_session_mode(cdp_url=cdp_url, fresh_profile=fresh_profile)
     effective_chrome_user_data = resolve_chrome_user_data(
         chrome_user_data,
         fresh_profile=fresh_profile,
     )
+    mirror_path = chrome_profile_mirror_path(chrome_user_data, chrome_profile_directory)
+    if mirror_path:
+        effective_chrome_profile = format_mirrored_chrome_profile(
+            profile_directory=chrome_profile_directory,
+            mirror_path=mirror_path,
+            profile_name=_chrome_profile_display_name(chrome_user_data, chrome_profile_directory),
+        )
+    elif effective_chrome_user_data:
+        effective_chrome_profile = format_effective_chrome_profile(
+            effective_chrome_user_data,
+            profile_directory=chrome_profile_directory,
+        )
+    else:
+        effective_chrome_profile = ""
     return {
         "provider": provider,
         "model": model,
@@ -91,7 +124,10 @@ def build_config_response() -> dict:
         "cdp_url": cdp_url,
         "fresh_profile": fresh_profile,
         "chrome_user_data": chrome_user_data,
+        "chrome_profile_directory": chrome_profile_directory,
+        "chrome_profile_mirror_path": mirror_path,
         "effective_chrome_user_data": effective_chrome_user_data,
+        "effective_chrome_profile": effective_chrome_profile,
         "default_chrome_user_data": default_chrome_user_data(),
         "browser_session_mode": session_mode,
     }
@@ -135,6 +171,8 @@ def apply_config_update(update) -> dict:
         set_key(str(ENV_FILE), "QA_FRESH_PROFILE", "true" if update.fresh_profile else "false")
     if update.chrome_user_data is not None:
         set_key(str(ENV_FILE), "CHROME_USER_DATA", update.chrome_user_data.strip())
+    if update.chrome_profile_directory is not None:
+        set_key(str(ENV_FILE), "CHROME_PROFILE_DIRECTORY", update.chrome_profile_directory.strip())
     if update.cdp_url is not None:
         set_key(str(ENV_FILE), "CDP_URL", update.cdp_url.strip())
 

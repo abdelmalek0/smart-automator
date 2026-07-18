@@ -3,6 +3,7 @@ from __future__ import annotations
 from playwright.sync_api import sync_playwright, Browser, BrowserContext as PlaywrightContext
 
 from ..config import Config, resolve_chrome_user_data
+from .chrome_profile_mirror import resolve_persistent_launch_dir
 from .dom import DOMState, calc_branch_path_hash_set, mark_new_elements, remove_highlights
 from .page import Page
 from .util import is_url_allowed
@@ -42,27 +43,43 @@ class BrowserContext:
             return
 
         launch_kwargs: dict = {"headless": self._config.headless}
+        launch_args: list[str] = []
         if self._config.headless:
-            launch_kwargs["args"] = [
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-            ]
+            launch_args.extend(
+                [
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                ]
+            )
         else:
             launch_kwargs["channel"] = "chrome"
+
+        profile_directory = (self._config.chrome_profile_directory or "").strip()
 
         user_data_dir = resolve_chrome_user_data(
             self._config.chrome_user_data,
             fresh_profile=effective_fresh,
         )
         if user_data_dir and not effective_fresh:
-            self._context = self._playwright.chromium.launch_persistent_context(
+            launch_dir, launch_profile_dir = resolve_persistent_launch_dir(
                 user_data_dir,
+                profile_directory,
+            )
+            if launch_profile_dir:
+                launch_args.append(f"--profile-directory={launch_profile_dir}")
+            if launch_args:
+                launch_kwargs["args"] = launch_args
+            self._context = self._playwright.chromium.launch_persistent_context(
+                launch_dir,
                 **launch_kwargs,
                 viewport={"width": self._config.viewport_width, "height": self._config.viewport_height},
                 color_scheme="light",
             )
             self._browser = self._context.browser
             return
+
+        if launch_args:
+            launch_kwargs["args"] = launch_args
 
         self._browser = self._playwright.chromium.launch(**launch_kwargs)
         self._context = self._browser.new_context(

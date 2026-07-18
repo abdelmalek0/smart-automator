@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Check, Loader2, Plus, Trash2, X } from 'lucide-react'
-import { checkConfig, getConfig, getPricing, isProviderApiKeySet, savePricing, updateConfig } from '@/api'
+import { checkConfig, getConfig, getPricing, isProviderApiKeySet, listChromeProfiles, savePricing, updateConfig } from '@/api'
 import { defaultBaseUrl, defaultModel, isValidBaseUrlForProvider, normalizeProvider, providerUsesApiKey } from '@/providers'
-import type { BrowserSessionMode, Config, PricingEntry } from '@/types'
+import type { BrowserSessionMode, ChromeProfile, Config, PricingEntry } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -19,6 +19,26 @@ import {
 } from '@/components/ui/select'
 import { ScrollArea } from '@/components/ui/scroll-area'
 
+const PROFILE_APP_DEFAULT = '__app_default__'
+const PROFILE_CUSTOM = '__custom__'
+
+function inferProfileSelection(
+  chromeUserData: string,
+  chromeProfileDirectory: string,
+  profiles: ChromeProfile[],
+): string {
+  if (!chromeUserData && !chromeProfileDirectory) {
+    return PROFILE_APP_DEFAULT
+  }
+  if (chromeProfileDirectory) {
+    const id = `${chromeUserData}|${chromeProfileDirectory}`
+    if (profiles.some((profile) => profile.id === id)) {
+      return id
+    }
+  }
+  return PROFILE_CUSTOM
+}
+
 export default function SettingsPage() {
   const queryClient = useQueryClient()
 
@@ -33,12 +53,20 @@ export default function SettingsPage() {
     queryFn: getPricing,
   })
 
+  const { data: chromeProfiles = [] } = useQuery({
+    queryKey: ['chrome-profiles'],
+    queryFn: listChromeProfiles,
+    refetchOnWindowFocus: false,
+  })
+
   const [provider, setProvider] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
   const [model, setModel] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [freshProfile, setFreshProfile] = useState(false)
   const [chromeUserData, setChromeUserData] = useState('')
+  const [chromeProfileDirectory, setChromeProfileDirectory] = useState('')
+  const [profileSelection, setProfileSelection] = useState(PROFILE_APP_DEFAULT)
   const [cdpUrl, setCdpUrl] = useState('')
   const [dirty, setDirty] = useState(false)
   const [checking, setChecking] = useState(false)
@@ -52,6 +80,14 @@ export default function SettingsPage() {
     setModel(next.model)
     setFreshProfile(next.fresh_profile ?? false)
     setChromeUserData(next.chrome_user_data ?? '')
+    setChromeProfileDirectory(next.chrome_profile_directory ?? '')
+    setProfileSelection(
+      inferProfileSelection(
+        next.chrome_user_data ?? '',
+        next.chrome_profile_directory ?? '',
+        chromeProfiles,
+      ),
+    )
     setCdpUrl(next.cdp_url ?? '')
   }
 
@@ -59,7 +95,7 @@ export default function SettingsPage() {
     if (config && !dirty) {
       applyConfig(config)
     }
-  }, [config, dirty])
+  }, [config, dirty, chromeProfiles])
 
   function handleProviderChange(next: string) {
     const canonical = normalizeProvider(next)
@@ -87,6 +123,7 @@ export default function SettingsPage() {
         api_key: apiKey || undefined,
         fresh_profile: freshProfile,
         chrome_user_data: chromeUserData,
+        chrome_profile_directory: chromeProfileDirectory,
         cdp_url: cdpUrl,
       }),
     onSuccess: (saved) => {
@@ -260,12 +297,18 @@ export default function SettingsPage() {
                     label="Active profile"
                     value={
                       config.browser_session_mode === 'persistent'
-                        ? config.effective_chrome_user_data
+                        ? (config.effective_chrome_profile || config.effective_chrome_user_data)
                         : config.browser_session_mode === 'cdp'
                           ? 'Attached via CDP'
                           : 'Ephemeral (discarded after each run)'
                     }
                   />
+                  {config.chrome_profile_mirror_path && (
+                    <InfoRow
+                      label="Mirror directory"
+                      value={config.chrome_profile_mirror_path}
+                    />
+                  )}
                 </CardContent>
               </Card>
             )}
@@ -289,24 +332,65 @@ export default function SettingsPage() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="chrome-profile">Profile directory</Label>
-              <Input
-                id="chrome-profile"
-                value={chromeUserData}
-                onChange={(e) => {
+              <Label htmlFor="chrome-profile-select">Chrome profile</Label>
+              <Select
+                value={profileSelection}
+                onValueChange={(value) => {
                   setDirty(true)
-                  setChromeUserData(e.target.value)
+                  setProfileSelection(value)
+                  if (value === PROFILE_APP_DEFAULT) {
+                    setChromeUserData('')
+                    setChromeProfileDirectory('')
+                  } else if (value === PROFILE_CUSTOM) {
+                    setChromeProfileDirectory('')
+                  } else {
+                    const profile = chromeProfiles.find((item) => item.id === value)
+                    if (profile) {
+                      setChromeUserData(profile.user_data_dir)
+                      setChromeProfileDirectory(profile.profile_directory)
+                    }
+                  }
                 }}
-                placeholder={config?.default_chrome_user_data ?? '~/.local/share/smart-automator-chrome'}
-                className="mono text-sm"
                 disabled={freshProfile || Boolean(cdpUrl.trim())}
-              />
+              >
+                <SelectTrigger id="chrome-profile-select" className="text-sm">
+                  <SelectValue placeholder="Select a profile" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={PROFILE_APP_DEFAULT}>
+                    App default (smart-automator)
+                  </SelectItem>
+                  {chromeProfiles.map((profile) => (
+                    <SelectItem key={profile.id} value={profile.id}>
+                      {profile.name} — {profile.browser}
+                    </SelectItem>
+                  ))}
+                  <SelectItem value={PROFILE_CUSTOM}>Custom path…</SelectItem>
+                </SelectContent>
+              </Select>
+              {profileSelection === PROFILE_CUSTOM && (
+                <Input
+                  id="chrome-profile"
+                  value={chromeUserData}
+                  onChange={(e) => {
+                    setDirty(true)
+                    setChromeUserData(e.target.value)
+                  }}
+                  placeholder={config?.default_chrome_user_data ?? '~/.local/share/smart-automator-chrome'}
+                  className="mono text-sm"
+                  disabled={freshProfile || Boolean(cdpUrl.trim())}
+                />
+              )}
               <p className="text-xs text-muted-foreground">
                 {freshProfile
                   ? 'Disabled while isolated profile is on — each run starts with a blank browser.'
                   : cdpUrl.trim()
                     ? 'Not used while CDP URL is set.'
-                    : 'Leave empty to use the default directory above. Cookies and history persist between runs.'}
+                    : profileSelection === PROFILE_APP_DEFAULT
+                      ? 'Uses the default smart-automator profile directory. Cookies and history persist between runs.'
+                      : profileSelection === PROFILE_CUSTOM
+                        ? 'Enter a custom user-data directory. System Chrome directories require selecting a named profile from the list.'
+                        : 'Profiles are copied into smart-automator storage because Chrome blocks automation on live system profile directories. Close Chrome before the first sync. Logins may need a one-time re-auth in the mirrored profile.'}
               </p>
             </div>
 
@@ -439,7 +523,7 @@ export default function SettingsPage() {
                     label="Profile Dir"
                     value={
                       config.browser_session_mode === 'persistent'
-                        ? config.effective_chrome_user_data
+                        ? (config.effective_chrome_profile || config.effective_chrome_user_data)
                         : '(not used)'
                     }
                   />
