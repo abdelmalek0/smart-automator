@@ -57,7 +57,10 @@ def _resolve_element_for_action(
                 and candidate.xpath == original_element.xpath
             ):
                 return candidate
-        return original_element
+        fallback = selector_map.get(action.index)
+        if isinstance(fallback, DOMElementNode):
+            return fallback
+        return None
     candidate = selector_map.get(action.index)
     return candidate if isinstance(candidate, DOMElementNode) else None
 
@@ -192,7 +195,7 @@ class NavigatorActionRegistry:
             element_tree=getattr(updated_state, "element_tree", None),
             original_element=original,
         )
-        locate_element = original or element
+        locate_element = element
         tab_ids = browser_context.get_all_tab_ids()
         before_snapshot = capture_page_snapshot(page, tab_ids)
         before_element = probe_element(

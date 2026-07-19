@@ -38,7 +38,9 @@ Rules:
 - Forms: fill all empty inputs with input_text, then click Submit/Sign in if value does not apply automatically.
 - If page is loading or no elements listed, use wait (seconds or duration, e.g. 3).
 - After submit/login/continue with no page change, re-check field values — do not wait.
-- Use done ONLY when the CURRENT page visibly confirms the ultimate task is complete.
+- Use done ONLY when the CURRENT page visibly confirms the ultimate task is complete and success criteria are observed on the page.
+- Success criteria describe what should be true on the page when finished — verify them by reading [Visible text] and indexed elements; they are NOT additional browser actions.
+- Derive actions from the task and <plan> next_steps only — never click/type/navigate solely because a criterion mentions text.
 - If a <plan> exists, follow next_steps first.
 - evaluation_previous_goal must be Failed unless the last action clearly succeeded on this page.
 
@@ -74,13 +76,19 @@ def get_planner_system_prompt() -> str:
  - Suggest to use the current tab as possible, do NOT open a new tab unless required
  - If sign in is required and credentials are not in the user task, mark as done and ask user to sign in in final_answer
  - For PIN keypads, modals, and forms, break next_steps into explicit substeps: (1) enter all digits/fields, (2) click Enter/OK/Submit/confirm, (3) verify the next screen loaded
+ - Derive next_steps from the task only — success criteria are observations to verify at completion, not extra steps to perform
+
+# SUCCESS CRITERIA:
+- Success criteria describe what should be true on the page when finished; they are not additional steps.
+- Use success criteria only when validating done/final_answer against the CURRENT browser state.
 
 # TASK COMPLETION VALIDATION:
 When determining if a task is "done":
 1. Read the task description carefully and compare against the CURRENT browser state shown
 2. Verify all aspects of the task have been completed successfully on the current page — not from navigator memory alone
-3. If the navigator called done but the page still needs work, set done=false and give concrete next_steps
-4. If sign in is required and credentials are missing from the task, mark as done and ask user to sign in
+3. Verify success criteria are visibly met on the current page before setting done=true
+4. If the navigator called done but the page still needs work, set done=false and give concrete next_steps
+5. If sign in is required and credentials are missing from the task, mark as done and ask user to sign in
 
 # RESPONSE FORMAT: Always respond with valid JSON:
 {{
@@ -130,13 +138,25 @@ def build_browser_state_message(context: AgentContext, browser_state: BrowserSta
             )
         elements_text = wrap_untrusted_content(raw_elements)
         formatted_elements = (
-            f"{scroll_info}{index_note}[Start of page]\n{elements_text}\n[End of page]\n"
+            f"{scroll_info}{index_note}"
+            "[Start of page]\n"
+            f"{elements_text}\n"
+            "[End of page]\n"
+            "Note: indexed [N] elements are actionable. [Visible text] is read-only page copy "
+            "for progress and success checks — not clickable.\n"
         )
     else:
         formatted_elements = (
             "empty page (no interactive elements in viewport yet — "
             "the page may still be loading after a recent click or navigation; "
             "prefer wait on the next step before using go_to_url to reload)"
+        )
+
+    criteria_section = ""
+    if context.success_criteria.strip():
+        criteria_section = (
+            "\nSuccess criteria to verify (read-only — not actions):\n"
+            f"{context.success_criteria.strip()}\n"
         )
 
     step_info = ""
@@ -176,7 +196,6 @@ Current tab: {current_tab}
 Other available tabs:
 {chr(10).join(other_tabs) if other_tabs else "  (none)"}
 Interactive elements from top layer of the current page inside the viewport:
-{formatted_elements}
-{step_info}
+{formatted_elements}{criteria_section}{step_info}
 {action_results_desc}
 """

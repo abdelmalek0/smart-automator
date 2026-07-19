@@ -95,7 +95,13 @@ class MessageManager:
     def length(self) -> int:
         return len(self.history.messages)
 
-    def init_task_messages(self, system_prompt: str, task: str):
+    def init_task_messages(
+        self,
+        system_prompt: str,
+        task: str,
+        *,
+        success_criteria: str = "",
+    ):
         self.add_message_with_tokens({"role": "system", "content": system_prompt}, "init")
 
         user_text, attachments_inner = split_user_text_and_attachments(task)
@@ -109,6 +115,15 @@ class MessageManager:
         if attachments_inner:
             wrapped = f"{wrapped}\n\n{wrap_attachments(attachments_inner)}"
         self.add_message_with_tokens({"role": "user", "content": wrapped}, "init")
+
+        cleaned_criteria = filter_external_content(success_criteria.strip())
+        if cleaned_criteria:
+            criteria_content = (
+                "Success criteria (observations to VERIFY on the page — "
+                "do NOT execute these as browser actions):\n"
+                f'"""{cleaned_criteria}"""'
+            )
+            self.add_message_with_tokens({"role": "user", "content": criteria_content}, "init")
 
         self.add_message_with_tokens({"role": "user", "content": "Example output:"}, "init")
         example_output = {
@@ -131,7 +146,7 @@ class MessageManager:
             "init",
         )
 
-    def add_new_task(self, new_task: str):
+    def add_new_task(self, new_task: str, *, success_criteria: str = ""):
         user_text, attachments_inner = split_user_text_and_attachments(new_task)
         cleaned_task = filter_external_content(user_text)
         content = (
@@ -143,6 +158,15 @@ class MessageManager:
         if attachments_inner:
             wrapped = f"{wrapped}\n\n{wrap_attachments(attachments_inner)}"
         self.add_message_with_tokens({"role": "user", "content": wrapped})
+
+        cleaned_criteria = filter_external_content(success_criteria.strip())
+        if cleaned_criteria:
+            criteria_content = (
+                "Updated success criteria (observations to VERIFY on the page — "
+                "do NOT execute these as browser actions):\n"
+                f'"""{cleaned_criteria}"""'
+            )
+            self.add_message_with_tokens({"role": "user", "content": criteria_content})
 
     def add_plan(self, plan: str | None, position: int | None = None):
         if plan:

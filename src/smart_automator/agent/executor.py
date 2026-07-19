@@ -112,6 +112,7 @@ class Executor:
         config: Config,
         planner_llm: BaseLLM | None = None,
         on_event: Callable[[dict], None] | None = None,
+        success_criteria: str = "",
     ):
         self._task = task
         self._tasks = [task]
@@ -119,6 +120,7 @@ class Executor:
         self._llm = llm
         self._planner_llm = planner_llm or llm
         self._on_event = on_event
+        self._success_criteria = success_criteria.strip()
 
         message_manager = MessageManager(
             MessageManagerSettings(max_input_tokens=config.max_input_tokens)
@@ -142,6 +144,7 @@ class Executor:
             message_manager=message_manager,
             options=options,
         )
+        self._context.success_criteria = self._success_criteria
         self._last_error: str | None = None
 
         self._llm.set_cancel_event(self._context.cancel_event)
@@ -155,6 +158,7 @@ class Executor:
         message_manager.init_task_messages(
             self._navigator._system_prompt,
             task,
+            success_criteria=self._success_criteria,
         )
 
     @property

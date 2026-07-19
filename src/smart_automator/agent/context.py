@@ -108,6 +108,7 @@ class AgentContext:
         from .history import AgentStepHistory
 
         self.history: AgentStepHistory = AgentStepHistory()
+        self.success_criteria: str = ""
 
     def record_failed_action(self, url: str, action_name: str, action_args: dict, error: str) -> None:
         signature = {

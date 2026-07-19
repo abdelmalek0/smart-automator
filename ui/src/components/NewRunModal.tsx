@@ -222,6 +222,7 @@ export default function NewRunModal({
 
             <div className="space-y-2">
               <Label htmlFor="task">Test task</Label>
+              <p className="text-xs text-muted-foreground">What the agent should do.</p>
               <Textarea
                 id="task"
                 value={task}
@@ -234,6 +235,9 @@ export default function NewRunModal({
 
             <div className="space-y-2">
               <Label htmlFor="success-criteria">Success criteria</Label>
+              <p className="text-xs text-muted-foreground">
+                What should be true on the page when done (observations, not steps).
+              </p>
               <Textarea
                 id="success-criteria"
                 value={successCriteria}

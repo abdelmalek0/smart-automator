@@ -337,6 +337,7 @@ def run_automation(run: RunState) -> None:
             config,
             planner_llm=planner_llm,
             on_event=on_event,
+            success_criteria=run.success_criteria,
         )
         run.executor = executor
 

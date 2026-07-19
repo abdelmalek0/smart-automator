@@ -147,6 +147,26 @@ def history_item_to_step(
     }
 
 
+def compose_agent_task(
+    task: str,
+    *,
+    name: str,
+    url: str,
+    context_prompt: str,
+    test_name: str | None = None,
+) -> str:
+    """Build the action task for planner/navigator (excludes success criteria)."""
+    parts: list[str] = []
+    if test_name and test_name.strip():
+        parts.append(f"Test: {test_name.strip()}")
+    if url.strip():
+        parts.append(f"Website: {name} ({url.strip()})")
+    if context_prompt.strip():
+        parts.append(f"Context: {context_prompt.strip()}")
+    parts.append(f"Task: {task.strip()}")
+    return "\n\n".join(parts)
+
+
 def compose_task(
     task: str,
     *,
@@ -156,14 +176,14 @@ def compose_task(
     success_criteria: str = "",
     test_name: str | None = None,
 ) -> str:
-    parts: list[str] = []
-    if test_name and test_name.strip():
-        parts.append(f"Test: {test_name.strip()}")
-    if url.strip():
-        parts.append(f"Website: {name} ({url.strip()})")
-    if context_prompt.strip():
-        parts.append(f"Context: {context_prompt.strip()}")
-    parts.append(f"Task: {task.strip()}")
+    """Full composed task for display/reports, including success criteria."""
+    composed = compose_agent_task(
+        task,
+        name=name,
+        url=url,
+        context_prompt=context_prompt,
+        test_name=test_name,
+    )
     if success_criteria.strip():
-        parts.append(f"Success criteria: {success_criteria.strip()}")
-    return "\n\n".join(parts)
+        composed = f"{composed}\n\nSuccess criteria: {success_criteria.strip()}"
+    return composed

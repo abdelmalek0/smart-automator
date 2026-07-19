@@ -45,7 +45,7 @@ from .history_store import load_run_history
 from .replay_store import load_run_replay
 from .run_state import RunState, add_run, get_run, list_runs
 from .runner import run_automation
-from .step_mapper import compose_task
+from .step_mapper import compose_agent_task
 from .tools import list_action_tools
 
 load_dotenv(ENV_FILE)
@@ -154,21 +154,19 @@ async def start_run(req: StartRunRequest):
         website = _websites().get_website(website_id)
         if not website:
             raise HTTPException(status_code=404, detail="Website not found")
-        effective_task = compose_task(
+        effective_task = compose_agent_task(
             display_task,
             name=website.name,
             url=website.url,
             context_prompt=website.context_prompt,
-            success_criteria=success_criteria,
             test_name=test_name,
         )
     else:
-        effective_task = compose_task(
+        effective_task = compose_agent_task(
             display_task,
             name="",
             url="",
             context_prompt="",
-            success_criteria=success_criteria,
             test_name=test_name,
         )
 

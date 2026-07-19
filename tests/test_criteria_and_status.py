@@ -14,7 +14,7 @@ from smart_automator.reporting.html_report import render_html_report
 from smart_automator.server.app import app
 from smart_automator.server.history_store import load_run_history, save_run_history
 from smart_automator.server.run_state import RunState
-from smart_automator.server.step_mapper import compose_task
+from smart_automator.server.step_mapper import compose_agent_task, compose_task
 
 
 @pytest.fixture
@@ -150,6 +150,17 @@ class TestComposeTask(unittest.TestCase):
         self.assertIn("Test: Cart smoke", composed)
         self.assertIn("Success criteria: Cart shows one item", composed)
         self.assertIn("Task: Add item to cart", composed)
+
+    def test_agent_task_excludes_success_criteria(self):
+        agent_task = compose_agent_task(
+            "Add item to cart",
+            name="Shop",
+            url="https://shop.example.com",
+            context_prompt="Use demo account",
+            test_name="Cart smoke",
+        )
+        self.assertIn("Task: Add item to cart", agent_task)
+        self.assertNotIn("Success criteria:", agent_task)
 
 
 class TestCriteriaOutput(unittest.TestCase):

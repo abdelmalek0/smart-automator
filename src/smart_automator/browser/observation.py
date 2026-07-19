@@ -10,6 +10,13 @@ _SUBMIT_PATTERN = re.compile(
 )
 _INPUT_TAGS = frozenset({"input", "textarea", "select"})
 _INTERACTIVE_TAGS = frozenset({"button", "a", "input", "textarea", "select"})
+_MAX_VISIBLE_TEXT_CHARS = 4000
+_VISIBLE_TEXT_BUDGET_RATIO = 0.35
+_MIN_VISIBLE_TEXT_LEN = 2
+
+
+def _normalize_visible_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text.strip())
 
 
 def _element_label(node: DOMElementNode) -> str:
@@ -125,6 +132,83 @@ def _collect_clickable_lines(
     return collected
 
 
+def _collect_clickable_labels(root: DOMElementNode) -> set[str]:
+    labels: set[str] = set()
+
+    def walk(node: DOMBaseNode) -> None:
+        if isinstance(node, DOMElementNode):
+            if node.highlight_index is not None:
+                label = _element_label(node)
+                if label:
+                    labels.add(label)
+                text = _normalize_visible_text(node.get_all_text_till_next_clickable_element())
+                if text:
+                    labels.add(text.lower())
+            for child in node.children:
+                walk(child)
+
+    walk(root)
+    return labels
+
+
+def _filter_visible_text_lines(
+    text_lines: list[tuple[int, int, str]],
+    clickable_labels: set[str],
+) -> list[str]:
+    seen: set[str] = set()
+    filtered: list[str] = []
+
+    for _, _, line in text_lines:
+        normalized = _normalize_visible_text(line.strip("\t"))
+        if len(normalized) < _MIN_VISIBLE_TEXT_LEN:
+            continue
+        key = normalized.lower()
+        if key in clickable_labels or key in seen:
+            continue
+        seen.add(key)
+        filtered.append(normalized)
+
+    return filtered
+
+
+def _render_visible_text_section(
+    text_lines: list[str],
+    *,
+    char_budget: int,
+    no_interactives: bool,
+) -> tuple[list[str], int]:
+    if not text_lines or char_budget <= 0:
+        return [], 0
+
+    if no_interactives:
+        text_budget = min(_MAX_VISIBLE_TEXT_CHARS, char_budget)
+    else:
+        text_budget = min(_MAX_VISIBLE_TEXT_CHARS, int(char_budget * _VISIBLE_TEXT_BUDGET_RATIO))
+    if text_budget <= 0:
+        return [], 0
+
+    rendered: list[str] = ["[Visible text]"]
+    remaining = text_budget
+    shown = 0
+    for line in text_lines:
+        if remaining <= 0:
+            break
+        entry = line
+        if len(entry) > remaining:
+            entry = entry[:remaining]
+        rendered.append(entry)
+        remaining -= len(entry) + 1
+        shown += 1
+
+    if shown < len(text_lines):
+        omitted = len(text_lines) - shown
+        note = f"... truncated {omitted} of {len(text_lines)} visible text lines"
+        if len(note) <= remaining:
+            rendered.append(note)
+
+    return rendered, shown
+
+
 def bounded_clickable_elements_to_string(
     root: DOMElementNode,
     include_attributes: list[str],
@@ -132,35 +216,51 @@ def bounded_clickable_elements_to_string(
     max_elements: int = 80,
     max_chars: int = 12000,
 ) -> tuple[str, int, int]:
-    """Render clickable DOM with priority cap. Returns (text, shown_count, total_count)."""
+    """Render clickable DOM with priority cap and visible static text. Returns (text, shown_count, total_count)."""
     lines = _collect_clickable_lines(root, include_attributes)
     element_lines = [item for item in lines if item[1] >= 0]
+    text_lines = [item for item in lines if item[1] < 0]
     total_count = len(element_lines)
-    if total_count == 0:
-        return "", 0, 0
-
-    element_lines.sort(key=lambda item: (-item[0], item[1]))
-    selected = element_lines[:max_elements]
-    selected.sort(key=lambda item: item[1])
 
     rendered: list[str] = []
     char_budget = max_chars
     shown = 0
-    for _, _, line in selected:
-        if char_budget <= 0:
-            break
-        if len(line) > char_budget:
-            line = line[:char_budget]
-        rendered.append(line)
-        char_budget -= len(line) + 1
-        shown += 1
 
-    if shown < total_count:
-        omitted = total_count - shown
-        index_range = f"[{selected[0][1]}..{selected[-1][1]}]" if selected else "[]"
-        rendered.append(
-            f"... truncated {omitted} of {total_count} elements; "
-            f"shown indexes {index_range}. Use scroll actions to reveal more."
-        )
+    if total_count > 0:
+        element_lines.sort(key=lambda item: (-item[0], item[1]))
+        selected = element_lines[:max_elements]
+        selected.sort(key=lambda item: item[1])
+
+        for _, _, line in selected:
+            if char_budget <= 0:
+                break
+            if len(line) > char_budget:
+                line = line[:char_budget]
+            rendered.append(line)
+            char_budget -= len(line) + 1
+            shown += 1
+
+        if shown < total_count:
+            omitted = total_count - shown
+            index_range = f"[{selected[0][1]}..{selected[-1][1]}]" if selected else "[]"
+            rendered.append(
+                f"... truncated {omitted} of {total_count} elements; "
+                f"shown indexes {index_range}. Use scroll actions to reveal more."
+            )
+
+    clickable_labels = _collect_clickable_labels(root)
+    filtered_text = _filter_visible_text_lines(text_lines, clickable_labels)
+    visible_section, _ = _render_visible_text_section(
+        filtered_text,
+        char_budget=char_budget,
+        no_interactives=total_count == 0,
+    )
+    if visible_section:
+        if rendered:
+            rendered.append("")
+        rendered.extend(visible_section)
+
+    if not rendered:
+        return "", shown, total_count
 
     return "\n".join(rendered), shown, total_count

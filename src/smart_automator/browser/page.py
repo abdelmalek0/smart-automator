@@ -467,9 +467,9 @@ class Page:
             raise ValueError(
                 f"Element {element.highlight_index} is a file uploader; cannot click directly"
             )
-        handle = self._locate_element(element)
+        handle = self._locate_element_with_retry(element)
         if not handle:
-            raise ValueError(f"Element not found: {element.highlight_index}")
+            raise ValueError(self._format_element_not_found_error(element))
         self._scroll_into_view_if_needed(handle)
         try:
             handle.click(timeout=2000)
@@ -484,9 +484,9 @@ class Page:
         self._cached_state = None
 
     def input_text(self, element: DOMElementNode, text: str):
-        handle = self._locate_element(element)
+        handle = self._locate_element_with_retry(element)
         if not handle:
-            raise ValueError(f"Element not found: {element.highlight_index}")
+            raise ValueError(self._format_element_not_found_error(element))
         try:
             self._wait_for_element_stability(handle, 1.5)
             if not handle.is_hidden():
@@ -699,26 +699,71 @@ class Page:
         remove_highlights(self._page)
         self._clear_highlight_signature()
 
-    def _locate_element(self, element: DOMElementNode) -> ElementHandle | None:
-        current_frame: PlaywrightPage | Frame = self._page
+    def _locate_element_with_retry(self, element: DOMElementNode) -> ElementHandle | None:
+        handle = self._locate_element(element)
+        if handle is not None:
+            return handle
+        time.sleep(0.15)
+        self.wait_for_page_stable(minimum_wait=0.05)
+        return self._locate_element(element)
 
-        parents: list[DOMElementNode] = []
+    def _format_element_not_found_error(self, element: DOMElementNode) -> str:
+        index = element.highlight_index
+        index_part = str(index) if index is not None else "unknown"
+        tag = element.tag_name or "unknown"
+        xpath = element.xpath or "(none)"
+        identity_bits: list[str] = []
+        for attr in ("aria-label", "title", "placeholder", "name", "role"):
+            value = element.attributes.get(attr, "").strip()
+            if value:
+                identity_bits.append(f"{attr}={value!r}")
+        label = element.get_all_text_till_next_clickable_element().strip()
+        if label:
+            identity_bits.append(f"text={label!r}")
+        identity = ", ".join(identity_bits) if identity_bits else "(no identity text)"
+        shadow_note = " (inside shadow DOM)" if self._element_in_shadow_dom(element) else ""
+        return (
+            f"Element not found: index={index_part}, tag={tag}, xpath={xpath}, "
+            f"{identity}{shadow_note}"
+        )
+
+    def _element_in_shadow_dom(self, element: DOMElementNode) -> bool:
         current: DOMElementNode | None = element
         while current and current.parent:
-            parents.append(current.parent)
+            if current.parent.shadow_root:
+                return True
             current = current.parent
+        return False
 
-        iframes = [parent for parent in reversed(parents) if parent.tag_name == "iframe"]
-        for parent in iframes:
-            frame_handle = self._query_unique_handle(current_frame, parent)
-            if frame_handle is None:
-                return None
-            frame = frame_handle.content_frame()
-            if not frame:
-                return None
-            current_frame = frame
+    def _locate_element(self, element: DOMElementNode) -> ElementHandle | None:
+        boundaries: list[tuple[DOMElementNode, str]] = []
+        node: DOMElementNode | None = element
+        while node and node.parent:
+            parent = node.parent
+            if parent.tag_name == "iframe":
+                boundaries.append((parent, "iframe"))
+            elif parent.shadow_root:
+                boundaries.append((parent, "shadow"))
+            node = parent
+        boundaries.reverse()
 
-        return self._query_unique_handle(current_frame, element)
+        frame: PlaywrightPage | Frame = self._page
+        shadow_hosts: list[ElementHandle] = []
+
+        for parent, kind in boundaries:
+            host_handle = self._query_unique_handle(frame, parent, shadow_hosts)
+            if host_handle is None:
+                return None
+            if kind == "iframe":
+                content = host_handle.content_frame()
+                if not content:
+                    return None
+                frame = content
+                shadow_hosts = []
+            else:
+                shadow_hosts.append(host_handle)
+
+        return self._query_unique_handle(frame, element, shadow_hosts)
 
     def _element_identity_text(self, element: DOMElementNode) -> str:
         text = element.get_all_text_till_next_clickable_element().strip().lower()
@@ -749,11 +794,73 @@ class Page:
             return True
         return actual == expected or expected in actual or actual in expected
 
+    def _query_in_shadow_root(
+        self,
+        host: ElementHandle,
+        element: DOMElementNode,
+    ) -> ElementHandle | None:
+        xpath = element.xpath
+        if xpath:
+            try:
+                full_xpath = xpath if xpath.startswith("/") else f"/{xpath}"
+                js_handle = host.evaluate_handle(
+                    """(hostEl, xpathExpr) => {
+                        const root = hostEl.shadowRoot;
+                        if (!root) return null;
+                        const result = document.evaluate(
+                            xpathExpr,
+                            root,
+                            null,
+                            XPathResult.FIRST_ORDERED_NODE_TYPE,
+                            null,
+                        );
+                        return result.singleNodeValue;
+                    }""",
+                    full_xpath,
+                )
+                handle = js_handle.as_element()
+                if handle and self._handle_matches_element(handle, element):
+                    return handle
+            except Exception:
+                pass
+
+        css_selector = element.enhanced_css_selector_for_element(self._include_dynamic_attributes)
+        if css_selector:
+            try:
+                match_count = host.evaluate(
+                    """(hostEl, selector) => {
+                        const root = hostEl.shadowRoot;
+                        return root ? root.querySelectorAll(selector).length : 0;
+                    }""",
+                    css_selector,
+                )
+                for index in range(int(match_count or 0)):
+                    handle = host.evaluate_handle(
+                        """(hostEl, selector, idx) => {
+                            const root = hostEl.shadowRoot;
+                            if (!root) return null;
+                            const nodes = root.querySelectorAll(selector);
+                            return nodes[idx] || null;
+                        }""",
+                        css_selector,
+                        index,
+                    ).as_element()
+                    if handle and self._handle_matches_element(handle, element):
+                        return handle
+            except Exception:
+                pass
+
+        return None
+
     def _query_unique_handle(
         self,
         frame: PlaywrightPage | Frame,
         element: DOMElementNode,
+        shadow_hosts: list[ElementHandle] | None = None,
     ) -> ElementHandle | None:
+        if shadow_hosts:
+            return self._query_in_shadow_root(shadow_hosts[-1], element)
+
         # Prefer xpath — CSS with shared classes often matches the wrong keypad/button.
         xpath = element.xpath
         if xpath:
