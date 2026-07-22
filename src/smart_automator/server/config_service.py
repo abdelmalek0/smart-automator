@@ -31,9 +31,13 @@ from ..server.provider_utils import (
     default_base_url,
     default_model_for_provider,
     format_llm_connection_error,
+    is_cloud_ollama_model,
+    is_ollama_cloud_url,
     normalize_provider,
     provider_api_key_env_name,
     provider_api_key_is_set,
+    provider_base_url_env_name,
+    provider_model_env_name,
     runtime_provider,
 )
 from ..storage.llm_settings import LlmSettingsStore
@@ -60,6 +64,50 @@ _DEFAULT_GROQ_PRICING = [
 
 def reload_runtime_env() -> None:
     load_dotenv(ENV_FILE, override=True)
+    migrate_legacy_ollama_env()
+
+
+def migrate_legacy_ollama_env() -> None:
+    """Migrate shared OLLAMA_* vars to split local/cloud vars."""
+    provider = normalize_provider(os.environ.get("LLM_PROVIDER", "groq"))
+    legacy_base = os.environ.get("OLLAMA_BASE_URL", "").strip()
+    legacy_model = os.environ.get("OLLAMA_MODEL", "").strip()
+    legacy_key = os.environ.get("OLLAMA_API_KEY", "").strip()
+    cloud_model = os.environ.get("OLLAMA_CLOUD_MODEL", "").strip()
+    cloud_base = os.environ.get("OLLAMA_CLOUD_BASE_URL", "").strip()
+    cloud_key = os.environ.get("OLLAMA_CLOUD_API_KEY", "").strip()
+    looks_cloud = provider == "ollama-cloud" or is_ollama_cloud_url(legacy_base)
+    needs_cloud_migration = looks_cloud and (
+        (legacy_model and not cloud_model)
+        or (legacy_base and not cloud_base)
+        or (legacy_key and not cloud_key)
+    )
+    if not needs_cloud_migration and not (
+        provider == "ollama" and looks_cloud and (legacy_base or is_cloud_ollama_model(legacy_model))
+    ):
+        return
+    if not ENV_FILE.exists():
+        ENV_FILE.write_text("")
+    env_path = str(ENV_FILE)
+    if needs_cloud_migration:
+        if legacy_model and not cloud_model:
+            set_key(env_path, "OLLAMA_CLOUD_MODEL", legacy_model)
+            os.environ["OLLAMA_CLOUD_MODEL"] = legacy_model
+        if legacy_base and not cloud_base:
+            set_key(env_path, "OLLAMA_CLOUD_BASE_URL", legacy_base)
+            os.environ["OLLAMA_CLOUD_BASE_URL"] = legacy_base
+        if legacy_key and not cloud_key:
+            set_key(env_path, "OLLAMA_CLOUD_API_KEY", legacy_key)
+            os.environ["OLLAMA_CLOUD_API_KEY"] = legacy_key
+    if provider == "ollama" and looks_cloud:
+        local_base = default_base_url("ollama")
+        local_model = default_model_for_provider("ollama")
+        if legacy_base != local_base:
+            set_key(env_path, "OLLAMA_BASE_URL", local_base)
+            os.environ["OLLAMA_BASE_URL"] = local_base
+        if is_cloud_ollama_model(legacy_model) or legacy_model != local_model:
+            set_key(env_path, "OLLAMA_MODEL", local_model)
+            os.environ["OLLAMA_MODEL"] = local_model
 
 
 def _chrome_profile_display_name(user_data_dir: str, profile_directory: str) -> str:
@@ -72,20 +120,36 @@ def _chrome_profile_display_name(user_data_dir: str, profile_directory: str) -> 
     return profile_directory
 
 
+def _active_model(config: Config, ui_provider: str) -> str:
+    canonical = normalize_provider(ui_provider)
+    if canonical == "groq":
+        return config.groq_model
+    if canonical == "google":
+        return config.google_model
+    if canonical == "ollama-cloud":
+        return config.ollama_cloud_model
+    return config.ollama_model
+
+
+def _active_base_url(config: Config, ui_provider: str, *, catalog_base_url: str) -> str:
+    canonical = normalize_provider(ui_provider)
+    if canonical == "ollama":
+        return config.ollama_base_url or default_base_url("ollama")
+    if canonical == "ollama-cloud":
+        return config.ollama_cloud_base_url or default_base_url("ollama-cloud")
+    if catalog_base_url:
+        return catalog_base_url
+    return default_base_url(canonical)
+
+
 def build_config_response() -> dict:
     reload_runtime_env()
     config = load_config()
     settings = LlmSettingsStore().ensure_loaded()
-    provider = normalize_provider(settings.provider or config.llm_provider)
-    active = settings.get_provider(provider)
-    runtime = runtime_provider(provider)
-    if runtime == "groq":
-        model = active.model or config.groq_model
-    elif runtime == "google":
-        model = active.model or config.google_model
-    else:
-        model = active.model or config.ollama_model
-    base_url = active.base_url or default_base_url(provider)
+    provider = normalize_provider(config.llm_provider)
+    catalog = settings.get_provider(provider)
+    model = _active_model(config, provider)
+    base_url = _active_base_url(config, provider, catalog_base_url=catalog.base_url)
     provider_keys_set = {name: provider_api_key_is_set(name) for name in UI_PROVIDERS}
     provider_settings = {
         name: entry.to_dict() for name, entry in settings.providers.items()
@@ -135,36 +199,40 @@ def build_config_response() -> dict:
 
 def apply_config_update(update) -> dict:
     reload_runtime_env()
+    config = load_config()
     settings_store = LlmSettingsStore()
-    settings = settings_store.ensure_loaded()
-    provider = normalize_provider(update.provider or settings.provider)
+    provider = normalize_provider(update.provider or config.llm_provider)
 
-    settings_store.update_active(
-        provider=provider if update.provider is not None else None,
-        base_url=update.base_url,
-        model=update.model,
-    )
-    settings = settings_store.ensure_loaded()
-    active = settings.get_provider(provider)
+    if update.base_url is not None or update.model is not None:
+        settings_store.update_catalog(
+            provider=provider,
+            base_url=update.base_url,
+            model=update.model,
+        )
 
     if not ENV_FILE.exists():
         ENV_FILE.write_text("")
 
-    runtime = runtime_provider(provider)
-    set_key(str(ENV_FILE), "LLM_PROVIDER", runtime)
+    if update.provider is not None:
+        set_key(str(ENV_FILE), "LLM_PROVIDER", provider)
     if update.model is not None:
-        if runtime == "groq":
-            set_key(str(ENV_FILE), "GROQ_MODEL", active.model)
-        elif runtime == "google":
-            set_key(str(ENV_FILE), "GOOGLE_MODEL", active.model)
-        else:
-            set_key(str(ENV_FILE), "OLLAMA_MODEL", active.model)
+        catalog = settings_store.ensure_loaded().get_provider(provider)
+        coerced_model = coerce_provider_model(
+            provider,
+            update.model,
+            base_url=update.base_url if update.base_url is not None else catalog.base_url,
+        )
+        set_key(str(ENV_FILE), provider_model_env_name(provider), coerced_model)
     if update.base_url is not None:
-        if runtime == "ollama":
-            set_key(str(ENV_FILE), "OLLAMA_BASE_URL", active.base_url)
+        base_url_env = provider_base_url_env_name(provider)
+        if base_url_env:
+            set_key(
+                str(ENV_FILE),
+                base_url_env,
+                coerce_provider_base_url(provider, update.base_url),
+            )
     if update.api_key is not None:
-        ui_provider = (update.provider or settings.provider or provider).strip().lower()
-        key_env = provider_api_key_env_name(ui_provider)
+        key_env = provider_api_key_env_name(provider)
         if key_env:
             set_key(str(ENV_FILE), key_env, update.api_key)
     if update.fresh_profile is not None:
@@ -240,22 +308,31 @@ def config_for_run() -> Config:
     reload_runtime_env()
     config = load_config()
     settings = LlmSettingsStore().ensure_loaded()
-    ui_provider = normalize_provider(settings.provider or config.llm_provider)
+    ui_provider = normalize_provider(config.llm_provider)
     runtime = runtime_provider(ui_provider)
-    active = settings.get_provider(ui_provider)
+    catalog = settings.get_provider(ui_provider)
     config.llm_provider = runtime
     config.active_provider = ui_provider
-    config.active_model = active.model or default_model_for_provider(ui_provider)
+    config.active_model = _active_model(config, ui_provider) or default_model_for_provider(ui_provider)
     if runtime == "groq":
         config.groq_model = config.active_model
-        config.openai_base_url = active.base_url or default_base_url("groq")
+        config.openai_base_url = catalog.base_url or default_base_url("groq")
     elif runtime == "google":
         config.google_model = config.active_model
-        config.openai_base_url = active.base_url or default_base_url("google")
+        config.openai_base_url = catalog.base_url or default_base_url("google")
     else:
         config.ollama_model = config.active_model
-        if active.base_url:
-            config.ollama_base_url = active.base_url
+        if ui_provider == "ollama-cloud":
+            config.ollama_base_url = (
+                config.ollama_cloud_base_url
+                or catalog.base_url
+                or default_base_url("ollama-cloud")
+            )
+            config.ollama_api_key = config.ollama_cloud_api_key
+        else:
+            if not config.ollama_base_url:
+                config.ollama_base_url = catalog.base_url or default_base_url("ollama")
+            config.ollama_api_key = ""
     return config
 
 
@@ -278,18 +355,25 @@ def config_for_check(update=None) -> Config:
         return config_for_run()
 
     ui_provider = normalize_provider(
-        update.provider if update.provider is not None else settings.provider or config.llm_provider
+        update.provider if update.provider is not None else config.llm_provider
     )
-    active = settings.get_provider(ui_provider)
-    base_url = (
-        coerce_provider_base_url(ui_provider, update.base_url)
-        if update.base_url is not None
-        else coerce_provider_base_url(ui_provider, active.base_url)
-    )
+    catalog = settings.get_provider(ui_provider)
+    if update.base_url is not None:
+        base_url = coerce_provider_base_url(ui_provider, update.base_url)
+    elif ui_provider == "ollama-cloud":
+        base_url = coerce_provider_base_url(ui_provider, config.ollama_cloud_base_url)
+    elif ui_provider == "ollama":
+        base_url = coerce_provider_base_url(ui_provider, config.ollama_base_url)
+    else:
+        base_url = coerce_provider_base_url(ui_provider, catalog.base_url)
     model = (
         coerce_provider_model(ui_provider, update.model, base_url=base_url)
         if update.model is not None
-        else coerce_provider_model(ui_provider, active.model, base_url=base_url)
+        else coerce_provider_model(
+            ui_provider,
+            _active_model(config, ui_provider),
+            base_url=base_url,
+        )
     )
 
     runtime = runtime_provider(ui_provider)
@@ -303,7 +387,8 @@ def config_for_check(update=None) -> Config:
             config.groq_api_key = update.api_key
         elif key_env == "GOOGLE_API_KEY":
             config.google_api_key = update.api_key
-        elif key_env == "OLLAMA_API_KEY":
+        elif key_env == "OLLAMA_CLOUD_API_KEY":
+            config.ollama_cloud_api_key = update.api_key
             config.ollama_api_key = update.api_key
 
     if runtime == "groq":

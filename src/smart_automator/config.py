@@ -21,6 +21,9 @@ class Config(BaseModel):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3.2"
     ollama_api_key: str = ""
+    ollama_cloud_base_url: str = "https://ollama.com"
+    ollama_cloud_model: str = "gemma4:31b-cloud"
+    ollama_cloud_api_key: str = ""
     google_api_key: str = ""
     google_model: str = "gemini-2.5-flash"
     openai_base_url: str = ""
@@ -95,6 +98,9 @@ def load_config() -> Config:
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
         ollama_model=os.getenv("OLLAMA_MODEL", "llama3.2"),
         ollama_api_key=os.getenv("OLLAMA_API_KEY", ""),
+        ollama_cloud_base_url=os.getenv("OLLAMA_CLOUD_BASE_URL", "https://ollama.com"),
+        ollama_cloud_model=os.getenv("OLLAMA_CLOUD_MODEL", "gemma4:31b-cloud"),
+        ollama_cloud_api_key=os.getenv("OLLAMA_CLOUD_API_KEY", ""),
         google_api_key=os.getenv("GOOGLE_API_KEY", ""),
         google_model=os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"),
         headless=os.getenv("HEADLESS", "false").lower() == "true",

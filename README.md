@@ -70,14 +70,25 @@ uv run smart-automator-api
 
 ## Configuration (.env)
 
+Active LLM provider and model are set in `.env`:
+
 ```env
-LLM_PROVIDER=groq  # or ollama
+LLM_PROVIDER=groq  # groq, google, ollama, or ollama-cloud
 GROQ_API_KEY=gsk_...
 GROQ_MODEL=llama-3.3-70b-versatile
 
-# For Ollama
+# Google Gemini
+GOOGLE_API_KEY=
+GOOGLE_MODEL=gemini-2.5-flash
+
+# Ollama (local)
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=llama3.2
+
+# Ollama Cloud
+OLLAMA_CLOUD_BASE_URL=https://ollama.com
+OLLAMA_CLOUD_MODEL=gemma4:31b-cloud
+OLLAMA_CLOUD_API_KEY=
 
 HEADLESS=false
 MAX_STEPS=100
@@ -87,10 +98,10 @@ MAX_FAILURES=3
 MAX_INPUT_TOKENS=128000
 ```
 
-Runtime data (websites, LLM settings, pricing, screenshots) is stored in the project root:
+Runtime data (websites, LLM provider catalog, pricing, screenshots) is stored in the project root:
 
 - `websites.json`
-- `llm_settings.json`
+- `llm_settings.json` — per-provider base URLs and saved model lists (not the active selection)
 - `pricing.json`
 - `data/screenshots/`
 

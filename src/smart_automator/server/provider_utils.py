@@ -19,7 +19,19 @@ _PROVIDER_ALIASES = {
 _PROVIDER_KEY_ENV = {
     "groq": "GROQ_API_KEY",
     "google": "GOOGLE_API_KEY",
-    "ollama-cloud": "OLLAMA_API_KEY",
+    "ollama-cloud": "OLLAMA_CLOUD_API_KEY",
+}
+
+_PROVIDER_MODEL_ENV = {
+    "groq": "GROQ_MODEL",
+    "google": "GOOGLE_MODEL",
+    "ollama": "OLLAMA_MODEL",
+    "ollama-cloud": "OLLAMA_CLOUD_MODEL",
+}
+
+_PROVIDER_BASE_URL_ENV = {
+    "ollama": "OLLAMA_BASE_URL",
+    "ollama-cloud": "OLLAMA_CLOUD_BASE_URL",
 }
 
 _LOCAL_OLLAMA_DEFAULT_URL = "http://localhost:11434"
@@ -132,6 +144,16 @@ def provider_api_key_env_name(provider: str) -> str | None:
     return _PROVIDER_KEY_ENV.get(normalize_provider(provider))
 
 
+def provider_model_env_name(provider: str) -> str:
+    canonical = normalize_provider(provider)
+    return _PROVIDER_MODEL_ENV.get(canonical, "GROQ_MODEL")
+
+
+def provider_base_url_env_name(provider: str) -> str | None:
+    canonical = normalize_provider(provider)
+    return _PROVIDER_BASE_URL_ENV.get(canonical)
+
+
 def provider_api_key_is_set(provider: str) -> bool:
     env_name = provider_api_key_env_name(provider)
     if not env_name:
@@ -146,26 +168,26 @@ def format_llm_connection_error(error: BaseException) -> str:
         request_url = str(error.request.url) if error.request is not None else ""
         if status == 403 and "ollama.com" in request_url.lower():
             return (
-                "Ollama Cloud returned 403 Forbidden. Check that OLLAMA_API_KEY is valid "
+                "Ollama Cloud returned 403 Forbidden. Check that OLLAMA_CLOUD_API_KEY is valid "
                 "(https://ollama.com/settings/keys) and that your account can use the "
                 "selected model."
             )
         if status == 401 and "ollama.com" in request_url.lower():
             return (
-                "Ollama Cloud rejected the API key (401). Set a valid OLLAMA_API_KEY in "
+                "Ollama Cloud rejected the API key (401). Set a valid OLLAMA_CLOUD_API_KEY in "
                 "Settings or .env."
             )
     message = str(error)
     lowered = message.lower()
     if "403" in message and "forbidden" in lowered and "ollama.com" in lowered:
         return (
-            "Ollama Cloud returned 403 Forbidden. Check that OLLAMA_API_KEY is valid "
+            "Ollama Cloud returned 403 Forbidden. Check that OLLAMA_CLOUD_API_KEY is valid "
             "(https://ollama.com/settings/keys) and that your account can use the "
             "selected model."
         )
     if "401" in message and "ollama.com" in lowered:
         return (
-            "Ollama Cloud rejected the API key (401). Set a valid OLLAMA_API_KEY in "
+            "Ollama Cloud rejected the API key (401). Set a valid OLLAMA_CLOUD_API_KEY in "
             "Settings or .env."
         )
     return message

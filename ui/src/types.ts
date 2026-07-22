@@ -162,7 +162,6 @@ export interface PricingEntry {
 
 export interface ProviderSettings {
   base_url: string
-  model: string
   models: string[]
 }
 

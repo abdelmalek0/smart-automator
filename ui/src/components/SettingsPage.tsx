@@ -104,10 +104,14 @@ export default function SettingsPage() {
     setApiKey('')
     const saved = config?.provider_settings?.[canonical]
     const savedBaseUrl = saved?.base_url || ''
-    const savedModel = saved?.model || ''
     const baseUrlValid = isValidBaseUrlForProvider(canonical, savedBaseUrl)
     setBaseUrl(baseUrlValid ? savedBaseUrl : defaultBaseUrl(canonical))
-    setModel(baseUrlValid && savedModel ? savedModel : defaultModel(canonical))
+    if (canonical === normalizeProvider(config?.provider ?? '')) {
+      setModel(config?.model || defaultModel(canonical))
+    } else {
+      const savedModels = saved?.models ?? []
+      setModel(baseUrlValid && savedModels.length > 0 ? savedModels[0] : defaultModel(canonical))
+    }
   }
 
   useEffect(() => {

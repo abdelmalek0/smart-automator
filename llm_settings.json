@@ -1,9 +1,7 @@
 {
-  "provider": "groq",
   "providers": {
     "groq": {
       "base_url": "https://api.groq.com/openai/v1",
-      "model": "openai/gpt-oss-120b",
       "models": [
         "openai/gpt-oss-120b",
         "qwen/qwen3.6-27b"
@@ -11,21 +9,18 @@
     },
     "ollama": {
       "base_url": "http://localhost:11434",
-      "model": "llama3.2",
       "models": [
         "llama3.2"
       ]
     },
     "google": {
       "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-      "model": "gemini-2.5-flash",
       "models": [
         "gemini-2.5-flash"
       ]
     },
     "ollama-cloud": {
       "base_url": "https://ollama.com",
-      "model": "qwen3.5:cloud",
       "models": [
         "qwen3.5:cloud",
         "gemma4:31b-cloud"

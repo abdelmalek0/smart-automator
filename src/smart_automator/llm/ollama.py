@@ -16,8 +16,8 @@ class OllamaLLM(BaseLLM):
         self._api_key = config.ollama_api_key.strip()
         if is_ollama_cloud_url(self._base_url) and not self._api_key:
             raise ValueError(
-                "OLLAMA_API_KEY is required for Ollama Cloud (https://ollama.com). "
-                "Create a key at https://ollama.com/settings/keys and set OLLAMA_API_KEY in .env."
+                "OLLAMA_CLOUD_API_KEY is required for Ollama Cloud (https://ollama.com). "
+                "Create a key at https://ollama.com/settings/keys and set OLLAMA_CLOUD_API_KEY in .env."
             )
         self._client = httpx.Client(timeout=120.0)
 
