@@ -6,7 +6,6 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from smart_automator.reporting.replay_executor import (
-    REPLAY_STEP_SETTLE_MS,
     _resolve_locator,
     execute_replay_steps,
 )
@@ -75,10 +74,12 @@ class TestReplayExecutor(unittest.TestCase):
 
     def test_settle_wait_after_successful_click(self):
         browser_context = MagicMock()
+        page_wrapper = MagicMock()
         page = MagicMock()
         locator = MagicMock()
         page.locator.return_value = locator
-        browser_context.get_current_page.return_value.playwright_page = page
+        page_wrapper.playwright_page = page
+        browser_context.get_current_page.return_value = page_wrapper
 
         steps = [
             {
@@ -90,7 +91,8 @@ class TestReplayExecutor(unittest.TestCase):
 
         results = execute_replay_steps(browser_context, steps)
 
-        page.wait_for_timeout.assert_called_once_with(REPLAY_STEP_SETTLE_MS)
+        page_wrapper.wait_for_page_stable.assert_called_once()
+        page.wait_for_timeout.assert_not_called()
         self.assertEqual(len(results), 1)
         self.assertIsNone(results[0].error)
 

@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 from .context import ActionResult, AgentContext
 
-STALE_PAGE_STEP_THRESHOLD = 2
+STALE_PAGE_STEP_THRESHOLD = 5
 MAX_CRITIC_RUNS_PER_EPISODE = 3
 
 

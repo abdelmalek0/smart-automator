@@ -36,6 +36,7 @@ export function statusBadgeVariant(
   switch (status) {
     case 'running':
     case 'pending':
+    case 'awaiting_human':
       return 'running'
     case 'pass':
       return 'success'
@@ -55,6 +56,8 @@ export function statusLabel(status: RunStatus): string {
       return 'Pending'
     case 'running':
       return 'Running'
+    case 'awaiting_human':
+      return 'Awaiting human'
     case 'pass':
       return 'Pass'
     case 'fail':

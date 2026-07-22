@@ -9,7 +9,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from ..actions.builder import ActionBuilder
-from ..agents.action_critic import ActionCriticAgent
+from ..agents.hitl_debrief import HitlDebriefAgent
 from ..agents.errors import (
     ChatModelAuthError,
     ChatModelBadRequestError,
@@ -24,8 +24,10 @@ from ..agents.planner import PlannerAgent
 from ..browser.views import URLNotAllowedError
 from ..config import Config
 from ..llm.base import BaseLLM
+from ..agents.action_critic import ActionCriticAgent
 from .context import AgentContext, AgentOptions, AgentStepInfo
 from .history import AgentStepHistory
+from .hitl import HitlController
 from .messages.service import MessageManager, MessageManagerSettings
 from ..agent.stuck_recovery import (
     build_premature_done_rejection_hint,
@@ -137,6 +139,7 @@ class Executor:
             replay_show_highlights=config.replay_show_highlights,
             max_observation_elements=config.max_observation_elements,
             max_observation_chars=config.max_observation_chars,
+            hitl_timeout_seconds=float(config.hitl_timeout_minutes) * 60.0,
         )
         self._context = AgentContext(
             task_id=str(uuid.uuid4()),
@@ -145,7 +148,9 @@ class Executor:
             options=options,
         )
         self._context.success_criteria = self._success_criteria
+        self._context.hitl_enabled = not config.headless
         self._last_error: str | None = None
+        self._hitl = HitlController(self._context, emit=self._emit)
 
         self._llm.set_cancel_event(self._context.cancel_event)
         self._planner_llm.set_cancel_event(self._context.cancel_event)
@@ -154,6 +159,11 @@ class Executor:
         self._navigator = NavigatorAgent(llm, self._context, message_manager, action_registry)
         self._planner = PlannerAgent(self._planner_llm, self._context, message_manager)
         self._action_critic = ActionCriticAgent(llm, message_manager, context=self._context)
+        self._hitl_debrief = HitlDebriefAgent(
+            self._planner_llm,
+            message_manager,
+            context=self._context,
+        )
 
         message_manager.init_task_messages(
             self._navigator._system_prompt,
@@ -164,6 +174,13 @@ class Executor:
     @property
     def context(self) -> AgentContext:
         return self._context
+
+    @property
+    def hitl(self) -> HitlController:
+        return self._hitl
+
+    def submit_hitl_command(self, action: str, **kwargs: Any) -> tuple[bool, str | None]:
+        return self._hitl.submit_command(action, **kwargs)
 
     def _emit(self, event: dict) -> None:
         if self._on_event:
@@ -258,8 +275,20 @@ class Executor:
                 if self._should_stop():
                     break
 
-                if context.n_steps % context.options.planning_interval == 0 or navigator_done:
+                self._hitl.process_pending_commands()
+
+                should_plan = (
+                    context.force_replan_after_hitl
+                    or context.pending_hitl_handoff is not None
+                    or context.n_steps % context.options.planning_interval == 0
+                    or navigator_done
+                )
+                if should_plan:
                     navigator_done = False
+                    if context.pending_hitl_handoff:
+                        self._run_hitl_debrief()
+                    if context.force_replan_after_hitl:
+                        context.force_replan_after_hitl = False
                     latest_plan = self._run_planner()
                     if self._is_non_web_task_complete(latest_plan):
                         return context.final_answer
@@ -335,6 +364,49 @@ class Executor:
             if any(result.error for result in step_results):
                 break
         return results
+
+    def _run_hitl_debrief(self) -> None:
+        context = self._context
+        handoff = context.pending_hitl_handoff
+        if handoff is None:
+            return
+
+        console.print(
+            Panel(
+                "[dim]Analyzing human intervention…[/dim]",
+                title="HITL debrief",
+                border_style="yellow",
+            )
+        )
+        analysis = self._hitl_debrief.analyze(
+            task=self._task,
+            handoff=handoff,
+            success_criteria=self._success_criteria,
+        )
+        self._hitl.inject_human_memory(
+            handoff.recorded,
+            intervention_reason=handoff.intervention_reason,
+            intervention_source=handoff.intervention_source,
+            analysis=analysis if not analysis.get("error") else None,
+        )
+
+        self._emit(
+            {
+                "type": "human_handoff",
+                "index": context.alloc_ui_step_index(),
+                "cycle": handoff.cycle,
+                "intervention_reason": handoff.intervention_reason,
+                "intervention_source": handoff.intervention_source,
+                "start_url": handoff.start_url,
+                "start_title": handoff.start_title,
+                "end_url": handoff.end_url,
+                "end_title": handoff.end_title,
+                "analysis": analysis,
+                "actions": HitlDebriefAgent.serialize_actions(handoff),
+            }
+        )
+        self._emit_tokens()
+        context.pending_hitl_handoff = None
 
     def _check_task_completion(self, plan_output: dict | None) -> bool:
         result = plan_output.get("result") if plan_output else None
@@ -500,6 +572,7 @@ class Executor:
         if not signals.needs_planner_recovery and not result.get("escalate_recovery"):
             return False
 
+        self._hitl.process_pending_commands()
         self._inject_stuck_recovery_hint(signals, result.get("diagnostics"))
         plan_output = self._run_planner()
         if self._check_task_completion(plan_output):
@@ -523,7 +596,7 @@ class Executor:
                     border_style="cyan",
                 )
             )
-            step_index = context.n_steps + 1
+            step_index = context.alloc_ui_step_index()
             self._emit({"type": "step_start", "step": build_step_start(step_index)})
             nav_started = time.time()
             nav_output = self._navigator.execute()
@@ -602,15 +675,29 @@ class Executor:
     def _should_stop(self) -> bool:
         if self._context.stopped:
             return True
+        self._hitl.process_pending_commands()
+        if self._hitl.check_timeout():
+            return True
         while self._context.paused:
-            time.sleep(0.2)
+            self._hitl.process_pending_commands()
+            if self._hitl.check_timeout():
+                return True
+            self._pump_while_paused()
             if self._context.stopped:
                 return True
         if self._context.consecutive_failures >= self._context.options.max_failures:
             return True
         return False
 
+    def _pump_while_paused(self) -> None:
+        try:
+            page = self._context.browser_context.get_current_page()
+            page.playwright_page.wait_for_timeout(200)
+        except Exception:
+            time.sleep(0.2)
+
     def cancel(self):
+        self._hitl.flush_recorded_to_history()
         self._context.stop()
 
     def pause(self):

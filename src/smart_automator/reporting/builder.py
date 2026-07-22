@@ -65,6 +65,10 @@ def build_action_timeline(history: AgentStepHistory) -> list[dict[str, Any]]:
             if element is not None and hasattr(element, "to_dict"):
                 element_dict = element.to_dict()
 
+            source = None
+            if record.metadata and record.metadata.get("source"):
+                source = record.metadata["source"]
+
             timeline.append(
                 {
                     "step": step_index,
@@ -79,6 +83,7 @@ def build_action_timeline(history: AgentStepHistory) -> list[dict[str, Any]]:
                     "verification_evidence": result.verification_evidence,
                     "extracted_content": result.extracted_content,
                     "element": element_dict,
+                    "source": source,
                 }
             )
     return timeline

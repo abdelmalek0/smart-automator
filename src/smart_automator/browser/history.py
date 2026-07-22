@@ -94,6 +94,20 @@ def convert_dom_element_to_history_element(dom_element: DOMElementNode) -> DOMHi
     )
 
 
+def enhanced_css_selector_for_history_element(
+    dom_history_element: DOMHistoryElement,
+    *,
+    include_dynamic_attributes: bool = True,
+) -> str:
+    dom_node = DOMElementNode(
+        tag_name=dom_history_element.tag_name,
+        xpath=dom_history_element.xpath,
+        attributes=dict(dom_history_element.attributes),
+        shadow_root=dom_history_element.shadow_root,
+    )
+    return dom_node.enhanced_css_selector_for_element(include_dynamic_attributes)
+
+
 def compare_history_element_and_dom_element(
     dom_history_element: DOMHistoryElement,
     dom_element: DOMElementNode,

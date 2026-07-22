@@ -37,11 +37,13 @@ export default function StepCard({ step, isActive = false }: Props) {
 
   const screenshotSrc = step.screenshot_url ? `${step.screenshot_url}?v=${step.index}` : null
   const isSelfHeal = step.action === 'write_tool' || step.action === 'update_tool'
+  const isHuman = step.source === 'human'
   const showStepTiming = hasTurnTiming(step.turn_timing)
   const stepTiming = step.turn_timing
 
-  const borderClass =
-    step.status === 'pass'
+  const borderClass = isHuman
+    ? 'border-l-warning'
+    : step.status === 'pass'
       ? 'border-l-success'
       : step.status === 'error' || step.status === 'fail'
         ? 'border-l-destructive'
@@ -66,6 +68,11 @@ export default function StepCard({ step, isActive = false }: Props) {
                   {isSelfHeal && (
                     <Badge variant="outline" className="text-[10px] py-0 text-primary border-primary/30">
                       self-heal
+                    </Badge>
+                  )}
+                  {isHuman && (
+                    <Badge variant="outline" className="text-[10px] py-0 text-warning border-warning/40">
+                      human
                     </Badge>
                   )}
                 </div>
@@ -110,6 +117,15 @@ export default function StepCard({ step, isActive = false }: Props) {
                 <span className="text-xs text-muted-foreground uppercase tracking-wide">Args</span>
                 <pre className="mt-1 text-xs mono text-cyan-400/90 bg-muted rounded-md p-2 overflow-x-auto whitespace-pre-wrap break-all">
                   {JSON.stringify(step.args, null, 2)}
+                </pre>
+              </div>
+            )}
+
+            {step.action === 'human_handoff' && step.args?.analysis && (
+              <div>
+                <span className="text-xs text-muted-foreground uppercase tracking-wide">Handoff analysis</span>
+                <pre className="mt-1 text-xs mono text-warning/90 bg-warning/10 rounded-md p-2 overflow-x-auto whitespace-pre-wrap break-all">
+                  {JSON.stringify(step.args.analysis, null, 2)}
                 </pre>
               </div>
             )}

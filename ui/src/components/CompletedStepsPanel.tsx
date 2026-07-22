@@ -9,7 +9,18 @@ interface Props {
   isRunning?: boolean
 }
 
-function StepIcon({ status, isActive }: { status: StepStatus; isActive: boolean }) {
+function StepIcon({
+  status,
+  isActive,
+  isHuman = false,
+}: {
+  status: StepStatus
+  isActive: boolean
+  isHuman?: boolean
+}) {
+  if (isHuman) {
+    return <Circle className="h-3.5 w-3.5 text-warning" />
+  }
   if (isActive && status === 'running') {
     return <Loader2 className="h-3.5 w-3.5 animate-spin text-brand-blue" />
   }
@@ -60,7 +71,7 @@ export default function CompletedStepsPanel({ steps = [], isRunning = false }: P
                 const isPast = isFinished(step.status) && !isActive
                 return (
                   <div
-                    key={step.index}
+                    key={`${step.index}-${step.source ?? 'agent'}`}
                     className={cn(
                       'flex items-start gap-2 text-xs',
                       isActive && 'text-foreground',
@@ -69,12 +80,14 @@ export default function CompletedStepsPanel({ steps = [], isRunning = false }: P
                     )}
                   >
                     <span className="mt-0.5 flex-shrink-0">
-                      <StepIcon status={step.status} isActive={isActive} />
+                      <StepIcon status={step.status} isActive={isActive} isHuman={step.source === 'human'} />
                     </span>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="mono text-muted-foreground">#{step.index}</span>
-                        <span className="mono font-medium">{step.action}</span>
+                        <span className={cn('mono font-medium', step.source === 'human' && 'text-warning')}>
+                          {step.action}
+                        </span>
                       </div>
                       {step.thought && (
                         <span className="text-muted-foreground block mt-0.5 leading-snug line-clamp-2">

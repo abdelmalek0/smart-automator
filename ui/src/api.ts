@@ -58,6 +58,14 @@ export async function cancelRun(runId: string): Promise<void> {
   await request(`/runs/${runId}`, { method: 'DELETE' })
 }
 
+export async function takeControl(runId: string): Promise<{ ok: boolean; human_controlling: boolean }> {
+  return request(`/runs/${runId}/take-control`, { method: 'POST' })
+}
+
+export async function returnControl(runId: string): Promise<{ ok: boolean; human_controlling: boolean }> {
+  return request(`/runs/${runId}/return-control`, { method: 'POST' })
+}
+
 // ── Config ────────────────────────────────────────────────────────────────────
 
 export function getConfig(): Promise<Config> {

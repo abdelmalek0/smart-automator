@@ -41,6 +41,10 @@ class RunState:
         self.fresh_profile = fresh_profile
         self.criteria_verdict: dict[str, Any] = {}
         self.status = "pending"
+        self.hitl_reason = ""
+        self.hitl_source = ""
+        self.hitl_deadline: Optional[float] = None
+        self.human_controlling = False
         self.steps: list[dict[str, Any]] = []
         self.plan: dict[str, Any] = {}
         self.app_context: dict[str, Any] = {}
@@ -104,6 +108,10 @@ class RunState:
             "cache_tokens": self.cache_tokens,
             "cost_usd": self.cost_usd,
             "criteria_verdict": self.criteria_verdict,
+            "hitl_reason": self.hitl_reason,
+            "hitl_source": self.hitl_source,
+            "hitl_deadline": self.hitl_deadline,
+            "human_controlling": self.human_controlling,
         }
 
     def to_dict(self, *, has_replay_script: bool = False) -> dict[str, Any]:
@@ -140,8 +148,8 @@ def add_run(run: RunState) -> None:
 def _evict_old_runs() -> None:
     if len(_runs) <= _MAX_RUNS_IN_MEMORY:
         return
-    finished = sorted(
-        (run for run in _runs.values() if run.status not in ("pending", "running")),
+        finished = sorted(
+        (run for run in _runs.values() if run.status not in ("pending", "running", "awaiting_human")),
         key=lambda run: run.finished_at or 0,
     )
     to_remove = len(_runs) - _MAX_RUNS_IN_MEMORY

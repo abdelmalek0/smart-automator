@@ -42,6 +42,17 @@ class CriteriaCheckerOutput(BaseModel):
     reason: str = ""
 
 
+class HitlDebriefOutput(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    inferred_reason: str = ""
+    goal_achieved: str = ""
+    outcome: str = "unclear"
+    evidence: str = ""
+    remaining_work: str = ""
+    confidence: str = "low"
+
+
 def _coerce_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -159,6 +170,30 @@ def validate_criteria_output(parsed: dict[str, Any]) -> dict[str, Any]:
     }
     try:
         validated = CriteriaCheckerOutput.model_validate(payload)
+    except ValidationError:
+        return payload
+    return validated.model_dump()
+
+
+_VALID_HITL_OUTCOMES = frozenset({"achieved", "partial", "unclear", "failed"})
+_VALID_HITL_CONFIDENCE = frozenset({"high", "medium", "low"})
+
+
+def validate_hitl_debrief_output(parsed: dict[str, Any]) -> dict[str, Any]:
+    outcome = str(parsed.get("outcome", "unclear") or "unclear").strip().lower()
+    confidence = str(parsed.get("confidence", "low") or "low").strip().lower()
+    payload = {
+        "inferred_reason": str(parsed.get("inferred_reason", "") or ""),
+        "goal_achieved": str(parsed.get("goal_achieved", "") or ""),
+        "outcome": outcome if outcome in _VALID_HITL_OUTCOMES else "unclear",
+        "evidence": str(parsed.get("evidence", "") or ""),
+        "remaining_work": str(parsed.get("remaining_work", "") or ""),
+        "confidence": confidence if confidence in _VALID_HITL_CONFIDENCE else "low",
+    }
+    if parsed.get("error"):
+        payload["error"] = str(parsed["error"])
+    try:
+        validated = HitlDebriefOutput.model_validate(payload)
     except ValidationError:
         return payload
     return validated.model_dump()

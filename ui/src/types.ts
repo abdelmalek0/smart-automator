@@ -3,6 +3,7 @@
 export type RunStatus =
   | 'pending'
   | 'running'
+  | 'awaiting_human'
   | 'pass'
   | 'fail'
   | 'error'
@@ -53,6 +54,10 @@ export interface RunSummary {
   cache_tokens: number
   cost_usd: number | null
   criteria_verdict?: CriteriaVerdict
+  hitl_reason?: string | null
+  hitl_source?: string | null
+  hitl_deadline?: number | null
+  human_controlling?: boolean
 }
 
 export interface Step {
@@ -66,6 +71,7 @@ export interface Step {
   elapsed_ms: number
   atomic_step?: number | null
   turn_timing?: TurnTiming | null
+  source?: 'human' | 'agent'
 }
 
 export interface AtomicStep {
@@ -213,6 +219,11 @@ export type WSEvent =
   | { type: 'tool_written'; name: string }
   | { type: 'done'; status: string; summary: string }
   | { type: 'status'; status: string }
+  | { type: 'human_intervention_required'; reason: string; deadline?: number; source?: string; cycle?: number }
+  | { type: 'human_control_started'; source?: string }
+  | { type: 'human_intervention_ended'; cycle?: number }
+  | { type: 'human_action'; action: string; args: Record<string, unknown>; result: string; step?: Step; cycle?: number }
+  | { type: 'human_handoff'; analysis: Record<string, unknown>; actions: Array<Record<string, unknown>>; step?: Step; intervention_reason?: string; intervention_source?: string; start_url?: string; end_url?: string; cycle?: number }
   | { type: 'tokens_update'; tokens: number; prompt_tokens: number; completion_tokens: number; cache_tokens: number; cost_usd: number | null }
   | { type: 'turn_timing'; snapshot_ms?: number; llm_navigator_ms?: number; batch_ms?: number; settle_ms?: number; turn_ms?: number }
   | { type: 'error'; message: string }

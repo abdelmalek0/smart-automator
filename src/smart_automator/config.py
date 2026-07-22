@@ -49,6 +49,7 @@ class Config(BaseModel):
     action_delay_seconds: float = 0.5
     replay_action_retry_wait_seconds: float = 15.0
     replay_show_highlights: bool = False
+    hitl_timeout_minutes: float = 10.0
     allowed_urls: list[str] = Field(default_factory=list)
     denied_urls: list[str] = Field(default_factory=list)
     cdp_url: str = ""
@@ -126,6 +127,7 @@ def load_config() -> Config:
             os.getenv("REPLAY_ACTION_RETRY_WAIT_SECONDS", "15.0")
         ),
         replay_show_highlights=os.getenv("REPLAY_SHOW_HIGHLIGHTS", "false").lower() == "true",
+        hitl_timeout_minutes=float(os.getenv("HITL_TIMEOUT_MINUTES", "10")),
         allowed_urls=_parse_list(os.getenv("ALLOWED_URLS", "")),
         denied_urls=_parse_list(os.getenv("DENIED_URLS", "")),
         cdp_url=os.getenv("CDP_URL", ""),

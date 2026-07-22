@@ -232,7 +232,7 @@ async def cancel_run(run_id: str):
     run = get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
-    if run.status not in ("pending", "running"):
+    if run.status not in ("pending", "running", "awaiting_human"):
         return {"ok": True}
     log.info("DELETE /api/runs/%s — cancelling", run_id[:8])
     run._cancelled.set()
@@ -243,6 +243,68 @@ async def cancel_run(run_id: str):
     run.broadcast({"type": "status", "status": "cancelled"})
     run.broadcast({"type": "closed"})
     return {"ok": True}
+
+
+def _hitl_unavailable_reason(run) -> str | None:
+    if run.headless:
+        return "Human-in-the-loop is disabled for headless runs"
+    if run.use_replay_script or run.source_run_id:
+        return "Human-in-the-loop is disabled for replay runs"
+    return None
+
+
+@app.post("/api/runs/{run_id}/take-control")
+async def take_control(run_id: str):
+    run = get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    unavailable = _hitl_unavailable_reason(run)
+    if unavailable:
+        raise HTTPException(status_code=400, detail=unavailable)
+    if run.status not in ("running", "awaiting_human", "pending"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot take control while run status is {run.status}",
+        )
+    if run.executor is None:
+        raise HTTPException(status_code=400, detail="Run executor is not active")
+    ok, error = await asyncio.to_thread(
+        run.executor.submit_hitl_command,
+        "take_control",
+        source="manual",
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail=error or "Failed to take control")
+    run.human_controlling = True
+    return {"ok": True, "human_controlling": True}
+
+
+@app.post("/api/runs/{run_id}/return-control")
+async def return_control(run_id: str):
+    run = get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    unavailable = _hitl_unavailable_reason(run)
+    if unavailable:
+        raise HTTPException(status_code=400, detail=unavailable)
+    if run.executor is None:
+        raise HTTPException(status_code=400, detail="Run executor is not active")
+    ok, error = await asyncio.to_thread(
+        run.executor.submit_hitl_command,
+        "return_control",
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail=error or "Failed to return control")
+    run.human_controlling = False
+    return {"ok": True, "human_controlling": False}
+
+
+async def _safe_ws_send_json(websocket: WebSocket, payload: dict) -> bool:
+    try:
+        await websocket.send_json(payload)
+        return True
+    except (WebSocketDisconnect, RuntimeError):
+        return False
 
 
 @app.get("/api/websites")
@@ -393,9 +455,10 @@ async def ws_run_stream(websocket: WebSocket, run_id: str):
 
     queue = run.subscribe()
     try:
-        await websocket.send_json({"type": "snapshot", "run": run.to_dict()})
-        if run.status not in ("pending", "running"):
-            await websocket.send_json({"type": "closed"})
+        if not await _safe_ws_send_json(websocket, {"type": "snapshot", "run": run.to_dict()}):
+            return
+        if run.status not in ("pending", "running", "awaiting_human"):
+            await _safe_ws_send_json(websocket, {"type": "closed"})
             await websocket.close()
             return
 
@@ -403,9 +466,11 @@ async def ws_run_stream(websocket: WebSocket, run_id: str):
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=30.0)
             except asyncio.TimeoutError:
-                await websocket.send_json({"type": "ping"})
+                if not await _safe_ws_send_json(websocket, {"type": "ping"}):
+                    break
                 continue
-            await websocket.send_json(event)
+            if not await _safe_ws_send_json(websocket, event):
+                break
             if event.get("type") == "closed":
                 break
     except WebSocketDisconnect:

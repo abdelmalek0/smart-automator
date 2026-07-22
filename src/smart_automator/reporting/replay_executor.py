@@ -15,8 +15,6 @@ from .replay_script import (
     _sanitize_css_for_flutter,
 )
 
-REPLAY_STEP_SETTLE_MS = 400
-
 _INTERACTIVE_ACTIONS = frozenset({
     "click_element",
     "input_text",
@@ -269,6 +267,6 @@ def execute_replay_steps(
         if result.error:
             break
         if _needs_settle_wait(step):
-            page.wait_for_timeout(REPLAY_STEP_SETTLE_MS)
+            browser_context.get_current_page().wait_for_page_stable()
 
     return results

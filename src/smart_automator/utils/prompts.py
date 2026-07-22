@@ -110,7 +110,12 @@ When determining if a task is "done":
 """
 
 
-def build_browser_state_message(context: AgentContext, browser_state: BrowserState) -> str:
+def build_browser_state_message(
+    context: AgentContext,
+    browser_state: BrowserState,
+    *,
+    include_action_results: bool = True,
+) -> str:
     raw_elements, shown_count, total_count = bounded_clickable_elements_to_string(
         browser_state.element_tree,
         context.options.include_attributes,
@@ -166,20 +171,21 @@ def build_browser_state_message(context: AgentContext, browser_state: BrowserSta
     step_info += f" Current date and time: {time_str}"
 
     action_results_desc = ""
-    failed_actions_hint = context.format_failed_actions_hint(browser_state.url)
-    if failed_actions_hint:
-        action_results_desc += f"\n{failed_actions_hint}"
-    if context.action_results:
-        for i, result in enumerate(context.action_results):
-            if result.extracted_content:
-                action_results_desc += (
-                    f"\nAction result {i + 1}/{len(context.action_results)}: {result.extracted_content}"
-                )
-            if result.error:
-                error = result.error.split("\n")[-1]
-                action_results_desc += (
-                    f"\nAction error {i + 1}/{len(context.action_results)}: ...{error}"
-                )
+    if include_action_results:
+        failed_actions_hint = context.format_failed_actions_hint(browser_state.url)
+        if failed_actions_hint:
+            action_results_desc += f"\n{failed_actions_hint}"
+        if context.action_results:
+            for i, result in enumerate(context.action_results):
+                if result.extracted_content:
+                    action_results_desc += (
+                        f"\nAction result {i + 1}/{len(context.action_results)}: {result.extracted_content}"
+                    )
+                if result.error:
+                    error = result.error.split("\n")[-1]
+                    action_results_desc += (
+                        f"\nAction error {i + 1}/{len(context.action_results)}: ...{error}"
+                    )
 
     current_tab = f"{{id: {browser_state.tab_id}, url: {browser_state.url}, title: {browser_state.title}}}"
     other_tabs = [

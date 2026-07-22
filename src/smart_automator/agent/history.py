@@ -88,6 +88,8 @@ class AgentStepRecord:
                     extracted_content=item.get("extractedContent", item.get("extracted_content")),
                     error=item.get("error"),
                     include_in_memory=item.get("includeInMemory", item.get("include_in_memory", False)),
+                    action_name=item.get("actionName", item.get("action_name")),
+                    action_index=item.get("actionIndex", item.get("action_index")),
                 )
             )
         state_data = data.get("state", {})

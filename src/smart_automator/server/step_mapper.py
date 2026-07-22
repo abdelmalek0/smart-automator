@@ -100,6 +100,62 @@ def navigator_to_step(
     }
 
 
+def human_handoff_to_step(
+    index: int,
+    *,
+    analysis: dict[str, Any],
+    actions: list[dict[str, Any]],
+    intervention_reason: str,
+    intervention_source: str,
+    start_url: str = "",
+    end_url: str = "",
+    screenshot_url: str | None = None,
+) -> dict[str, Any]:
+    inferred_reason = str(analysis.get("inferred_reason", "") or "")
+    goal_achieved = str(analysis.get("goal_achieved", "") or "")
+    evidence = str(analysis.get("evidence", "") or "")
+    result_parts = [part for part in (goal_achieved, evidence) if part]
+    return {
+        "index": index,
+        "thought": inferred_reason or intervention_reason or "Human intervention",
+        "action": "human_handoff",
+        "args": {
+            "analysis": analysis,
+            "actions": actions,
+            "intervention_reason": intervention_reason,
+            "intervention_source": intervention_source,
+            "start_url": start_url,
+            "end_url": end_url,
+        },
+        "result": "\n".join(result_parts),
+        "status": "pass",
+        "screenshot_url": screenshot_url,
+        "elapsed_ms": 0,
+        "source": "human",
+    }
+
+
+def human_action_to_step(
+    index: int,
+    *,
+    action: str,
+    args: dict[str, Any],
+    result: str,
+    screenshot_url: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "index": index,
+        "thought": "Human intervention",
+        "action": action,
+        "args": args,
+        "result": result,
+        "status": "pass",
+        "screenshot_url": screenshot_url,
+        "elapsed_ms": 0,
+        "source": "human",
+    }
+
+
 def history_item_to_step(
     index: int,
     history_item: AgentStepRecord,

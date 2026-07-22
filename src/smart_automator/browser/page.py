@@ -21,7 +21,9 @@ from .util import is_url_allowed
 from .views import URLNotAllowedError
 
 
-_RELEVANT_RESOURCE_TYPES = frozenset({"document", "stylesheet", "image", "font", "script", "iframe"})
+_RELEVANT_RESOURCE_TYPES = frozenset({
+    "document", "stylesheet", "image", "font", "script", "iframe", "xhr", "fetch",
+})
 _RELEVANT_CONTENT_TYPES = frozenset({
     "text/html", "text/css", "application/javascript", "image/", "font/", "application/json",
 })
@@ -49,6 +51,33 @@ window.navigator.permissions.query = (parameters) => (
     return originalAttachShadow.call(this, { ...options, mode: "open" });
   };
 })();
+"""
+
+_DOM_STABILITY_PROBE_JS = """
+() => {
+  const interactiveSelector = (
+    'a, button, input, select, textarea, [role="button"], [role="link"], '
+    + '[role="textbox"], [tabindex], flt-semantics[role]'
+  );
+  let interactive = 0;
+  for (const el of document.querySelectorAll(interactiveSelector)) {
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    const style = window.getComputedStyle(el);
+    if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') {
+      continue;
+    }
+    interactive += 1;
+  }
+  const text = document.body && document.body.innerText
+    ? document.body.innerText.replace(/\\s+/g, ' ').trim()
+    : '';
+  return JSON.stringify({
+    interactive,
+    textLen: text.length,
+    textSample: text.slice(0, 200),
+  });
+}
 """
 
 
@@ -107,11 +136,32 @@ class Page:
     def wait_for_page_stable(self, minimum_wait: float | None = None) -> None:
         start = time.monotonic()
         self._wait_for_stable_network()
+        self._wait_for_dom_stable()
         elapsed = time.monotonic() - start
         min_wait = minimum_wait if minimum_wait is not None else self._minimum_wait_page_load_time
         remaining = max(min_wait - elapsed, 0.0)
         if remaining > 0:
             time.sleep(remaining)
+
+    def _probe_dom_signature(self) -> str:
+        try:
+            return self._page.evaluate(_DOM_STABILITY_PROBE_JS)
+        except Exception:
+            return ""
+
+    def _wait_for_dom_stable(self) -> None:
+        start = time.monotonic()
+        last_signature: str | None = None
+        last_change = time.monotonic()
+
+        while time.monotonic() - start < self._maximum_wait_page_load_time:
+            signature = self._probe_dom_signature()
+            if signature != last_signature:
+                last_signature = signature
+                last_change = time.monotonic()
+            elif time.monotonic() - last_change >= self._wait_for_network_idle_page_load_time:
+                return
+            time.sleep(0.1)
 
     def _wait_for_stable_network(self) -> None:
         pending_requests: set[Request] = set()

@@ -1,4 +1,5 @@
 import { useEffect, useReducer, useRef } from 'react'
+import { upsertStep } from '@/lib/run-steps'
 import type { AtomicStep, Plan, RunDetails, RunProgress, Step, WSEvent } from '../types'
 
 interface StreamState {
@@ -27,6 +28,11 @@ type Action =
   | { type: 'TOOL_WRITTEN'; name: string }
   | { type: 'DONE'; status: string; summary: string }
   | { type: 'STATUS'; status: string }
+  | { type: 'HUMAN_INTERVENTION_REQUIRED'; reason: string; deadline?: number; source?: string }
+  | { type: 'HUMAN_CONTROL_STARTED' }
+  | { type: 'HUMAN_INTERVENTION_ENDED' }
+  | { type: 'HUMAN_ACTION'; step: Step }
+  | { type: 'HUMAN_HANDOFF'; step: Step }
   | { type: 'TOKENS_UPDATE'; tokens: number; prompt_tokens: number; completion_tokens: number; cache_tokens: number; cost_usd: number | null }
   | { type: 'TURN_TIMING'; snapshot_ms?: number; llm_navigator_ms?: number; batch_ms?: number; settle_ms?: number; turn_ms?: number }
   | { type: 'CONNECTED' }
@@ -66,17 +72,12 @@ function reducer(state: StreamState, action: Action): StreamState {
       }
     case 'STEP_START': {
       if (!state.run) return state
-      const exists = state.run.steps.some((s) => s.index === action.step.index)
-      const steps = exists
-        ? state.run.steps.map((s) => (s.index === action.step.index ? action.step : s))
-        : [...state.run.steps, action.step]
+      const steps = upsertStep(state.run.steps, action.step)
       return { ...state, run: { ...state.run, steps } }
     }
     case 'STEP_END': {
       if (!state.run) return state
-      const steps = state.run.steps.map((s) =>
-        s.index === action.step.index ? action.step : s,
-      )
+      const steps = upsertStep(state.run.steps, action.step)
       return {
         ...state,
         run: { ...state.run, steps, step_count: steps.length },
@@ -196,6 +197,39 @@ function reducer(state: StreamState, action: Action): StreamState {
         ...state,
         run: { ...state.run, status: action.status as RunDetails['status'] },
       }
+    case 'HUMAN_INTERVENTION_REQUIRED':
+      if (!state.run) return state
+      return {
+        ...state,
+        run: {
+          ...state.run,
+          status: 'awaiting_human',
+          hitl_reason: action.reason,
+          hitl_deadline: action.deadline ?? null,
+          hitl_source: action.source ?? null,
+        },
+      }
+    case 'HUMAN_CONTROL_STARTED':
+      if (!state.run) return state
+      return { ...state, run: { ...state.run, human_controlling: true } }
+    case 'HUMAN_INTERVENTION_ENDED':
+      if (!state.run) return state
+      return {
+        ...state,
+        run: {
+          ...state.run,
+          status: 'running',
+          human_controlling: false,
+          hitl_reason: null,
+          hitl_deadline: null,
+        },
+      }
+    case 'HUMAN_ACTION':
+    case 'HUMAN_HANDOFF': {
+      if (!state.run) return state
+      const steps = upsertStep(state.run.steps, action.step)
+      return { ...state, run: { ...state.run, steps, step_count: steps.length } }
+    }
     case 'TOKENS_UPDATE':
       if (!state.run) return state
       return {
@@ -334,6 +368,30 @@ export function useRunStream(runId: string | null) {
           break
         case 'status':
           dispatch({ type: 'STATUS', status: event.status })
+          break
+        case 'human_intervention_required':
+          dispatch({
+            type: 'HUMAN_INTERVENTION_REQUIRED',
+            reason: event.reason,
+            deadline: event.deadline,
+            source: event.source,
+          })
+          break
+        case 'human_control_started':
+          dispatch({ type: 'HUMAN_CONTROL_STARTED' })
+          break
+        case 'human_intervention_ended':
+          dispatch({ type: 'HUMAN_INTERVENTION_ENDED' })
+          break
+        case 'human_action':
+          if (event.step) {
+            dispatch({ type: 'HUMAN_ACTION', step: event.step })
+          }
+          break
+        case 'human_handoff':
+          if (event.step) {
+            dispatch({ type: 'HUMAN_HANDOFF', step: event.step })
+          }
           break
         case 'tokens_update':
           dispatch({

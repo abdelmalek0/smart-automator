@@ -77,7 +77,7 @@ class CriteriaCheckerAgent(BaseAgent):
         try:
             browser_state = context.browser_context.get_state(
                 show_highlights=False,
-                wait_for_stable=False,
+                wait_for_stable=True,
             )
             return build_browser_state_message(context, browser_state)
         except Exception:

@@ -19,13 +19,44 @@ from .history_store import load_run_history, save_run_history
 from .paths import REPORT_DIR, SCREENSHOT_DIR
 from .replay_store import load_run_replay, save_run_replay
 from .run_state import RunState
-from .step_mapper import build_step_start, history_item_to_step, navigator_to_step
+from .step_mapper import (
+    build_step_start,
+    history_item_to_step,
+    human_action_to_step,
+    human_handoff_to_step,
+    navigator_to_step,
+)
 from ..reporting import generate_run_report
 from ..reporting.builder import build_action_timeline
 from ..reporting.replay_executor import execute_replay_steps
 from ..reporting.replay_script import build_replay_steps, count_skipped_actions, format_replay_script
 
 log = logging.getLogger(__name__)
+
+
+def _next_step_index(run: RunState) -> int:
+    if not run.steps:
+        return 1
+    return max(int(step.get("index", 0)) for step in run.steps) + 1
+
+
+def _resolve_step_index(run: RunState, event: dict[str, Any]) -> int:
+    index = int(event.get("index") or 0)
+    if index > 0:
+        return index
+    return _next_step_index(run)
+
+
+def _upsert_step(run: RunState, step_data: dict[str, Any]) -> None:
+    index = int(step_data.get("index", 0))
+    if index <= 0:
+        run.steps.append(step_data)
+        return
+    for position, step in enumerate(run.steps):
+        if int(step.get("index", 0)) == index:
+            run.steps[position] = step_data
+            return
+    run.steps.append(step_data)
 
 
 def _capture_screenshot(browser_context: BrowserContext, run_id: str, step_index: int) -> str | None:
@@ -44,19 +75,13 @@ def _handle_event(run: RunState, browser_context: BrowserContext, event: dict[st
     event_type = event.get("type")
 
     if event_type == "step_start":
-        run.steps.append(event["step"])
+        _upsert_step(run, event["step"])
     elif event_type == "step_end":
         step_data = dict(event["step"])
         screenshot_url = _capture_screenshot(browser_context, run.run_id, step_data.get("index", 0))
         if screenshot_url:
             step_data["screenshot_url"] = screenshot_url
-        idx = int(step_data.get("index", 0)) - 1
-        if 0 <= idx < len(run.steps):
-            run.steps[idx] = step_data
-        elif run.steps:
-            run.steps[-1] = step_data
-        else:
-            run.steps.append(step_data)
+        _upsert_step(run, step_data)
         event = {**event, "step": step_data}
     elif event_type == "plan_update":
         run.plan = event.get("plan", {})
@@ -78,6 +103,43 @@ def _handle_event(run: RunState, browser_context: BrowserContext, event: dict[st
         run.status = event.get("status", run.status)
         run.summary = event.get("summary", "")
         run.finished_at = time.time()
+    elif event_type == "status":
+        run.status = event.get("status", run.status)
+    elif event_type == "human_intervention_required":
+        run.status = "awaiting_human"
+        run.hitl_reason = str(event.get("reason", ""))
+        run.hitl_source = str(event.get("source", ""))
+        run.hitl_deadline = event.get("deadline")
+    elif event_type == "human_control_started":
+        run.human_controlling = True
+    elif event_type == "human_intervention_ended":
+        run.human_controlling = False
+        run.hitl_reason = ""
+        run.hitl_deadline = None
+        run.status = "running"
+    elif event_type == "human_action":
+        step_index = _resolve_step_index(run, event)
+        step_data = human_action_to_step(
+            step_index,
+            action=str(event.get("action", "")),
+            args=dict(event.get("args") or {}),
+            result=str(event.get("result", "")),
+        )
+        _upsert_step(run, step_data)
+        event = {**event, "step": step_data}
+    elif event_type == "human_handoff":
+        step_index = _resolve_step_index(run, event)
+        step_data = human_handoff_to_step(
+            step_index,
+            analysis=dict(event.get("analysis") or {}),
+            actions=list(event.get("actions") or []),
+            intervention_reason=str(event.get("intervention_reason", "")),
+            intervention_source=str(event.get("intervention_source", "")),
+            start_url=str(event.get("start_url", "")),
+            end_url=str(event.get("end_url", "")),
+        )
+        _upsert_step(run, step_data)
+        event = {**event, "step": step_data}
 
     run.broadcast(event)
 
@@ -341,6 +403,9 @@ def run_automation(run: RunState) -> None:
         )
         run.executor = executor
 
+        if replay_script_data is not None or replay_history is not None:
+            executor.context.hitl_enabled = False
+
         if run._cancelled.is_set():
             _set_terminal_status(run, "cancelled", "Run cancelled before execution started.")
             return
@@ -375,6 +440,8 @@ def run_automation(run: RunState) -> None:
         result = executor.execute()
 
         if run.status == "cancelled" or run._cancelled.is_set():
+            return
+        if executor.context.hitl_timed_out:
             return
         if result:
             _apply_criteria_verdict(run, executor, llm)

@@ -92,6 +92,7 @@ def build_replay_steps(timeline: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "element_label": element_label,
                 "verification_status": entry.get("verification_status"),
                 "outcome": entry.get("extracted_content"),
+                "source": entry.get("source"),
             }
         )
     return steps

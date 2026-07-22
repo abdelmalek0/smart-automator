@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..browser.dom import DEFAULT_INCLUDE_ATTRIBUTES
 
@@ -26,6 +26,7 @@ class AgentOptions:
     replay_show_highlights: bool = False
     max_observation_elements: int = 80
     max_observation_chars: int = 12000
+    hitl_timeout_seconds: float = 600.0
 
 
 @dataclass
@@ -72,6 +73,18 @@ class FailedActionRecord:
     error: str
 
 
+@dataclass
+class PendingHitlHandoff:
+    recorded: list[tuple[str, dict[str, Any], "ActionResult"]]
+    intervention_reason: str
+    intervention_source: str
+    cycle: int
+    start_url: str
+    start_title: str
+    end_url: str
+    end_title: str
+
+
 class AgentContext:
     def __init__(
         self,
@@ -87,8 +100,19 @@ class AgentContext:
 
         self.paused = False
         self.stopped = False
+        self.hitl_enabled = True
+        self.awaiting_human = False
+        self.human_controlling = False
+        self.hitl_reason = ""
+        self.hitl_source = ""
+        self.hitl_deadline: float | None = None
+        self.hitl_timed_out = False
+        self.force_replan_after_hitl = False
+        self.pending_hitl_handoff: PendingHitlHandoff | None = None
+        self.stuck_recovery_attempts = 0
         self.cancel_event = threading.Event()
         self.n_steps = 0
+        self.ui_step_index = 0
         self.consecutive_failures = 0
         self.consecutive_no_action_steps = 0
         self.step_info: AgentStepInfo | None = None
@@ -148,6 +172,11 @@ class AgentContext:
                 f"- {record.action_name} {record.action_args}: {record.error}"
             )
         return "\n".join(lines)
+
+    def alloc_ui_step_index(self) -> int:
+        """Allocate the next monotonic UI timeline step index (agent + human)."""
+        self.ui_step_index += 1
+        return self.ui_step_index
 
     def check_cancelled(self):
         from ..agents.errors import RequestCancelledError
