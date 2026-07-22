@@ -42,7 +42,7 @@ from .models import (
 )
 from .paths import ENV_FILE, HISTORY_DIR, REPLAY_DIR, REPORT_DIR, SCREENSHOT_DIR, UI_DIST
 from .history_store import load_run_history
-from .replay_store import load_run_replay
+from .replay_store import has_replay_script, load_run_replay
 from .run_state import RunState, add_run, get_run, list_runs
 from .runner import run_automation
 from .step_mapper import compose_agent_task
@@ -189,12 +189,15 @@ async def start_run(req: StartRunRequest):
 
     thread = threading.Thread(target=run_automation, args=(run,), daemon=True)
     thread.start()
-    return run.to_summary()
+    return run.to_summary(has_replay_script=has_replay_script(run.run_id))
 
 
 @app.get("/api/runs")
 async def api_list_runs():
-    return [run.to_summary() for run in reversed(list_runs())]
+    return [
+        run.to_summary(has_replay_script=has_replay_script(run.run_id))
+        for run in reversed(list_runs())
+    ]
 
 
 @app.get("/api/runs/{run_id}")
@@ -202,7 +205,7 @@ async def api_get_run(run_id: str):
     run = get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
-    return run.to_dict()
+    return run.to_dict(has_replay_script=has_replay_script(run_id))
 
 
 @app.get("/api/runs/{run_id}/report")

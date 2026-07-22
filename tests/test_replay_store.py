@@ -33,6 +33,15 @@ class TestReplayStore(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(replay_store, "REPLAY_DIR", Path(tmp)):
                 self.assertIsNone(replay_store.load_run_replay("missing"))
+                self.assertFalse(replay_store.has_replay_script("missing"))
+
+    def test_has_replay_script_true_when_saved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            replay_dir = Path(tmp)
+            with patch.object(replay_store, "REPLAY_DIR", replay_dir):
+                steps = [{"index": 1, "action": "go_to_url", "args": {"url": "https://example.com"}}]
+                replay_store.save_run_replay("run-1", steps, "# script")
+                self.assertTrue(replay_store.has_replay_script("run-1"))
 
     def test_load_invalid_json_returns_none(self):
         with tempfile.TemporaryDirectory() as tmp:

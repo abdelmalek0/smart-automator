@@ -391,7 +391,7 @@ def _render_replay_script(data: dict[str, Any]) -> str:
         return ""
     return f"""
     <details class="replay-details">
-      <summary>Replay Code</summary>
+      <summary>Automatic Execution</summary>
       <p class="muted">Copy-paste Playwright Python script for LLM-free replay.</p>
       <div class="code-block">
         <pre><code class="language-python">{_esc(script)}</code></pre>

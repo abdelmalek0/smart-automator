@@ -377,6 +377,7 @@ class TestReportBuilder(unittest.TestCase):
         run.finished_at = run.started_at + 1
         data = build_report_data(run, self._sample_history())
         html = render_html_report(data)
+        self.assertIn("Automatic Execution", html)
         self.assertIn("Playwright replay", html)
         self.assertIn("sync_playwright", html)
         self.assertIn(".click()", html)

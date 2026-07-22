@@ -31,6 +31,10 @@ def save_run_replay(
     return path
 
 
+def has_replay_script(run_id: str) -> bool:
+    return load_run_replay(run_id) is not None
+
+
 def load_run_replay(run_id: str) -> dict[str, Any] | None:
     path = replay_json_path(run_id)
     if not path.is_file():

@@ -23,8 +23,15 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { cn } from '@/lib/utils'
 import type { RunStatus } from '@/types'
-import { statusBadgeVariant, statusLabel } from '@/lib/run-status'
+import {
+  executionModeChipClass,
+  executionModeLabel,
+  executionModeShortLabel,
+  statusBadgeVariant,
+  statusLabel,
+} from '@/lib/run-status'
 
 interface Props {
   runId: string
@@ -81,7 +88,20 @@ export default function RunView({ runId, onRunComplete }: Props) {
     <div className="flex flex-col h-full">
       <div className="flex-shrink-0 px-6 py-4 border-b border-border flex items-start gap-4">
         <div className="flex-1 min-w-0">
-          <p className="text-xs text-muted-foreground mono mb-1">{runId.slice(0, 8)}</p>
+          <div className="flex items-center gap-2 mb-1.5 flex-wrap">
+            <span className="text-xs text-muted-foreground mono">{runId.slice(0, 8)}</span>
+            {run && (
+              <span
+                title={executionModeLabel(run.use_replay_script)}
+                className={cn(
+                  'inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-semibold',
+                  executionModeChipClass(run.use_replay_script),
+                )}
+              >
+                {executionModeShortLabel(run.use_replay_script)}
+              </span>
+            )}
+          </div>
           {websiteName && (
             <Badge variant="outline" className="mb-1.5 text-[10px] gap-1">
               <Globe className="h-3 w-3" />
@@ -98,7 +118,7 @@ export default function RunView({ runId, onRunComplete }: Props) {
           )}
           {run?.source_run_id && (
             <p className="mt-1 text-xs text-muted-foreground">
-              {run.use_replay_script ? 'Script replay' : 'Replay'} from{' '}
+              From{' '}
               <Link
                 to={`/runs/${run.source_run_id}`}
                 className="mono text-primary hover:underline underline-offset-2"
@@ -106,9 +126,6 @@ export default function RunView({ runId, onRunComplete }: Props) {
                 {run.source_run_id.slice(0, 8)}
               </Link>
             </p>
-          )}
-          {run?.use_replay_script && !run?.source_run_id && (
-            <p className="mt-1 text-xs text-muted-foreground">Script replay</p>
           )}
           {streamError && run?.status === 'error' && (
             <p className="mt-1 text-xs text-destructive break-words">{streamError}</p>

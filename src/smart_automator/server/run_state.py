@@ -79,7 +79,7 @@ class RunState:
             for queue in list(self._subscribers):
                 self._loop.call_soon_threadsafe(queue.put_nowait, event)
 
-    def to_summary(self) -> dict[str, Any]:
+    def to_summary(self, *, has_replay_script: bool = False) -> dict[str, Any]:
         return {
             "run_id": self.run_id,
             "name": self.name,
@@ -87,6 +87,7 @@ class RunState:
             "success_criteria": self.success_criteria,
             "source_run_id": self.source_run_id,
             "use_replay_script": self.use_replay_script,
+            "has_replay_script": has_replay_script,
             "website_id": self.website_id,
             "headless": self.headless,
             "max_steps": self.max_steps,
@@ -105,9 +106,9 @@ class RunState:
             "criteria_verdict": self.criteria_verdict,
         }
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, *, has_replay_script: bool = False) -> dict[str, Any]:
         return {
-            **self.to_summary(),
+            **self.to_summary(has_replay_script=has_replay_script),
             "steps": self.steps,
             "plan": self.plan,
             "app_context": self.app_context,

@@ -16,6 +16,20 @@ export function actDurationMs(timing: TurnTiming): number {
   )
 }
 
+export function executionModeLabel(useReplayScript?: boolean): 'Training' | 'Automatic execution' {
+  return useReplayScript ? 'Automatic execution' : 'Training'
+}
+
+export function executionModeShortLabel(useReplayScript?: boolean): 'Training' | 'Automatic' {
+  return useReplayScript ? 'Automatic' : 'Training'
+}
+
+export function executionModeChipClass(useReplayScript?: boolean): string {
+  return useReplayScript
+    ? 'bg-brand-blue/15 text-brand-blue border-brand-blue/30'
+    : 'bg-warning/15 text-warning border-warning/30'
+}
+
 export function statusBadgeVariant(
   status: RunStatus,
 ): 'running' | 'success' | 'destructive' | 'warning' | 'secondary' {

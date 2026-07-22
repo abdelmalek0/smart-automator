@@ -36,6 +36,7 @@ export interface RunSummary {
   success_criteria: string
   source_run_id?: string | null
   use_replay_script?: boolean
+  has_replay_script?: boolean
   website_id?: string | null
   headless?: boolean
   max_steps?: number

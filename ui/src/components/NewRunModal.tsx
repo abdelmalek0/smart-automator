@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronDown, Globe, Loader2, Play } from 'lucide-react'
-import { getConfig, listWebsites, startRun } from '@/api'
+import { getConfig, getRun, listWebsites, startRun } from '@/api'
 import { useWebsites } from '@/hooks/useWebsites'
 import { Button } from '@/components/ui/button'
 import {
@@ -53,9 +53,7 @@ export default function NewRunModal({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saveToWebsite, setSaveToWebsite] = useState(false)
-  const [useReplayScript, setUseReplayScript] = useState(
-    initialValues?.use_replay_script ?? Boolean(initialValues?.source_run_id),
-  )
+  const [useReplayScript, setUseReplayScript] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [websiteMode, setWebsiteMode] = useState<'new' | 'existing'>('existing')
   const [newWebsiteName, setNewWebsiteName] = useState('')
@@ -68,6 +66,13 @@ export default function NewRunModal({
   })
 
   const isRerun = Boolean(initialValues?.source_run_id)
+  const sourceRunId = initialValues?.source_run_id
+  const { data: sourceRun } = useQuery({
+    queryKey: ['runs', sourceRunId],
+    queryFn: () => getRun(sourceRunId!),
+    enabled: Boolean(sourceRunId),
+  })
+  const canUseAutomatic = Boolean(sourceRunId && sourceRun?.has_replay_script)
   const selectedWebsite =
     websiteId !== NO_WEBSITE ? websiteList.find((w) => w.id === websiteId) : null
 
@@ -85,10 +90,17 @@ export default function NewRunModal({
     setFreshProfile(initialValues.fresh_profile ?? false)
     setMaxSteps(initialValues.max_steps ?? 100)
     setCdpUrl(initialValues.cdp_url ?? '')
-    setUseReplayScript(
-      initialValues.use_replay_script ?? Boolean(initialValues.source_run_id),
-    )
-  }, [initialValues])
+    const wantsAutomatic =
+      initialValues.use_replay_script ?? Boolean(initialValues.source_run_id)
+    if (initialValues.source_run_id && sourceRun === undefined) return
+    setUseReplayScript(wantsAutomatic && Boolean(sourceRun?.has_replay_script))
+  }, [initialValues, sourceRun])
+
+  useEffect(() => {
+    if (!canUseAutomatic && useReplayScript) {
+      setUseReplayScript(false)
+    }
+  }, [canUseAutomatic, useReplayScript])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -97,6 +109,8 @@ export default function NewRunModal({
     setError(null)
     try {
       let runWebsiteId = websiteId !== NO_WEBSITE ? websiteId : undefined
+
+      const useAutomatic = canUseAutomatic && useReplayScript
 
       const payload = {
         name: name.trim() || undefined,
@@ -107,9 +121,9 @@ export default function NewRunModal({
         cdp_url: cdpUrl.trim() || undefined,
         fresh_profile: freshProfile,
         website_id: runWebsiteId,
-        ...(useReplayScript && initialValues?.source_run_id
+        ...(useAutomatic && sourceRunId
           ? {
-              source_run_id: initialValues.source_run_id,
+              source_run_id: sourceRunId,
               use_replay_script: true,
             }
           : { use_replay_script: false }),
@@ -248,46 +262,48 @@ export default function NewRunModal({
               />
             </div>
 
-            {isRerun && (
-              <div className="space-y-2">
-                <Label>Run mode</Label>
-                <div
-                  className="grid grid-cols-2 gap-1 rounded-lg border border-border bg-muted/40 p-1"
-                  role="group"
-                  aria-label="Run mode"
+            <div className="space-y-2">
+              <Label>Run mode</Label>
+              <div
+                className="grid grid-cols-2 gap-1 rounded-lg border border-border bg-muted/40 p-1"
+                role="group"
+                aria-label="Run mode"
+              >
+                <button
+                  type="button"
+                  onClick={() => setUseReplayScript(false)}
+                  className={cn(
+                    'rounded-md px-3 py-2 text-sm transition-colors',
+                    !useReplayScript
+                      ? 'bg-background text-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground',
+                  )}
                 >
-                  <button
-                    type="button"
-                    onClick={() => setUseReplayScript(true)}
-                    className={cn(
-                      'rounded-md px-3 py-2 text-sm transition-colors',
-                      useReplayScript
-                        ? 'bg-background text-foreground shadow-sm'
-                        : 'text-muted-foreground hover:text-foreground',
-                    )}
-                  >
-                    Replay script
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setUseReplayScript(false)}
-                    className={cn(
-                      'rounded-md px-3 py-2 text-sm transition-colors',
-                      !useReplayScript
-                        ? 'bg-background text-foreground shadow-sm'
-                        : 'text-muted-foreground hover:text-foreground',
-                    )}
-                  >
-                    Fresh exploration
-                  </button>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {useReplayScript
-                    ? 'Runs the saved Playwright steps, then checks criteria.'
-                    : 'Fresh LLM run with element highlights.'}
-                </p>
+                  Training
+                </button>
+                <button
+                  type="button"
+                  onClick={() => canUseAutomatic && setUseReplayScript(true)}
+                  disabled={!canUseAutomatic}
+                  className={cn(
+                    'rounded-md px-3 py-2 text-sm transition-colors',
+                    useReplayScript
+                      ? 'bg-background text-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground',
+                    !canUseAutomatic && 'cursor-not-allowed opacity-50',
+                  )}
+                >
+                  Automatic execution
+                </button>
               </div>
-            )}
+              <p className="text-xs text-muted-foreground">
+                {useReplayScript
+                  ? 'Runs the saved Playwright steps, then checks criteria.'
+                  : canUseAutomatic
+                    ? 'Training run with LLM and element highlights.'
+                    : 'Train this flow first, then re-run to use automatic execution.'}
+              </p>
+            </div>
 
             <div className="border border-border rounded-lg overflow-hidden">
               <button
