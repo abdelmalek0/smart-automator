@@ -19,3 +19,6 @@ ui/dist/
 # Runtime data
 data/*
 websites.json
+
+# C connect app
+apps/smart-automator-connect/build/
