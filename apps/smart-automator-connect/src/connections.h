@@ -17,6 +17,8 @@ typedef struct {
   char local_ip[64];
   sa_mode_t mode;
   int key_installed;
+  char chrome_user_data_dir[512];
+  char chrome_profile_directory[128];
 } sa_connection_t;
 
 typedef struct {

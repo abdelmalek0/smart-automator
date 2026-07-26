@@ -97,6 +97,10 @@ static void parse_connection_field(sa_connection_t *conn, const char *key, const
     }
   } else if (strcmp(key, "key_installed") == 0) {
     conn->key_installed = atoi(value) != 0;
+  } else if (strcmp(key, "chrome_user_data_dir") == 0) {
+    snprintf(conn->chrome_user_data_dir, sizeof(conn->chrome_user_data_dir), "%s", value);
+  } else if (strcmp(key, "chrome_profile_directory") == 0) {
+    snprintf(conn->chrome_profile_directory, sizeof(conn->chrome_profile_directory), "%s", value);
   }
 }
 
@@ -212,6 +216,12 @@ int sa_connections_save(const sa_connections_t *store) {
     }
     fprintf(fp, "mode=%s\n", mode);
     fprintf(fp, "key_installed=%d\n", conn->key_installed ? 1 : 0);
+    if (conn->chrome_user_data_dir[0] != '\0') {
+      fprintf(fp, "chrome_user_data_dir=%s\n", conn->chrome_user_data_dir);
+    }
+    if (conn->chrome_profile_directory[0] != '\0') {
+      fprintf(fp, "chrome_profile_directory=%s\n", conn->chrome_profile_directory);
+    }
     fprintf(fp, "\n");
   }
 
@@ -293,4 +303,6 @@ void sa_connection_to_config(const sa_connection_t *conn, sa_config_t *cfg) {
   snprintf(cfg->user, sizeof(cfg->user), "%s", conn->user);
   snprintf(cfg->local_ip, sizeof(cfg->local_ip), "%s", conn->local_ip);
   cfg->mode = conn->mode;
+  snprintf(cfg->chrome_user_data_dir, sizeof(cfg->chrome_user_data_dir), "%s", conn->chrome_user_data_dir);
+  snprintf(cfg->chrome_profile_directory, sizeof(cfg->chrome_profile_directory), "%s", conn->chrome_profile_directory);
 }

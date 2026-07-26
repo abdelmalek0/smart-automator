@@ -8,6 +8,8 @@ typedef struct {
   char user[128];
   char local_ip[64];
   sa_mode_t mode;
+  char chrome_user_data_dir[512];
+  char chrome_profile_directory[128];
   int ui_port;
   int chrome_port;
   int cdp_remote_port;

@@ -1,6 +1,7 @@
 #include "app.h"
 
 #include "chrome.h"
+#include "chrome_profiles.h"
 #include "common.h"
 #include "config.h"
 #include "connections.h"
@@ -177,7 +178,30 @@ static void on_runtime_status(void *userdata, sa_conn_state_t state, const char 
   g_main_context_invoke(NULL, (GSourceFunc)apply_ui_event, event);
 }
 
-static GtkWidget *make_connection_row(app_ctx_t *app, const sa_connection_t *conn) {
+static const char *connection_profile_label(const sa_connection_t *conn, const sa_chrome_profile_list_t *profiles) {
+  int idx;
+
+  if (conn->chrome_user_data_dir[0] == '\0') {
+    return "App";
+  }
+
+  if (profiles != NULL) {
+    idx = sa_chrome_profiles_find_index(profiles, conn->chrome_user_data_dir, conn->chrome_profile_directory);
+    if (idx >= 0) {
+      return profiles->items[idx].name;
+    }
+  }
+
+  return sa_chrome_profile_short_label(
+      conn->chrome_user_data_dir,
+      conn->chrome_profile_directory,
+      NULL);
+}
+
+static GtkWidget *make_connection_row(
+    app_ctx_t *app,
+    const sa_connection_t *conn,
+    const sa_chrome_profile_list_t *profiles) {
   GtkWidget *row;
   GtkWidget *box;
   GtkWidget *text_box;
@@ -206,10 +230,11 @@ static GtkWidget *make_connection_row(app_ctx_t *app, const sa_connection_t *con
   snprintf(
       subtitle,
       sizeof(subtitle),
-      "%s · %s · %s%s",
+      "%s · %s · %s · %s%s",
       conn->host,
       conn->user,
       sa_mode_label(conn->mode),
+      connection_profile_label(conn, profiles),
       conn->key_installed ? " · key" : "");
   sub_label = gtk_label_new(subtitle);
   gtk_label_set_xalign(GTK_LABEL(sub_label), 0.0);
@@ -245,6 +270,9 @@ static void refresh_connections_list(app_ctx_t *app) {
   GList *children;
   GList *iter;
   int i;
+  sa_chrome_profile_list_t profiles;
+
+  sa_chrome_profiles_discover(&profiles);
 
   children = gtk_container_get_children(GTK_CONTAINER(app->connections_box));
   for (iter = children; iter != NULL; iter = iter->next) {
@@ -262,7 +290,7 @@ static void refresh_connections_list(app_ctx_t *app) {
   }
 
   for (i = 0; i < app->connections.count; i++) {
-    GtkWidget *row = make_connection_row(app, &app->connections.items[i]);
+    GtkWidget *row = make_connection_row(app, &app->connections.items[i], &profiles);
     gtk_box_pack_start(GTK_BOX(app->connections_box), row, FALSE, FALSE, 0);
   }
   gtk_widget_show_all(app->connections_box);
@@ -291,6 +319,11 @@ static gboolean run_connection_dialog(app_ctx_t *app, sa_connection_t *conn, int
   GtkWidget *local_ip_entry;
   GtkWidget *mode_combo;
   GtkWidget *mode_label;
+  GtkWidget *profile_combo;
+  GtkWidget *profile_label;
+  sa_chrome_profile_list_t profiles;
+  int profile_active;
+  int i;
   int response;
   gboolean saved = FALSE;
 
@@ -325,11 +358,32 @@ static gboolean run_connection_dialog(app_ctx_t *app, sa_connection_t *conn, int
   gtk_grid_attach(GTK_GRID(grid), mode_label, 0, 4, 1, 1);
   gtk_grid_attach(GTK_GRID(grid), mode_combo, 1, 4, 1, 1);
 
+  profile_label = gtk_label_new("Chrome profile");
+  gtk_widget_set_halign(profile_label, GTK_ALIGN_START);
+  profile_combo = gtk_combo_box_text_new();
+  gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(profile_combo), "App profile");
+  sa_chrome_profiles_discover(&profiles);
+  for (i = 0; i < profiles.count; i++) {
+    char label[256];
+    snprintf(label, sizeof(label), "%s — %s", profiles.items[i].browser, profiles.items[i].name);
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(profile_combo), label);
+  }
+  gtk_grid_attach(GTK_GRID(grid), profile_label, 0, 5, 1, 1);
+  gtk_grid_attach(GTK_GRID(grid), profile_combo, 1, 5, 1, 1);
+
   gtk_entry_set_text(GTK_ENTRY(name_entry), conn->name);
   gtk_entry_set_text(GTK_ENTRY(host_entry), conn->host);
   gtk_entry_set_text(GTK_ENTRY(user_entry), conn->user);
   gtk_entry_set_text(GTK_ENTRY(local_ip_entry), conn->local_ip);
   gtk_combo_box_set_active(GTK_COMBO_BOX(mode_combo), combo_from_mode(conn->mode));
+  profile_active = 0;
+  if (conn->chrome_user_data_dir[0] != '\0') {
+    int idx = sa_chrome_profiles_find_index(&profiles, conn->chrome_user_data_dir, conn->chrome_profile_directory);
+    if (idx >= 0) {
+      profile_active = idx + 1;
+    }
+  }
+  gtk_combo_box_set_active(GTK_COMBO_BOX(profile_combo), profile_active);
 
   gtk_widget_show_all(dialog);
   response = gtk_dialog_run(GTK_DIALOG(dialog));
@@ -358,6 +412,15 @@ static gboolean run_connection_dialog(app_ctx_t *app, sa_connection_t *conn, int
       snprintf(conn->user, sizeof(conn->user), "%s", user != NULL && user[0] ? user : SA_DEFAULT_SSH_USER);
       snprintf(conn->local_ip, sizeof(conn->local_ip), "%s", local_ip != NULL ? local_ip : "");
       conn->mode = mode_from_combo(gtk_combo_box_get_active(GTK_COMBO_BOX(mode_combo)));
+      profile_active = gtk_combo_box_get_active(GTK_COMBO_BOX(profile_combo));
+      if (profile_active <= 0) {
+        conn->chrome_user_data_dir[0] = '\0';
+        conn->chrome_profile_directory[0] = '\0';
+      } else {
+        const sa_chrome_profile_t *picked = &profiles.items[profile_active - 1];
+        snprintf(conn->chrome_user_data_dir, sizeof(conn->chrome_user_data_dir), "%s", picked->user_data_dir);
+        snprintf(conn->chrome_profile_directory, sizeof(conn->chrome_profile_directory), "%s", picked->profile_directory);
+      }
       saved = TRUE;
     }
   }
@@ -416,7 +479,6 @@ static const char *password_prompt(app_ctx_t *app, const char *host) {
 
 static void start_connection(app_ctx_t *app, sa_connection_t *conn, const char *password, int bootstrap_key) {
   sa_config_t cfg;
-  char err[512];
   int use_key = conn->key_installed && !bootstrap_key;
 
   if (sa_runtime_is_busy(app->runtime)) {
@@ -431,29 +493,7 @@ static void start_connection(app_ctx_t *app, sa_connection_t *conn, const char *
   gtk_widget_set_sensitive(app->disconnect_btn, TRUE);
   gtk_label_set_text(GTK_LABEL(app->status_label), "Starting Chrome...");
 
-  while (g_main_context_pending(NULL)) {
-    g_main_context_iteration(NULL, FALSE);
-  }
-
-  if (sa_chrome_start(cfg.chrome_port, err, sizeof(err)) != 0) {
-    GtkWidget *dialog = gtk_message_dialog_new(
-        GTK_WINDOW(app->window),
-        GTK_DIALOG_MODAL,
-        GTK_MESSAGE_ERROR,
-        GTK_BUTTONS_OK,
-        "%s",
-        err);
-    gtk_label_set_text(GTK_LABEL(app->status_label), err);
-    gtk_dialog_run(GTK_DIALOG(dialog));
-    gtk_widget_destroy(dialog);
-    set_list_sensitive(app, TRUE);
-    gtk_widget_set_sensitive(app->disconnect_btn, FALSE);
-    app->active_connection_id[0] = '\0';
-    app->pending_bootstrap = 0;
-    return;
-  }
-
-  sa_runtime_connect(app->runtime, &cfg, password != NULL ? password : "", use_key, bootstrap_key, 1);
+  sa_runtime_connect(app->runtime, &cfg, password != NULL ? password : "", use_key, bootstrap_key, 0);
 }
 
 static void on_connect_row_clicked(GtkButton *button, gpointer user_data) {

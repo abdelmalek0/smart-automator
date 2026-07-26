@@ -25,6 +25,8 @@ set(SA_CONNECT_SOURCES
   src/http.c
   src/config.c
   src/connections.c
+  src/chrome_profiles.c
+  src/chrome_mirror.c
   src/util.c
 )
 

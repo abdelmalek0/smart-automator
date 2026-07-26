@@ -1,6 +1,7 @@
 #include "runtime.h"
 
 #include "chrome.h"
+#include "chrome_mirror.h"
 #include "http.h"
 #include "lan_proxy.h"
 #include "mode.h"
@@ -132,8 +133,19 @@ static void *runtime_worker(void *arg) {
   atomic_store(&rt->stop_requested, 0);
 
   if (!chrome_ready) {
-    emit_status(rt, SA_CONN_CONNECTING, "Starting Chrome...", "", "");
-    if (sa_chrome_start(cfg.chrome_port, err, sizeof(err)) != 0) {
+    if (cfg.chrome_user_data_dir[0] != '\0' &&
+        sa_chrome_mirror_is_system_dir(cfg.chrome_user_data_dir) &&
+        cfg.chrome_profile_directory[0] != '\0') {
+      emit_status(rt, SA_CONN_CONNECTING, "Preparing Chrome profile mirror...", "", "");
+    } else {
+      emit_status(rt, SA_CONN_CONNECTING, "Starting Chrome...", "", "");
+    }
+    if (sa_chrome_start(
+            cfg.chrome_port,
+            cfg.chrome_user_data_dir,
+            cfg.chrome_profile_directory,
+            err,
+            sizeof(err)) != 0) {
       emit_status(rt, SA_CONN_ERROR, err, "", "");
       atomic_store(&rt->busy, 0);
 #ifdef _WIN32
