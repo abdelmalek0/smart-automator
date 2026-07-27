@@ -100,6 +100,25 @@ int sa_chrome_mirror_is_system_dir(const char *user_data_dir) {
   return 0;
 }
 
+static int mirror_profile_ready(const char *dest_profile) {
+  char preferences[768];
+  struct stat st;
+
+  sa_path_join(preferences, sizeof(preferences), dest_profile, "Preferences");
+  return stat(preferences, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+static void copy_profile_error(char *err, size_t err_len, int locked_files) {
+  if (locked_files) {
+    snprintf(
+        err,
+        err_len,
+        "Could not copy Chrome profile (files may be locked). Close Chrome completely and try again.");
+    return;
+  }
+  snprintf(err, err_len, "Failed to copy Chrome profile into mirror directory.");
+}
+
 static int write_mirror_local_state(const char *mirror_root) {
   char path[640];
   FILE *fp;
@@ -127,9 +146,9 @@ static int copy_profile_tree(const char *source_profile, const char *dest_profil
   snprintf(
       cmd,
       sizeof(cmd),
-      "robocopy \"%s\" \"%s\" /E /MIR /NFL /NDL /NJH /NJS /nc /ns /np "
-      "/XD Cache \"Code Cache\" GPUCache \"Service Worker\" "
-      "DawnGraphiteCache DawnWebGPUCache ShaderCache GrShaderCache "
+      "robocopy \"%s\" \"%s\" /E /MIR /R:1 /W:1 /NFL /NDL /NJH /NJS /nc /ns /np "
+      "/XD Cache \"Code Cache\" GPUCache \"Service Worker\" IndexedDB \"File System\" "
+      "\"Platform Notifications\" DawnGraphiteCache DawnWebGPUCache ShaderCache GrShaderCache "
       "blob_storage BrowserMetrics Crashpad optimization_guide_hint_cache_store",
       source_profile,
       dest_profile);
@@ -137,7 +156,7 @@ static int copy_profile_tree(const char *source_profile, const char *dest_profil
   si.cb = sizeof(si);
   ZeroMemory(&pi, sizeof(pi));
   if (!CreateProcessA(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
-    snprintf(err, err_len, "Failed to copy Chrome profile into mirror directory.");
+    copy_profile_error(err, err_len, 0);
     return -1;
   }
   WaitForSingleObject(pi.hProcess, INFINITE);
@@ -147,7 +166,7 @@ static int copy_profile_tree(const char *source_profile, const char *dest_profil
   if (exit_code <= 7) {
     return 0;
   }
-  snprintf(err, err_len, "Failed to copy Chrome profile into mirror directory.");
+  copy_profile_error(err, err_len, exit_code == 8 || exit_code == 9 || exit_code == 10 || exit_code == 11);
   return -1;
 #else
   char src_slash[768];
@@ -174,12 +193,18 @@ static int copy_profile_tree(const char *source_profile, const char *dest_profil
     argv[argc++] = "--exclude";
     argv[argc++] = "Service Worker";
     argv[argc++] = "--exclude";
+    argv[argc++] = "IndexedDB";
+    argv[argc++] = "--exclude";
+    argv[argc++] = "File System";
+    argv[argc++] = "--exclude";
+    argv[argc++] = "Platform Notifications";
+    argv[argc++] = "--exclude";
     argv[argc++] = "Singleton*";
     argv[argc++] = src_slash;
     argv[argc++] = dst_slash;
     argv[argc] = NULL;
     if (posix_spawnp(&pid, "rsync", NULL, NULL, argv, environ) != 0) {
-      snprintf(err, err_len, "Failed to copy Chrome profile into mirror directory.");
+      copy_profile_error(err, err_len, 0);
       return -1;
     }
   } else {
@@ -189,13 +214,13 @@ static int copy_profile_tree(const char *source_profile, const char *dest_profil
     argv[argc++] = (char *)dest_profile;
     argv[argc] = NULL;
     if (posix_spawnp(&pid, "cp", NULL, NULL, argv, environ) != 0) {
-      snprintf(err, err_len, "Failed to copy Chrome profile into mirror directory.");
+      copy_profile_error(err, err_len, 0);
       return -1;
     }
   }
 
   if (waitpid(pid, &status, 0) < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-    snprintf(err, err_len, "Failed to copy Chrome profile into mirror directory.");
+    copy_profile_error(err, err_len, 0);
     return -1;
   }
   return 0;
@@ -205,6 +230,7 @@ static int copy_profile_tree(const char *source_profile, const char *dest_profil
 int sa_chrome_mirror_prepare(
     const char *user_data_dir,
     const char *profile_directory,
+    int force_remirror,
     char *mirror_path,
     size_t mirror_path_len,
     char *err,
@@ -248,6 +274,10 @@ int sa_chrome_mirror_prepare(
   if (sa_mkdir_p(mirror_path) != 0) {
     snprintf(err, err_len, "Could not create Chrome mirror directory.");
     return -1;
+  }
+
+  if (!force_remirror && mirror_profile_ready(dest_profile)) {
+    return 0;
   }
 
   if (copy_profile_tree(source_profile, dest_profile, err, err_len) != 0) {

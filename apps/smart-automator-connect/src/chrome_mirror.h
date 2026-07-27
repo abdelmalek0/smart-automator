@@ -7,6 +7,7 @@ int sa_chrome_mirror_is_system_dir(const char *user_data_dir);
 int sa_chrome_mirror_prepare(
     const char *user_data_dir,
     const char *profile_directory,
+    int force_remirror,
     char *mirror_path,
     size_t mirror_path_len,
     char *err,

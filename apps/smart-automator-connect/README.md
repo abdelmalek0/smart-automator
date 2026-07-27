@@ -70,7 +70,9 @@ To switch profiles: **Disconnect**, edit the connection (or pick another), choos
 
 While connected, click **Reset profile** to wipe the current profile (or re-mirror a system profile) and relaunch Chrome without tearing down the SSH/LAN tunnel. Use this before starting a new test.
 
-**Note:** System profiles are mirrored locally before connect (first time may take a few seconds). You can keep normal Chrome open; Connect uses the mirror, not your live profile session. Reset re-mirrors from disk for system profiles.
+**Note:** System profiles are mirrored locally before connect. The first mirror can take up to a minute on Windows if the profile is large; later connects reuse the mirror and skip the copy. If mirroring fails or stalls, fully quit Chrome (including the tray icon) and try again, or use **Fresh isolated profile** / **App profile** to skip mirroring. Connect uses the mirror, not your live profile session. **Reset profile** re-mirrors from disk for system profiles.
+
+**LAN mode (Windows):** The CDP proxy listens on all interfaces (`0.0.0.0`) but the gaming PC uses your **Local IP** (e.g. `192.168.1.42:9223`). Set Local IP manually in the connection editor if auto-detect picks a VPN or virtual adapter. Allow Connect through Windows Firewall for private networks if verification fails.
 
 ## SSH keys
 

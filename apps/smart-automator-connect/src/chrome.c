@@ -146,7 +146,7 @@ static int prepare_launch_profile(
   }
 
   if (sa_chrome_mirror_is_system_dir(user_data_dir) && profile_dir[0] != '\0') {
-    if (sa_chrome_mirror_prepare(user_data_dir, profile_dir, profile, profile_len, err, err_len) != 0) {
+    if (sa_chrome_mirror_prepare(user_data_dir, profile_dir, wipe, profile, profile_len, err, err_len) != 0) {
       return -1;
     }
     *max_attempts = 240;
