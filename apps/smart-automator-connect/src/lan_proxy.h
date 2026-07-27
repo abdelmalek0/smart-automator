@@ -5,7 +5,12 @@
 
 typedef struct sa_lan_proxy sa_lan_proxy_t;
 
-sa_lan_proxy_t *sa_lan_proxy_start(int listen_port, int target_port, char *err, size_t err_len);
+sa_lan_proxy_t *sa_lan_proxy_start(
+    const char *bind_ip,
+    int listen_port,
+    int target_port,
+    char *err,
+    size_t err_len);
 void sa_lan_proxy_stop(sa_lan_proxy_t *proxy);
 
 #endif

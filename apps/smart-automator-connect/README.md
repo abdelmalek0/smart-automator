@@ -60,14 +60,17 @@ If you have an old single-profile `connect.conf`, it is migrated automatically i
 
 Each saved connection can use a **local** Chrome profile on the machine where Connect runs:
 
-- **App profile** (default): dedicated directory at `~/.local/share/smart-automator-chrome`
-- **System profiles**: your normal Chrome/Chromium profiles discovered from this PC (e.g. `Chrome — Person 1`). Connect copies the profile into a mirror directory under `~/.local/share/smart-automator-chrome/mirrors/` and launches that copy with remote debugging, so it does not conflict with an already-open Chrome.
+- **Fresh isolated profile** (default for new connections): blank browser each connect at `…/smart-automator-chrome/fresh` (Linux: `~/.local/share/…`, Windows: `%LOCALAPPDATA%\…`)
+- **App profile**: persistent dedicated directory at `…/smart-automator-chrome`
+- **System profiles**: your normal Chrome/Chromium profiles discovered from this PC (e.g. `Chrome — Person 1`). Connect copies the profile into a mirror directory under `…/smart-automator-chrome/mirrors/` and launches that copy with remote debugging, so it does not conflict with an already-open Chrome.
 
 These are **not** the profiles shown in the Smart Automator dashboard on the gaming PC. Connect launches Chrome here; the dashboard profile picker applies when Chrome runs on the server.
 
 To switch profiles: **Disconnect**, edit the connection (or pick another), choose a different Chrome profile, then **Connect** again.
 
-**Note:** System profiles are mirrored locally before connect (first time may take a few seconds). You can keep normal Chrome open; Connect uses the mirror, not your live profile session. Re-connect refreshes the mirror from disk.
+While connected, click **Reset profile** to wipe the current profile (or re-mirror a system profile) and relaunch Chrome without tearing down the SSH/LAN tunnel. Use this before starting a new test.
+
+**Note:** System profiles are mirrored locally before connect (first time may take a few seconds). You can keep normal Chrome open; Connect uses the mirror, not your live profile session. Reset re-mirrors from disk for system profiles.
 
 ## SSH keys
 

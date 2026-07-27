@@ -23,6 +23,7 @@ typedef struct {
   GtkWidget *connections_box;
   GtkWidget *add_btn;
   GtkWidget *disconnect_btn;
+  GtkWidget *refresh_btn;
   GtkWidget *status_label;
   GtkWidget *cdp_label;
   GtkWidget *ui_label;
@@ -81,6 +82,7 @@ static void set_list_sensitive(app_ctx_t *app, gboolean sensitive) {
 }
 
 static void refresh_connections_list(app_ctx_t *app);
+static int active_connection_uses_fresh_profile(app_ctx_t *app);
 static void on_connect_row_clicked(GtkButton *button, gpointer user_data);
 static void on_edit_row_clicked(GtkButton *button, gpointer user_data);
 static void on_delete_row_clicked(GtkButton *button, gpointer user_data);
@@ -149,9 +151,15 @@ static gboolean apply_ui_event(gpointer data) {
   if (event->state == SA_CONN_CONNECTING || event->state == SA_CONN_CONNECTED) {
     set_list_sensitive(app, FALSE);
     gtk_widget_set_sensitive(app->disconnect_btn, TRUE);
+    gtk_widget_set_sensitive(
+        app->refresh_btn,
+        event->state == SA_CONN_CONNECTED &&
+            sa_runtime_is_connected(app->runtime) &&
+            active_connection_uses_fresh_profile(app));
   } else {
     set_list_sensitive(app, TRUE);
     gtk_widget_set_sensitive(app->disconnect_btn, FALSE);
+    gtk_widget_set_sensitive(app->refresh_btn, FALSE);
     if (event->state == SA_CONN_IDLE) {
       app->active_connection_id[0] = '\0';
     }
@@ -639,6 +647,26 @@ static void on_disconnect_clicked(GtkButton *button, gpointer user_data) {
   gtk_label_set_text(GTK_LABEL(app->status_label), "Stopping...");
 }
 
+static int active_connection_uses_fresh_profile(app_ctx_t *app) {
+  sa_connection_t *conn;
+
+  if (app == NULL || app->active_connection_id[0] == '\0') {
+    return 0;
+  }
+
+  conn = sa_connections_find(&app->connections, app->active_connection_id);
+  return conn != NULL && conn->fresh_profile;
+}
+
+static void on_refresh_clicked(GtkButton *button, gpointer user_data) {
+  app_ctx_t *app = (app_ctx_t *)user_data;
+  (void)button;
+  if (!sa_runtime_is_connected(app->runtime) || !active_connection_uses_fresh_profile(app)) {
+    return;
+  }
+  sa_runtime_reset_chrome(app->runtime);
+}
+
 static void on_destroy(GtkWidget *widget, gpointer user_data) {
   app_ctx_t *app = (app_ctx_t *)user_data;
   (void)widget;
@@ -715,7 +743,17 @@ void sa_app_run(int argc, char **argv) {
   app.disconnect_btn = gtk_button_new_with_label("Disconnect");
   gtk_widget_set_sensitive(app.disconnect_btn, FALSE);
   g_signal_connect(app.disconnect_btn, "clicked", G_CALLBACK(on_disconnect_clicked), &app);
-  gtk_box_pack_start(GTK_BOX(info_box), app.disconnect_btn, FALSE, FALSE, 0);
+
+  app.refresh_btn = gtk_button_new_with_label("Refresh");
+  gtk_widget_set_sensitive(app.refresh_btn, FALSE);
+  g_signal_connect(app.refresh_btn, "clicked", G_CALLBACK(on_refresh_clicked), &app);
+
+  {
+    GtkWidget *btn_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_pack_start(GTK_BOX(btn_row), app.refresh_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(btn_row), app.disconnect_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(info_box), btn_row, FALSE, FALSE, 0);
+  }
 
   gtk_container_add(GTK_CONTAINER(info_frame), info_box);
   gtk_box_pack_start(GTK_BOX(outer), info_frame, FALSE, FALSE, 0);

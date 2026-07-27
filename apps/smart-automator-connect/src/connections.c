@@ -101,6 +101,8 @@ static void parse_connection_field(sa_connection_t *conn, const char *key, const
     snprintf(conn->chrome_user_data_dir, sizeof(conn->chrome_user_data_dir), "%s", value);
   } else if (strcmp(key, "chrome_profile_directory") == 0) {
     snprintf(conn->chrome_profile_directory, sizeof(conn->chrome_profile_directory), "%s", value);
+  } else if (strcmp(key, "fresh_profile") == 0) {
+    conn->fresh_profile = atoi(value) != 0;
   }
 }
 
@@ -222,6 +224,9 @@ int sa_connections_save(const sa_connections_t *store) {
     if (conn->chrome_profile_directory[0] != '\0') {
       fprintf(fp, "chrome_profile_directory=%s\n", conn->chrome_profile_directory);
     }
+    if (conn->fresh_profile) {
+      fprintf(fp, "fresh_profile=1\n");
+    }
     fprintf(fp, "\n");
   }
 
@@ -265,6 +270,7 @@ sa_connection_t *sa_connections_add(sa_connections_t *store) {
   snprintf(conn->id, sizeof(conn->id), "%d", next_id);
   snprintf(conn->user, sizeof(conn->user), "%s", SA_DEFAULT_SSH_USER);
   conn->mode = SA_MODE_AUTO;
+  conn->fresh_profile = 1;
   return conn;
 }
 
@@ -305,4 +311,5 @@ void sa_connection_to_config(const sa_connection_t *conn, sa_config_t *cfg) {
   cfg->mode = conn->mode;
   snprintf(cfg->chrome_user_data_dir, sizeof(cfg->chrome_user_data_dir), "%s", conn->chrome_user_data_dir);
   snprintf(cfg->chrome_profile_directory, sizeof(cfg->chrome_profile_directory), "%s", conn->chrome_profile_directory);
+  cfg->fresh_profile = conn->fresh_profile;
 }

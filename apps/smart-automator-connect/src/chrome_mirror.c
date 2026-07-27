@@ -8,6 +8,17 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifndef _WIN32
+#include <spawn.h>
+#include <sys/wait.h>
+extern char **environ;
+#endif
+
+#ifdef _WIN32
+#include <shlobj.h>
+#include <windows.h>
+#endif
+
 static int path_is_dir(const char *path) {
   struct stat st;
   return path != NULL && stat(path, &st) == 0 && S_ISDIR(st.st_mode);
@@ -65,6 +76,18 @@ int sa_chrome_mirror_is_system_dir(const char *user_data_dir) {
     snprintf(expanded, sizeof(expanded), "%s/%s", home, user_data_dir + 2);
   }
 
+#ifdef _WIN32
+  {
+    char win_chrome[MAX_PATH];
+    if (SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, base) == S_OK) {
+      snprintf(win_chrome, sizeof(win_chrome), "%s\\Google\\Chrome\\User Data", base);
+      if (_stricmp(expanded, win_chrome) == 0) {
+        return 1;
+      }
+    }
+  }
+#endif
+
   for (i = 0; suffixes[i] != NULL; i++) {
     if (home == NULL) {
       continue;
@@ -81,7 +104,7 @@ static int write_mirror_local_state(const char *mirror_root) {
   char path[640];
   FILE *fp;
 
-  snprintf(path, sizeof(path), "%s/Local State", mirror_root);
+  sa_path_join(path, sizeof(path), mirror_root, "Local State");
   fp = fopen(path, "w");
   if (fp == NULL) {
     return -1;
@@ -91,6 +114,92 @@ static int write_mirror_local_state(const char *mirror_root) {
       "{\"profile\":{\"info_cache\":{\"Default\":{\"name\":\"Default\"}},\"last_used\":\"Default\"}}\n");
   fclose(fp);
   return 0;
+}
+
+static int copy_profile_tree(const char *source_profile, const char *dest_profile, char *err, size_t err_len) {
+#ifdef _WIN32
+  char cmd[4096];
+  STARTUPINFOA si;
+  PROCESS_INFORMATION pi;
+  DWORD exit_code = 1;
+
+  sa_rmdir_r(dest_profile);
+  snprintf(
+      cmd,
+      sizeof(cmd),
+      "robocopy \"%s\" \"%s\" /E /MIR /NFL /NDL /NJH /NJS /nc /ns /np "
+      "/XD Cache \"Code Cache\" GPUCache \"Service Worker\" "
+      "DawnGraphiteCache DawnWebGPUCache ShaderCache GrShaderCache "
+      "blob_storage BrowserMetrics Crashpad optimization_guide_hint_cache_store",
+      source_profile,
+      dest_profile);
+  ZeroMemory(&si, sizeof(si));
+  si.cb = sizeof(si);
+  ZeroMemory(&pi, sizeof(pi));
+  if (!CreateProcessA(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+    snprintf(err, err_len, "Failed to copy Chrome profile into mirror directory.");
+    return -1;
+  }
+  WaitForSingleObject(pi.hProcess, INFINITE);
+  GetExitCodeProcess(pi.hProcess, &exit_code);
+  CloseHandle(pi.hThread);
+  CloseHandle(pi.hProcess);
+  if (exit_code <= 7) {
+    return 0;
+  }
+  snprintf(err, err_len, "Failed to copy Chrome profile into mirror directory.");
+  return -1;
+#else
+  char src_slash[768];
+  char dst_slash[768];
+  char *argv[32];
+  int argc = 0;
+  pid_t pid;
+  int status;
+
+  sa_rmdir_r(dest_profile);
+  snprintf(src_slash, sizeof(src_slash), "%s/", source_profile);
+  snprintf(dst_slash, sizeof(dst_slash), "%s/", dest_profile);
+
+  if (access("/usr/bin/rsync", X_OK) == 0) {
+    argv[argc++] = "rsync";
+    argv[argc++] = "-a";
+    argv[argc++] = "--delete";
+    argv[argc++] = "--exclude";
+    argv[argc++] = "Cache";
+    argv[argc++] = "--exclude";
+    argv[argc++] = "Code Cache";
+    argv[argc++] = "--exclude";
+    argv[argc++] = "GPUCache";
+    argv[argc++] = "--exclude";
+    argv[argc++] = "Service Worker";
+    argv[argc++] = "--exclude";
+    argv[argc++] = "Singleton*";
+    argv[argc++] = src_slash;
+    argv[argc++] = dst_slash;
+    argv[argc] = NULL;
+    if (posix_spawnp(&pid, "rsync", NULL, NULL, argv, environ) != 0) {
+      snprintf(err, err_len, "Failed to copy Chrome profile into mirror directory.");
+      return -1;
+    }
+  } else {
+    argv[argc++] = "cp";
+    argv[argc++] = "-a";
+    argv[argc++] = (char *)source_profile;
+    argv[argc++] = (char *)dest_profile;
+    argv[argc] = NULL;
+    if (posix_spawnp(&pid, "cp", NULL, NULL, argv, environ) != 0) {
+      snprintf(err, err_len, "Failed to copy Chrome profile into mirror directory.");
+      return -1;
+    }
+  }
+
+  if (waitpid(pid, &status, 0) < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    snprintf(err, err_len, "Failed to copy Chrome profile into mirror directory.");
+    return -1;
+  }
+  return 0;
+#endif
 }
 
 int sa_chrome_mirror_prepare(
@@ -105,8 +214,6 @@ int sa_chrome_mirror_prepare(
   char mirror_root[640];
   char source_profile[768];
   char dest_profile[768];
-  char cmd[2048];
-  int rc;
 
   if (user_data_dir == NULL || user_data_dir[0] == '\0' || profile_directory == NULL || profile_directory[0] == '\0') {
     snprintf(err, err_len, "Chrome profile directory is required.");
@@ -123,7 +230,7 @@ int sa_chrome_mirror_prepare(
     }
   }
 
-  snprintf(source_profile, sizeof(source_profile), "%s/%s", profile_base, profile_directory);
+  sa_path_join(source_profile, sizeof(source_profile), profile_base, profile_directory);
   if (!path_is_dir(source_profile)) {
     snprintf(err, err_len, "Chrome profile not found: %s", source_profile);
     return -1;
@@ -131,36 +238,19 @@ int sa_chrome_mirror_prepare(
 
   sa_chrome_profile_path(mirror_root, sizeof(mirror_root));
   sanitize_mirror_key(profile_base, profile_directory, mirror_key, sizeof(mirror_key));
-  snprintf(mirror_path, mirror_path_len, "%s/mirrors/%s", mirror_root, mirror_key);
-  snprintf(dest_profile, sizeof(dest_profile), "%s/Default", mirror_path);
+  {
+    char mirrors_dir[640];
+    sa_path_join(mirrors_dir, sizeof(mirrors_dir), mirror_root, "mirrors");
+    sa_path_join(mirror_path, mirror_path_len, mirrors_dir, mirror_key);
+  }
+  sa_path_join(dest_profile, sizeof(dest_profile), mirror_path, "Default");
 
   if (sa_mkdir_p(mirror_path) != 0) {
     snprintf(err, err_len, "Could not create Chrome mirror directory.");
     return -1;
   }
 
-  snprintf(cmd, sizeof(cmd), "rm -rf '%s/Default'", mirror_path);
-  (void)system(cmd);
-
-  if (access("/usr/bin/rsync", X_OK) == 0) {
-    snprintf(
-        cmd,
-        sizeof(cmd),
-        "rsync -a --delete "
-        "--exclude 'Cache' --exclude 'Code Cache' --exclude 'GPUCache' --exclude 'Service Worker' "
-        "--exclude 'DawnGraphiteCache' --exclude 'DawnWebGPUCache' --exclude 'ShaderCache' "
-        "--exclude 'GrShaderCache' --exclude 'blob_storage' --exclude 'BrowserMetrics' "
-        "--exclude 'Crashpad' --exclude 'optimization_guide_hint_cache_store' --exclude 'Singleton*' "
-        "'%s/' '%s/'",
-        source_profile,
-        dest_profile);
-  } else {
-    snprintf(cmd, sizeof(cmd), "cp -a '%s' '%s'", source_profile, dest_profile);
-  }
-
-  rc = system(cmd);
-  if (rc != 0) {
-    snprintf(err, err_len, "Failed to copy Chrome profile into mirror directory.");
+  if (copy_profile_tree(source_profile, dest_profile, err, err_len) != 0) {
     return -1;
   }
 

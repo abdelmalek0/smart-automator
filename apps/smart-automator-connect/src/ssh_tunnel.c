@@ -14,10 +14,12 @@
 #include <windows.h>
 #else
 #include <pthread.h>
+#include <unistd.h>
 #endif
 
 struct sa_ssh_tunnel {
   atomic_int running;
+  atomic_int relay_count;
   ssh_session session;
   int local_chrome_port;
   int remote_port;
@@ -28,6 +30,7 @@ struct sa_ssh_tunnel {
   pthread_t thread;
   pthread_mutex_t session_lock;
 #endif
+  int thread_started;
 };
 
 static void session_lock_init(sa_ssh_tunnel_t *tunnel) {
@@ -63,6 +66,7 @@ static void session_unlock(sa_ssh_tunnel_t *tunnel) {
 }
 
 typedef struct {
+  sa_ssh_tunnel_t *tunnel;
   ssh_session session;
   ssh_channel channel;
   int local_chrome_port;
@@ -128,6 +132,7 @@ static void *ssh_relay_thread(void *arg) {
     ssh_channel_free(args->channel);
   }
 
+  atomic_fetch_sub(&args->tunnel->relay_count, 1);
   free(args);
 #ifdef _WIN32
   return 0;
@@ -166,19 +171,36 @@ static void *ssh_tunnel_main(void *arg) {
       continue;
     }
 
+    args->tunnel = tunnel;
     args->session = tunnel->session;
     args->channel = channel;
     args->local_chrome_port = tunnel->local_chrome_port;
+    atomic_fetch_add(&tunnel->relay_count, 1);
 
 #ifdef _WIN32
-    _beginthreadex(NULL, 0, ssh_relay_thread, args, 0, NULL);
+    {
+      HANDLE relay = (HANDLE)_beginthreadex(NULL, 0, ssh_relay_thread, args, 0, NULL);
+      if (relay == NULL) {
+        atomic_fetch_sub(&tunnel->relay_count, 1);
+        ssh_channel_close(channel);
+        ssh_channel_free(channel);
+        free(args);
+      } else {
+        CloseHandle(relay);
+      }
+    }
 #else
     {
       pthread_t tid;
       pthread_attr_t attr;
       pthread_attr_init(&attr);
       pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-      pthread_create(&tid, &attr, ssh_relay_thread, args);
+      if (pthread_create(&tid, &attr, ssh_relay_thread, args) != 0) {
+        atomic_fetch_sub(&tunnel->relay_count, 1);
+        ssh_channel_close(channel);
+        ssh_channel_free(channel);
+        free(args);
+      }
       pthread_attr_destroy(&attr);
     }
 #endif
@@ -222,6 +244,21 @@ static ssh_session connect_and_auth(const char *host, const char *user, const ch
   return session;
 }
 
+static void ssh_tunnel_wait_relays(sa_ssh_tunnel_t *tunnel) {
+  int i;
+
+  for (i = 0; i < 200; i++) {
+    if (atomic_load(&tunnel->relay_count) <= 0) {
+      return;
+    }
+#ifdef _WIN32
+    Sleep(50);
+#else
+    usleep(50000);
+#endif
+  }
+}
+
 sa_ssh_tunnel_t *sa_ssh_tunnel_start(
     const char *host,
     const char *user,
@@ -243,6 +280,7 @@ sa_ssh_tunnel_t *sa_ssh_tunnel_start(
   tunnel->local_chrome_port = local_chrome_port;
   tunnel->remote_port = remote_port;
   atomic_store(&tunnel->running, 1);
+  atomic_store(&tunnel->relay_count, 0);
   session_lock_init(tunnel);
 
   tunnel->session = connect_and_auth(host, user, password, err, err_len);
@@ -275,12 +313,14 @@ sa_ssh_tunnel_t *sa_ssh_tunnel_start(
     snprintf(err, err_len, "Failed to start SSH tunnel thread.");
     return NULL;
   }
+  tunnel->thread_started = 1;
 #else
   if (pthread_create(&tunnel->thread, NULL, ssh_tunnel_main, tunnel) != 0) {
     sa_ssh_tunnel_stop(tunnel);
     snprintf(err, err_len, "Failed to start SSH tunnel thread.");
     return NULL;
   }
+  tunnel->thread_started = 1;
 #endif
 
   return tunnel;
@@ -324,7 +364,7 @@ int sa_ssh_tunnel_verify_cdp(sa_ssh_tunnel_t *tunnel, int remote_port) {
   session_unlock(tunnel);
 
 #ifdef _WIN32
-  Sleep(200);
+  Sleep(100);
 #else
   usleep(200000);
 #endif
@@ -351,21 +391,28 @@ void sa_ssh_tunnel_stop(sa_ssh_tunnel_t *tunnel) {
 
   atomic_store(&tunnel->running, 0);
 
+  if (tunnel->thread_started) {
+#ifdef _WIN32
+    if (tunnel->thread != NULL) {
+      WaitForSingleObject(tunnel->thread, 5000);
+      CloseHandle(tunnel->thread);
+      tunnel->thread = NULL;
+    }
+#else
+    pthread_join(tunnel->thread, NULL);
+#endif
+    tunnel->thread_started = 0;
+  }
+
+  ssh_tunnel_wait_relays(tunnel);
+
   if (tunnel->session != NULL) {
+    session_lock(tunnel);
     ssh_disconnect(tunnel->session);
     ssh_free(tunnel->session);
     tunnel->session = NULL;
+    session_unlock(tunnel);
   }
-
-#ifdef _WIN32
-  if (tunnel->thread != NULL) {
-    WaitForSingleObject(tunnel->thread, 5000);
-    CloseHandle(tunnel->thread);
-    tunnel->thread = NULL;
-  }
-#else
-  pthread_join(tunnel->thread, NULL);
-#endif
 
   session_lock_destroy(tunnel);
   free(tunnel);

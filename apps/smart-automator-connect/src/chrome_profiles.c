@@ -12,6 +12,7 @@
 
 #ifdef _WIN32
 #include <shlobj.h>
+#include <windows.h>
 #endif
 
 typedef struct {
@@ -203,7 +204,7 @@ static char *load_local_state(const char *root) {
     return NULL;
   }
 
-  fp = fopen(local_state_path, "r");
+  fp = fopen(local_state_path, "rb");
   if (fp == NULL) {
     return NULL;
   }
@@ -307,10 +308,11 @@ static void discover_from_preferences_dirs(
     const char *browser,
     const char *root,
     const char *local_state) {
+  char profile_name[128];
+
 #ifndef _WIN32
   DIR *dir;
   struct dirent *entry;
-  char profile_name[128];
 
   dir = opendir(root);
   if (dir == NULL) {
@@ -334,10 +336,35 @@ static void discover_from_preferences_dirs(
 
   closedir(dir);
 #else
-  (void)list;
-  (void)browser;
-  (void)root;
-  (void)local_state;
+  char pattern[MAX_PATH + 4];
+  WIN32_FIND_DATAA fd;
+  HANDLE h;
+
+  snprintf(pattern, sizeof(pattern), "%s\\*", root);
+  h = FindFirstFileA(pattern, &fd);
+  if (h == INVALID_HANDLE_VALUE) {
+    return;
+  }
+
+  do {
+    if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) {
+      continue;
+    }
+    if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+      continue;
+    }
+    if (!profile_has_preferences(root, fd.cFileName)) {
+      continue;
+    }
+
+    profile_name[0] = '\0';
+    if (local_state != NULL) {
+      read_profile_name_from_local_state(local_state, fd.cFileName, profile_name, sizeof(profile_name));
+    }
+    add_profile(list, browser, root, fd.cFileName, profile_name);
+  } while (FindNextFileA(h, &fd));
+
+  FindClose(h);
 #endif
 }
 

@@ -24,5 +24,7 @@ void sa_runtime_connect(
     int chrome_ready);
 void sa_runtime_disconnect(sa_runtime_t *rt);
 int sa_runtime_is_busy(const sa_runtime_t *rt);
+int sa_runtime_is_connected(const sa_runtime_t *rt);
+void sa_runtime_reset_chrome(sa_runtime_t *rt);
 
 #endif

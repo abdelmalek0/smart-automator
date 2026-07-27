@@ -19,6 +19,7 @@ typedef struct {
   int key_installed;
   char chrome_user_data_dir[512];
   char chrome_profile_directory[128];
+  int fresh_profile;
 } sa_connection_t;
 
 typedef struct {

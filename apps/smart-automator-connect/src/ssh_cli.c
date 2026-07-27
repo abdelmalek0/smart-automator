@@ -142,20 +142,9 @@ static pid_t run_ssh_forward(
   char stderr_path[256];
   const char *display;
   pid_t pid;
-  int status;
   int stderr_fd;
   int elapsed_ms;
   int use_key = key_path != NULL && key_path[0] != '\0';
-
-  if (!use_key && askpass_bin != NULL && askpass_file != NULL) {
-    setenv("SA_ASKPASS_FILE", askpass_file, 1);
-    setenv("SSH_ASKPASS", askpass_bin, 1);
-    setenv("SSH_ASKPASS_REQUIRE", "force", 1);
-    display = getenv("DISPLAY");
-    if (display == NULL || display[0] == '\0') {
-      setenv("DISPLAY", ":0", 0);
-    }
-  }
 
   snprintf(port_fwd, sizeof(port_fwd), "%d:127.0.0.1:%d", remote_port, local_chrome_port);
 
@@ -185,6 +174,15 @@ static pid_t run_ssh_forward(
       if (null_fd >= 0) {
         dup2(null_fd, STDIN_FILENO);
         close(null_fd);
+      }
+    }
+    if (!use_key && askpass_bin != NULL && askpass_file != NULL) {
+      setenv("SA_ASKPASS_FILE", askpass_file, 1);
+      setenv("SSH_ASKPASS", askpass_bin, 1);
+      setenv("SSH_ASKPASS_REQUIRE", "force", 1);
+      display = getenv("DISPLAY");
+      if (display == NULL || display[0] == '\0') {
+        setenv("DISPLAY", ":0", 0);
       }
     }
 #ifdef __linux__
@@ -244,6 +242,7 @@ static pid_t run_ssh_forward(
 
   elapsed_ms = 0;
   while (elapsed_ms < 20000) {
+    int status;
     pid_t waited = waitpid(pid, &status, WNOHANG);
     if (waited > 0) {
       read_stderr_file(stderr_path, err, err_len);
@@ -255,6 +254,7 @@ static pid_t run_ssh_forward(
     }
     if (waited < 0 && errno != EINTR) {
       unlink(stderr_path);
+      kill_ssh_pid(pid);
       snprintf(err, err_len, "Failed while waiting for ssh process.");
       return -1;
     }

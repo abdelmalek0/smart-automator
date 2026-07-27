@@ -22,6 +22,7 @@
 
 struct sa_lan_proxy {
   atomic_int running;
+  char bind_ip[64];
   int listen_port;
   int target_port;
 #ifdef _WIN32
@@ -29,8 +30,9 @@ struct sa_lan_proxy {
   SOCKET listen_fd;
 #else
   pthread_t thread;
-  int listen_fd;
+  sa_socket_t listen_fd;
 #endif
+  int thread_started;
 };
 
 typedef struct {
@@ -119,8 +121,21 @@ static void *lan_proxy_main(void *arg) {
   setsockopt(proxy->listen_fd, SOL_SOCKET, SO_REUSEADDR, (const char *)&yes, sizeof(yes));
   memset(&addr, 0, sizeof(addr));
   addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_ANY);
   addr.sin_port = htons((uint16_t)proxy->listen_port);
+  if (proxy->bind_ip[0] != '\0') {
+    if (inet_pton(AF_INET, proxy->bind_ip, &addr.sin_addr) != 1) {
+      sa_tcp_close(proxy->listen_fd);
+      proxy->listen_fd = SA_INVALID_SOCKET;
+      atomic_store(&proxy->running, 0);
+#ifdef _WIN32
+      return 0;
+#else
+      return NULL;
+#endif
+    }
+  } else {
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  }
 
   if (bind(proxy->listen_fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
       listen(proxy->listen_fd, 16) != 0) {
@@ -153,7 +168,15 @@ static void *lan_proxy_main(void *arg) {
     args->target_port = proxy->target_port;
 
 #ifdef _WIN32
-    _beginthreadex(NULL, 0, relay_thread, args, 0, NULL);
+    {
+      HANDLE relay = (HANDLE)_beginthreadex(NULL, 0, relay_thread, args, 0, NULL);
+      if (relay == NULL) {
+        sa_tcp_close(client_fd);
+        free(args);
+      } else {
+        CloseHandle(relay);
+      }
+    }
 #else
     {
       pthread_t tid;
@@ -178,7 +201,12 @@ static void *lan_proxy_main(void *arg) {
 #endif
 }
 
-sa_lan_proxy_t *sa_lan_proxy_start(int listen_port, int target_port, char *err, size_t err_len) {
+sa_lan_proxy_t *sa_lan_proxy_start(
+    const char *bind_ip,
+    int listen_port,
+    int target_port,
+    char *err,
+    size_t err_len) {
   sa_lan_proxy_t *proxy = calloc(1, sizeof(*proxy));
 
   if (proxy == NULL) {
@@ -188,6 +216,10 @@ sa_lan_proxy_t *sa_lan_proxy_start(int listen_port, int target_port, char *err, 
 
   proxy->listen_port = listen_port;
   proxy->target_port = target_port;
+  proxy->listen_fd = SA_INVALID_SOCKET;
+  if (bind_ip != NULL && bind_ip[0] != '\0') {
+    snprintf(proxy->bind_ip, sizeof(proxy->bind_ip), "%s", bind_ip);
+  }
   atomic_store(&proxy->running, 1);
 
 #ifdef _WIN32
@@ -197,12 +229,14 @@ sa_lan_proxy_t *sa_lan_proxy_start(int listen_port, int target_port, char *err, 
     snprintf(err, err_len, "Failed to start LAN proxy thread.");
     return NULL;
   }
+  proxy->thread_started = 1;
 #else
   if (pthread_create(&proxy->thread, NULL, lan_proxy_main, proxy) != 0) {
     free(proxy);
     snprintf(err, err_len, "Failed to start LAN proxy thread.");
     return NULL;
   }
+  proxy->thread_started = 1;
 #endif
 
   return proxy;
@@ -215,18 +249,25 @@ void sa_lan_proxy_stop(sa_lan_proxy_t *proxy) {
 
   atomic_store(&proxy->running, 0);
   if (proxy->listen_fd != SA_INVALID_SOCKET) {
-    sa_tcp_close(proxy->listen_fd);
-    proxy->listen_fd = SA_INVALID_SOCKET;
+#ifdef _WIN32
+    shutdown(proxy->listen_fd, SD_BOTH);
+#else
+    shutdown(proxy->listen_fd, SHUT_RDWR);
+#endif
   }
 
+  if (proxy->thread_started) {
 #ifdef _WIN32
-  if (proxy->thread != NULL) {
-    WaitForSingleObject(proxy->thread, 5000);
-    CloseHandle(proxy->thread);
-  }
+    if (proxy->thread != NULL) {
+      WaitForSingleObject(proxy->thread, 5000);
+      CloseHandle(proxy->thread);
+      proxy->thread = NULL;
+    }
 #else
-  pthread_join(proxy->thread, NULL);
+    pthread_join(proxy->thread, NULL);
 #endif
+    proxy->thread_started = 0;
+  }
 
   free(proxy);
 }

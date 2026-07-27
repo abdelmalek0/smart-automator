@@ -5,10 +5,12 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 static void ssh_key_dir(char *out, size_t out_len) {
@@ -205,6 +207,32 @@ int sa_ssh_key_test_auth(const char *host, const char *user, char *err, size_t e
   return 0;
 }
 
+static int run_ssh_with_askpass(
+    const char *cmd,
+    const char *askpass_bin,
+    const char *askpass_file) {
+  pid_t pid;
+  int status;
+
+  pid = fork();
+  if (pid < 0) {
+    return -1;
+  }
+  if (pid == 0) {
+    if (askpass_bin != NULL && askpass_file != NULL && askpass_file[0] != '\0') {
+      setup_askpass_env(askpass_bin, askpass_file);
+    }
+    execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+    _exit(127);
+  }
+  if (waitpid(pid, &status, 0) < 0) {
+    kill(pid, SIGKILL);
+    waitpid(pid, &status, 0);
+    return -1;
+  }
+  return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
+}
+
 int sa_ssh_key_install(const char *host, const char *user, const char *password, char *err, size_t err_len) {
   char priv[512];
   char pub_line[1024];
@@ -239,7 +267,6 @@ int sa_ssh_key_install(const char *host, const char *user, const char *password,
     return -1;
   }
 
-  setup_askpass_env(askpass_bin, askpass_file);
   sa_ssh_key_priv_path(priv, sizeof(priv));
   snprintf(user_host, sizeof(user_host), "%s@%s", user, host);
 
@@ -261,7 +288,7 @@ int sa_ssh_key_install(const char *host, const char *user, const char *password,
       user_host,
       remote_cmd);
 
-  rc = system(cmd);
+  rc = run_ssh_with_askpass(cmd, askpass_bin, askpass_file);
   unlink(askpass_file);
 
   if (rc != 0) {
