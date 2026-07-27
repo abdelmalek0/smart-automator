@@ -67,7 +67,20 @@ int sa_mkdir_p(const char *path) {
     return -1;
   }
 
-  for (cursor = copy + 1; *cursor != '\0'; cursor++) {
+  /* Skip drive letter (C:) and root separators so we never call mkdir("C:") /
+   * mkdir("") — both fail on Windows and abort directory creation. */
+  cursor = copy;
+#ifdef _WIN32
+  if (((copy[0] >= 'A' && copy[0] <= 'Z') || (copy[0] >= 'a' && copy[0] <= 'z')) &&
+      copy[1] == ':') {
+    cursor = copy + 2;
+  }
+#endif
+  if (*cursor == '/' || *cursor == '\\') {
+    cursor++;
+  }
+
+  for (; *cursor != '\0'; cursor++) {
     if (*cursor == '/' || *cursor == '\\') {
       char saved = *cursor;
       *cursor = '\0';

@@ -293,7 +293,20 @@ static void *runtime_worker(void *arg) {
     snprintf(status, sizeof(status), "SSH tunnel: trying port %d...", port);
     emit_status(rt, SA_CONN_CONNECTING, status, "", ui_url);
 
-#ifndef _WIN32
+#ifdef _WIN32
+    rt->ssh_tunnel = sa_ssh_tunnel_start(
+        cfg.host,
+        cfg.user,
+        password,
+        port,
+        cfg.chrome_port,
+        &bound,
+        err,
+        sizeof(err));
+    if (rt->ssh_tunnel == NULL) {
+      continue;
+    }
+#else
     char key_path[512];
     const char *pw = NULL;
     const char *kp = NULL;
@@ -306,28 +319,21 @@ static void *runtime_worker(void *arg) {
     }
 
     pthread_mutex_lock(&rt->lock);
-#endif
     rt->ssh_cli = sa_ssh_cli_start(
         cfg.host,
         cfg.user,
-#ifndef _WIN32
         pw,
         kp,
-#else
-        password,
-        NULL,
-#endif
         port,
         cfg.chrome_port,
         &bound,
         err,
         sizeof(err));
-#ifndef _WIN32
     pthread_mutex_unlock(&rt->lock);
-#endif
     if (rt->ssh_cli == NULL) {
       continue;
     }
+#endif
 
     for (int i = 0; i < 15; i++) {
       if (atomic_load(&rt->stop_requested)) {
@@ -336,7 +342,11 @@ static void *runtime_worker(void *arg) {
       if (i == 0 || i == 5) {
         emit_status(rt, SA_CONN_CONNECTING, "Verifying SSH CDP tunnel...", "", ui_url);
       }
+#ifdef _WIN32
+      if (sa_ssh_tunnel_verify_cdp(rt->ssh_tunnel, bound > 0 ? bound : port) == 0) {
+#else
       if (sa_ssh_cli_verify_cdp(rt->ssh_cli, bound > 0 ? bound : port) == 0) {
+#endif
         remote_port = bound > 0 ? bound : port;
         break;
       }
@@ -356,14 +366,17 @@ static void *runtime_worker(void *arg) {
         sizeof(err),
         "CDP verification failed on gaming PC port %d. Check SSH forwarding and that curl is installed on the gaming PC.",
         bound > 0 ? bound : port);
-#ifndef _WIN32
+#ifdef _WIN32
+    if (rt->ssh_tunnel != NULL) {
+      sa_ssh_tunnel_stop(rt->ssh_tunnel);
+      rt->ssh_tunnel = NULL;
+    }
+#else
     pthread_mutex_lock(&rt->lock);
-#endif
     if (rt->ssh_cli != NULL) {
       sa_ssh_cli_stop(rt->ssh_cli);
       rt->ssh_cli = NULL;
     }
-#ifndef _WIN32
     pthread_mutex_unlock(&rt->lock);
 #endif
   }
@@ -402,14 +415,17 @@ static void *runtime_worker(void *arg) {
 #endif
   }
 
-#ifndef _WIN32
+#ifdef _WIN32
+  if (rt->ssh_tunnel != NULL) {
+    sa_ssh_tunnel_stop(rt->ssh_tunnel);
+    rt->ssh_tunnel = NULL;
+  }
+#else
   pthread_mutex_lock(&rt->lock);
-#endif
   if (rt->ssh_cli != NULL) {
     sa_ssh_cli_stop(rt->ssh_cli);
     rt->ssh_cli = NULL;
   }
-#ifndef _WIN32
   pthread_mutex_unlock(&rt->lock);
 #endif
   emit_status(rt, SA_CONN_IDLE, "Disconnected.", "", "");
