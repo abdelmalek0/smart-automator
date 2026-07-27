@@ -189,6 +189,10 @@ static void on_runtime_status(void *userdata, sa_conn_state_t state, const char 
 static const char *connection_profile_label(const sa_connection_t *conn, const sa_chrome_profile_list_t *profiles) {
   int idx;
 
+  if (conn->fresh_profile) {
+    return "Fresh";
+  }
+
   if (conn->chrome_user_data_dir[0] == '\0') {
     return "App";
   }
@@ -369,6 +373,7 @@ static gboolean run_connection_dialog(app_ctx_t *app, sa_connection_t *conn, int
   profile_label = gtk_label_new("Chrome profile");
   gtk_widget_set_halign(profile_label, GTK_ALIGN_START);
   profile_combo = gtk_combo_box_text_new();
+  gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(profile_combo), "Fresh isolated profile");
   gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(profile_combo), "App profile");
   sa_chrome_profiles_discover(&profiles);
   for (i = 0; i < profiles.count; i++) {
@@ -384,11 +389,13 @@ static gboolean run_connection_dialog(app_ctx_t *app, sa_connection_t *conn, int
   gtk_entry_set_text(GTK_ENTRY(user_entry), conn->user);
   gtk_entry_set_text(GTK_ENTRY(local_ip_entry), conn->local_ip);
   gtk_combo_box_set_active(GTK_COMBO_BOX(mode_combo), combo_from_mode(conn->mode));
-  profile_active = 0;
-  if (conn->chrome_user_data_dir[0] != '\0') {
+  profile_active = 1;
+  if (conn->fresh_profile) {
+    profile_active = 0;
+  } else if (conn->chrome_user_data_dir[0] != '\0') {
     int idx = sa_chrome_profiles_find_index(&profiles, conn->chrome_user_data_dir, conn->chrome_profile_directory);
     if (idx >= 0) {
-      profile_active = idx + 1;
+      profile_active = idx + 2;
     }
   }
   gtk_combo_box_set_active(GTK_COMBO_BOX(profile_combo), profile_active);
@@ -422,10 +429,16 @@ static gboolean run_connection_dialog(app_ctx_t *app, sa_connection_t *conn, int
       conn->mode = mode_from_combo(gtk_combo_box_get_active(GTK_COMBO_BOX(mode_combo)));
       profile_active = gtk_combo_box_get_active(GTK_COMBO_BOX(profile_combo));
       if (profile_active <= 0) {
+        conn->fresh_profile = 1;
+        conn->chrome_user_data_dir[0] = '\0';
+        conn->chrome_profile_directory[0] = '\0';
+      } else if (profile_active == 1) {
+        conn->fresh_profile = 0;
         conn->chrome_user_data_dir[0] = '\0';
         conn->chrome_profile_directory[0] = '\0';
       } else {
-        const sa_chrome_profile_t *picked = &profiles.items[profile_active - 1];
+        const sa_chrome_profile_t *picked = &profiles.items[profile_active - 2];
+        conn->fresh_profile = 0;
         snprintf(conn->chrome_user_data_dir, sizeof(conn->chrome_user_data_dir), "%s", picked->user_data_dir);
         snprintf(conn->chrome_profile_directory, sizeof(conn->chrome_profile_directory), "%s", picked->profile_directory);
       }
