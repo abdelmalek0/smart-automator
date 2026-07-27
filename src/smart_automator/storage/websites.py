@@ -21,7 +21,7 @@ class WebsiteTask:
     headless: bool = False
     max_steps: int = 100
     cdp_url: str | None = None
-    fresh_profile: bool = False
+    fresh_profile: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -39,7 +39,7 @@ class WebsiteTask:
             headless=bool(data.get("headless", False)),
             max_steps=int(data.get("max_steps", 100)),
             cdp_url=data.get("cdp_url") or None,
-            fresh_profile=bool(data.get("fresh_profile", False)),
+            fresh_profile=bool(data.get("fresh_profile", True)),
         )
 
 
@@ -164,7 +164,7 @@ class WebsiteStore:
         headless: bool = False,
         max_steps: int = 100,
         cdp_url: str | None = None,
-        fresh_profile: bool = False,
+        fresh_profile: bool = True,
     ) -> WebsiteTask | None:
         new_task = WebsiteTask(
             id=str(uuid.uuid4()),

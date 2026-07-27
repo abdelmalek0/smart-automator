@@ -154,7 +154,7 @@ def build_config_response() -> dict:
     provider_settings = {
         name: entry.to_dict() for name, entry in settings.providers.items()
     }
-    fresh_profile = os.getenv("QA_FRESH_PROFILE", "false").lower() == "true"
+    fresh_profile = os.getenv("QA_FRESH_PROFILE", "true").lower() == "true"
     cdp_url = os.getenv("CDP_URL", "")
     chrome_user_data = os.getenv("CHROME_USER_DATA", "")
     chrome_profile_directory = os.getenv("CHROME_PROFILE_DIRECTORY", "")
@@ -243,6 +243,11 @@ def apply_config_update(update) -> dict:
         set_key(str(ENV_FILE), "CHROME_PROFILE_DIRECTORY", update.chrome_profile_directory.strip())
     if update.cdp_url is not None:
         set_key(str(ENV_FILE), "CDP_URL", update.cdp_url.strip())
+
+    reload_runtime_env()
+    effective_cdp = os.getenv("CDP_URL", "").strip()
+    if effective_cdp:
+        set_key(str(ENV_FILE), "QA_FRESH_PROFILE", "false")
 
     reload_runtime_env()
     return build_config_response()

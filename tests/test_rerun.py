@@ -30,7 +30,7 @@ def test_run_summary_includes_config(client: TestClient) -> None:
     assert body["headless"] is True
     assert body["max_steps"] == 25
     assert body["cdp_url"] == "ws://localhost:9222"
-    assert body["fresh_profile"] is True
+    assert body["fresh_profile"] is False
     assert body["success_criteria"] == "Page loads successfully"
 
     run_id = body["run_id"]

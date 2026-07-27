@@ -13,6 +13,7 @@ from ..agents.errors import (
     RequestCancelledError,
 )
 from ..browser.context import BrowserContext
+from ..config import normalize_browser_overrides
 from ..main import create_llm
 from .config_service import config_for_run
 from .history_store import load_run_history, save_run_history
@@ -351,10 +352,16 @@ def run_automation(run: RunState) -> None:
         config = config_for_run()
         config.headless = run.headless
         config.max_steps = run.max_steps
-        if run.cdp_url:
-            config.cdp_url = run.cdp_url
-        if run.fresh_profile:
-            config.fresh_profile = True
+        effective_cdp = run.cdp_url or config.cdp_url
+        effective_fresh = run.fresh_profile or config.fresh_profile
+        normalized_cdp, normalized_fresh = normalize_browser_overrides(
+            cdp_url=effective_cdp,
+            fresh_profile=effective_fresh,
+        )
+        config.cdp_url = normalized_cdp
+        config.fresh_profile = normalized_fresh
+        run.cdp_url = normalized_cdp or None
+        run.fresh_profile = normalized_fresh
 
         llm = create_llm(config)
         planner_provider = config.planner_llm_provider or config.llm_provider
@@ -366,8 +373,8 @@ def run_automation(run: RunState) -> None:
 
         browser_context = BrowserContext(config)
         browser_context.launch(
-            cdp_url=run.cdp_url,
-            fresh_profile=run.fresh_profile,
+            cdp_url=normalized_cdp or None,
+            fresh_profile=normalized_fresh,
         )
         browser_context.new_page(config.home_page_url)
 

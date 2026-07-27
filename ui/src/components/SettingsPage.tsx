@@ -63,7 +63,7 @@ export default function SettingsPage() {
   const [baseUrl, setBaseUrl] = useState('')
   const [model, setModel] = useState('')
   const [apiKey, setApiKey] = useState('')
-  const [freshProfile, setFreshProfile] = useState(false)
+  const [freshProfile, setFreshProfile] = useState(true)
   const [chromeUserData, setChromeUserData] = useState('')
   const [chromeProfileDirectory, setChromeProfileDirectory] = useState('')
   const [profileSelection, setProfileSelection] = useState(PROFILE_APP_DEFAULT)
@@ -78,7 +78,7 @@ export default function SettingsPage() {
     setProvider(normalizeProvider(next.provider))
     setBaseUrl(next.base_url)
     setModel(next.model)
-    setFreshProfile(next.fresh_profile ?? false)
+    setFreshProfile(next.fresh_profile ?? true)
     setChromeUserData(next.chrome_user_data ?? '')
     setChromeProfileDirectory(next.chrome_profile_directory ?? '')
     setProfileSelection(
@@ -118,6 +118,15 @@ export default function SettingsPage() {
     if (pricingData) setPricing(pricingData)
   }, [pricingData])
 
+  const cdpActive = Boolean(cdpUrl.trim())
+
+  useEffect(() => {
+    if (cdpActive && freshProfile) {
+      setFreshProfile(false)
+      setDirty(true)
+    }
+  }, [cdpActive, freshProfile])
+
   const saveMutation = useMutation({
     mutationFn: () =>
       updateConfig({
@@ -125,7 +134,7 @@ export default function SettingsPage() {
         base_url: baseUrl,
         model,
         api_key: apiKey || undefined,
-        fresh_profile: freshProfile,
+        fresh_profile: cdpActive ? false : freshProfile,
         chrome_user_data: chromeUserData,
         chrome_profile_directory: chromeProfileDirectory,
         cdp_url: cdpUrl,
@@ -402,6 +411,7 @@ export default function SettingsPage() {
               <Switch
                 id="fresh-profile"
                 checked={freshProfile}
+                disabled={cdpActive}
                 onCheckedChange={(value) => {
                   setDirty(true)
                   setFreshProfile(value)
@@ -410,7 +420,9 @@ export default function SettingsPage() {
               <div>
                 <Label htmlFor="fresh-profile" className="font-normal">Isolated Chrome profile</Label>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  Throw away all browser state after each run — off by default
+                  {cdpActive
+                    ? "Not used while CDP URL is set — the attached browser's profile is controlled by Smart Automator Connect."
+                    : 'Throw away all browser state after each run — on by default'}
                 </p>
               </div>
             </div>

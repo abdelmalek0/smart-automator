@@ -53,7 +53,7 @@ class Config(BaseModel):
     allowed_urls: list[str] = Field(default_factory=list)
     denied_urls: list[str] = Field(default_factory=list)
     cdp_url: str = ""
-    fresh_profile: bool = False
+    fresh_profile: bool = True
     chrome_user_data: str = ""
     chrome_profile_directory: str = ""
 
@@ -69,6 +69,17 @@ def resolve_chrome_user_data(explicit: str, *, fresh_profile: bool) -> str:
     if stripped:
         return stripped
     return default_chrome_user_data()
+
+
+def normalize_browser_overrides(
+    *,
+    cdp_url: str | None,
+    fresh_profile: bool,
+) -> tuple[str, bool]:
+    cdp = (cdp_url or "").strip()
+    if cdp:
+        return cdp, False
+    return cdp, fresh_profile
 
 
 def browser_session_mode(
@@ -131,7 +142,7 @@ def load_config() -> Config:
         allowed_urls=_parse_list(os.getenv("ALLOWED_URLS", "")),
         denied_urls=_parse_list(os.getenv("DENIED_URLS", "")),
         cdp_url=os.getenv("CDP_URL", ""),
-        fresh_profile=os.getenv("QA_FRESH_PROFILE", "false").lower() == "true",
+        fresh_profile=os.getenv("QA_FRESH_PROFILE", "true").lower() == "true",
         chrome_user_data=os.getenv("CHROME_USER_DATA", ""),
         chrome_profile_directory=os.getenv("CHROME_PROFILE_DIRECTORY", ""),
     )

@@ -25,6 +25,7 @@ from smart_automator.browser.context import BrowserContext
 from smart_automator.config import (
     browser_session_mode,
     default_chrome_user_data,
+    normalize_browser_overrides,
     resolve_chrome_user_data,
 )
 from smart_automator.server.app import app
@@ -54,6 +55,21 @@ def test_browser_session_mode_priority() -> None:
     assert browser_session_mode(cdp_url="ws://127.0.0.1:9222", fresh_profile=False) == "cdp"
     assert browser_session_mode(cdp_url="", fresh_profile=True) == "ephemeral"
     assert browser_session_mode(cdp_url="", fresh_profile=False) == "persistent"
+
+
+def test_normalize_browser_overrides_clears_fresh_profile_when_cdp_set() -> None:
+    cdp, fresh = normalize_browser_overrides(
+        cdp_url=" ws://127.0.0.1:9222 ",
+        fresh_profile=True,
+    )
+    assert cdp == "ws://127.0.0.1:9222"
+    assert fresh is False
+
+
+def test_normalize_browser_overrides_preserves_fresh_profile_without_cdp() -> None:
+    cdp, fresh = normalize_browser_overrides(cdp_url="", fresh_profile=True)
+    assert cdp == ""
+    assert fresh is True
 
 
 def test_format_effective_chrome_profile_includes_named_profile() -> None:
@@ -381,6 +397,36 @@ def test_config_update_round_trips_chrome_profile_directory(
     assert body["effective_chrome_profile"] == (
         "/home/user/.config/google-chrome (profile: Profile 1)"
     )
+
+
+def test_config_update_clears_fresh_profile_when_cdp_url_set(
+    client: TestClient,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "LLM_PROVIDER=groq\nQA_FRESH_PROFILE=true\nCDP_URL=\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("smart_automator.server.config_service.ENV_FILE", env_file)
+
+    res = client.put(
+        "/api/config",
+        json={
+            "cdp_url": "ws://127.0.0.1:9222",
+            "fresh_profile": True,
+        },
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["cdp_url"] == "ws://127.0.0.1:9222"
+    assert body["fresh_profile"] is False
+    assert body["browser_session_mode"] == "cdp"
+
+    get_res = client.get("/api/config")
+    assert get_res.status_code == 200
+    assert get_res.json()["fresh_profile"] is False
 
 
 def test_list_chrome_profiles_endpoint(client: TestClient, monkeypatch) -> None:

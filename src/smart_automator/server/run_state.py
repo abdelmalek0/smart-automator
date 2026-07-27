@@ -22,7 +22,7 @@ class RunState:
         website_id: Optional[str] = None,
         effective_task: Optional[str] = None,
         cdp_url: Optional[str] = None,
-        fresh_profile: bool = False,
+        fresh_profile: bool = True,
         name: Optional[str] = None,
         source_run_id: Optional[str] = None,
         use_replay_script: bool = False,

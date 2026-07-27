@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
+
+from smart_automator.config import normalize_browser_overrides
 
 
 class StartRunRequest(BaseModel):
@@ -12,10 +14,20 @@ class StartRunRequest(BaseModel):
     headless: bool = False
     max_steps: int = 100
     cdp_url: Optional[str] = None
-    fresh_profile: bool = False
+    fresh_profile: bool = True
     website_id: Optional[str] = None
     source_run_id: Optional[str] = None
     use_replay_script: bool = False
+
+    @model_validator(mode="after")
+    def _normalize_browser_overrides(self):
+        cdp, fresh = normalize_browser_overrides(
+            cdp_url=self.cdp_url,
+            fresh_profile=self.fresh_profile,
+        )
+        self.cdp_url = cdp or None
+        self.fresh_profile = fresh
+        return self
 
 
 class WebsiteCreateRequest(BaseModel):
@@ -37,7 +49,17 @@ class WebsiteTaskCreateRequest(BaseModel):
     headless: bool = False
     max_steps: int = 100
     cdp_url: Optional[str] = None
-    fresh_profile: bool = False
+    fresh_profile: bool = True
+
+    @model_validator(mode="after")
+    def _normalize_browser_overrides(self):
+        cdp, fresh = normalize_browser_overrides(
+            cdp_url=self.cdp_url,
+            fresh_profile=self.fresh_profile,
+        )
+        self.cdp_url = cdp or None
+        self.fresh_profile = fresh
+        return self
 
 
 class WebsiteTaskUpdateRequest(BaseModel):
@@ -49,6 +71,19 @@ class WebsiteTaskUpdateRequest(BaseModel):
     cdp_url: Optional[str] = None
     fresh_profile: Optional[bool] = None
 
+    @model_validator(mode="after")
+    def _normalize_browser_overrides(self):
+        if self.cdp_url is None:
+            return self
+        cdp, fresh = normalize_browser_overrides(
+            cdp_url=self.cdp_url,
+            fresh_profile=self.fresh_profile if self.fresh_profile is not None else False,
+        )
+        self.cdp_url = cdp or None
+        if cdp:
+            self.fresh_profile = fresh
+        return self
+
 
 class ConfigUpdate(BaseModel):
     provider: Optional[str] = None
@@ -59,6 +94,19 @@ class ConfigUpdate(BaseModel):
     chrome_user_data: Optional[str] = None
     chrome_profile_directory: Optional[str] = None
     cdp_url: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _normalize_browser_overrides(self):
+        if self.cdp_url is None:
+            return self
+        cdp, fresh = normalize_browser_overrides(
+            cdp_url=self.cdp_url,
+            fresh_profile=self.fresh_profile if self.fresh_profile is not None else False,
+        )
+        self.cdp_url = cdp
+        if cdp:
+            self.fresh_profile = fresh
+        return self
 
 
 class PricingEntryModel(BaseModel):

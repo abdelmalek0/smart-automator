@@ -76,7 +76,7 @@ export default function WebsitesPage() {
         headless: task.headless,
         max_steps: task.max_steps,
         cdp_url: task.cdp_url,
-        fresh_profile: task.fresh_profile ?? false,
+        fresh_profile: task.fresh_profile ?? true,
         website_id: website.id,
       })
       await queryClient.invalidateQueries({ queryKey: ['runs'] })
