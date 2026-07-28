@@ -45,17 +45,48 @@ def test_start_run_includes_new_fields(client: TestClient) -> None:
     assert body["source_run_id"] is None
 
 
-def test_start_run_rejects_missing_replay_history(client: TestClient) -> None:
+def test_start_run_rejects_missing_source_run(client: TestClient) -> None:
     res = client.post(
         "/api/runs",
         json={
             "task": "Replay test",
             "success_criteria": "Page loads",
             "source_run_id": "00000000-0000-0000-0000-000000000000",
+            "use_replay_script": False,
         },
     )
-    assert res.status_code == 400
-    assert "Replay history not found" in res.json()["detail"]
+    assert res.status_code == 404
+    assert "Source run not found" in res.json()["detail"]
+
+
+def test_start_run_training_rerun_accepts_lineage(client: TestClient) -> None:
+    source_res = client.post(
+        "/api/runs",
+        json={
+            "task": "Original task",
+            "success_criteria": "Page loads",
+            "headless": True,
+            "max_steps": 5,
+        },
+    )
+    assert source_res.status_code == 201
+    source_run_id = source_res.json()["run_id"]
+
+    res = client.post(
+        "/api/runs",
+        json={
+            "task": "Original task",
+            "success_criteria": "Page loads",
+            "source_run_id": source_run_id,
+            "use_replay_script": False,
+            "headless": True,
+            "max_steps": 5,
+        },
+    )
+    assert res.status_code == 201
+    body = res.json()
+    assert body["source_run_id"] == source_run_id
+    assert body["use_replay_script"] is False
 
 
 def test_start_run_rejects_script_replay_without_source(client: TestClient) -> None:

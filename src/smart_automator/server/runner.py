@@ -16,7 +16,7 @@ from ..browser.context import BrowserContext
 from ..config import normalize_browser_overrides
 from ..main import create_llm
 from .config_service import config_for_run
-from .history_store import load_run_history, save_run_history
+from .history_store import save_run_history
 from .paths import REPORT_DIR, SCREENSHOT_DIR
 from .replay_store import load_run_replay, save_run_replay
 from .run_state import RunState
@@ -328,7 +328,6 @@ def run_automation(run: RunState) -> None:
     browser_context: BrowserContext | None = None
     executor: Executor | None = None
     config = None
-    replay_history: AgentStepHistory | None = None
     replay_script_data: dict[str, Any] | None = None
 
     try:
@@ -341,12 +340,6 @@ def run_automation(run: RunState) -> None:
             if replay_script_data is None:
                 raise ValueError(
                     f"Replay script not found for source run {run.source_run_id}"
-                )
-        elif run.source_run_id:
-            replay_history = load_run_history(run.source_run_id)
-            if replay_history is None:
-                raise ValueError(
-                    f"Replay history not found for source run {run.source_run_id}"
                 )
 
         config = config_for_run()
@@ -410,7 +403,7 @@ def run_automation(run: RunState) -> None:
         )
         run.executor = executor
 
-        if replay_script_data is not None or replay_history is not None:
+        if replay_script_data is not None:
             executor.context.hitl_enabled = False
 
         if run._cancelled.is_set():
@@ -426,20 +419,6 @@ def run_automation(run: RunState) -> None:
                 action_retry_wait_seconds=config.replay_action_retry_wait_seconds,
             )
             if run.status == "cancelled" or run._cancelled.is_set():
-                return
-            _apply_criteria_verdict(run, executor, llm)
-            return
-
-        if replay_history is not None:
-            replay_results = _replay_with_events(run, executor, browser_context, replay_history)
-            if run.status == "cancelled" or run._cancelled.is_set():
-                return
-            if executor.context.stopped:
-                _set_terminal_status(run, "error", "Run stopped before replay completed.")
-                return
-            if any(result.error for result in replay_results):
-                first_error = next(result.error for result in replay_results if result.error)
-                _set_terminal_status(run, "error", str(first_error))
                 return
             _apply_criteria_verdict(run, executor, llm)
             return

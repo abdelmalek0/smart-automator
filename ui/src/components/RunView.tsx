@@ -102,7 +102,7 @@ export default function RunView({ runId, onRunComplete }: Props) {
     run?.status === 'awaiting_human'
   const isRunning = isActiveRun
   const humanControlling = Boolean(run?.human_controlling)
-  const canUseHitl = Boolean(run && !run.headless && isActiveRun && !run.use_replay_script && !run.source_run_id)
+  const canUseHitl = Boolean(run && !run.headless && isActiveRun && !run.use_replay_script)
   const showReport =
     reportReady || (run?.status && ['pass', 'fail', 'error'].includes(run.status))
 

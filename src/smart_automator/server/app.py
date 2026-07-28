@@ -41,7 +41,7 @@ from .models import (
     WebsiteUpdateRequest,
 )
 from .paths import ENV_FILE, HISTORY_DIR, REPLAY_DIR, REPORT_DIR, SCREENSHOT_DIR, UI_DIST
-from .history_store import delete_run_history, load_run_history
+from .history_store import delete_run_history
 from .replay_store import delete_run_replay, has_replay_script, load_run_replay
 from .run_state import RunState, add_run, get_run, list_runs, remove_run
 from .runner import run_automation
@@ -138,10 +138,10 @@ async def start_run(req: StartRunRequest):
             )
         source_run_id = req.source_run_id
     elif req.source_run_id:
-        if load_run_history(req.source_run_id) is None:
+        if get_run(req.source_run_id) is None:
             raise HTTPException(
-                status_code=400,
-                detail=f"Replay history not found for source run {req.source_run_id}",
+                status_code=404,
+                detail=f"Source run not found: {req.source_run_id}",
             )
         source_run_id = req.source_run_id
     else:
@@ -283,8 +283,8 @@ async def cancel_run(run_id: str, purge: bool = False):
 def _hitl_unavailable_reason(run) -> str | None:
     if run.headless:
         return "Human-in-the-loop is disabled for headless runs"
-    if run.use_replay_script or run.source_run_id:
-        return "Human-in-the-loop is disabled for replay runs"
+    if run.use_replay_script:
+        return "Human-in-the-loop is disabled for automatic replay runs"
     return None
 
 
