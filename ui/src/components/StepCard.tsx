@@ -121,14 +121,14 @@ export default function StepCard({ step, isActive = false }: Props) {
               </div>
             )}
 
-            {step.action === 'human_handoff' && step.args?.analysis && (
+            {step.action === 'human_handoff' && step.args?.analysis != null ? (
               <div>
                 <span className="text-xs text-muted-foreground uppercase tracking-wide">Handoff analysis</span>
                 <pre className="mt-1 text-xs mono text-warning/90 bg-warning/10 rounded-md p-2 overflow-x-auto whitespace-pre-wrap break-all">
                   {JSON.stringify(step.args.analysis, null, 2)}
                 </pre>
               </div>
-            )}
+            ) : null}
 
             {step.result && (
               <div>

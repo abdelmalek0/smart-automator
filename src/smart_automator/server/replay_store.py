@@ -31,6 +31,14 @@ def save_run_replay(
     return path
 
 
+def delete_run_replay(run_id: str) -> None:
+    for path in (replay_json_path(run_id), replay_script_path(run_id)):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def has_replay_script(run_id: str) -> bool:
     return load_run_replay(run_id) is not None
 

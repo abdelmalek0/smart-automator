@@ -148,10 +148,14 @@ def add_run(run: RunState) -> None:
 def _evict_old_runs() -> None:
     if len(_runs) <= _MAX_RUNS_IN_MEMORY:
         return
-        finished = sorted(
+    finished = sorted(
         (run for run in _runs.values() if run.status not in ("pending", "running", "awaiting_human")),
         key=lambda run: run.finished_at or 0,
     )
     to_remove = len(_runs) - _MAX_RUNS_IN_MEMORY
     for run in finished[:to_remove]:
         _runs.pop(run.run_id, None)
+
+
+def remove_run(run_id: str) -> RunState | None:
+    return _runs.pop(run_id, None)

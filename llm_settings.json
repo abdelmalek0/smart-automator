@@ -3,8 +3,8 @@
     "groq": {
       "base_url": "https://api.groq.com/openai/v1",
       "models": [
-        "qwen/qwen3.6-27b",
-        "openai/gpt-oss-120b"
+        "openai/gpt-oss-120b",
+        "qwen/qwen3.6-27b"
       ]
     },
     "ollama": {

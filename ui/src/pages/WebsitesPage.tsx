@@ -107,10 +107,10 @@ export default function WebsitesPage() {
       <div className="flex-shrink-0 px-6 pt-6 pb-4 border-b border-border">
         <div className="flex items-center gap-2 mb-1">
           <Globe className="h-5 w-5 text-primary" />
-          <h2 className="text-lg font-semibold">Websites</h2>
+          <h2 className="text-lg font-semibold">Projects</h2>
         </div>
         <p className="text-sm text-muted-foreground">
-          Group tests by website. Set the URL and shared notes (credentials, environment) — the agent
+          Group tests by project. Set the URL and shared notes (credentials, environment) — the agent
           receives them in every test run for that site.
         </p>
       </div>
@@ -120,25 +120,25 @@ export default function WebsitesPage() {
           <Input
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
-            placeholder="New website name…"
+            placeholder="New project name…"
             className="flex-1"
           />
           <Button type="submit" disabled={!newName.trim()}>
             <Plus className="h-4 w-4" />
-            Website
+            Project
           </Button>
         </form>
 
         {isLoading && (
           <p className="text-sm text-muted-foreground flex items-center gap-2">
             <Loader2 className="h-4 w-4 animate-spin" />
-            Loading websites…
+            Loading projects…
           </p>
         )}
 
         {!isLoading && websites.length === 0 && (
           <p className="text-sm text-muted-foreground text-center py-16 max-w-md mx-auto">
-            No websites yet. Create one above or attach a website when starting a new run.
+            No projects yet. Create one above or attach a project when starting a new run.
           </p>
         )}
 
@@ -187,7 +187,7 @@ export default function WebsitesPage() {
                               onSelect={(e) => e.preventDefault()}
                             >
                               <Trash2 className="h-4 w-4" />
-                              Delete website
+                              Delete project
                             </DropdownMenuItem>
                           </AlertDialogTrigger>
                         </DropdownMenuContent>
@@ -196,7 +196,7 @@ export default function WebsitesPage() {
                         <AlertDialogHeader>
                           <AlertDialogTitle>Delete &quot;{website.name}&quot;?</AlertDialogTitle>
                           <AlertDialogDescription>
-                            This removes the website, its context prompt, and all saved tests.
+                            This removes the project, its context prompt, and all saved tests.
                           </AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>
@@ -214,7 +214,7 @@ export default function WebsitesPage() {
                   <CardContent className="px-4 pb-4 pt-0 space-y-4">
                     <div className="rounded-lg border border-border bg-muted/30 p-3 space-y-3">
                       <Label className="text-xs text-muted-foreground uppercase tracking-wide">
-                        Website configuration
+                        Project configuration
                       </Label>
                       {editingContextId === website.id ? (
                         <>
@@ -285,7 +285,7 @@ export default function WebsitesPage() {
 
                     {website.tasks.length === 0 ? (
                       <p className="text-xs text-muted-foreground italic px-1">
-                        No tests yet — save a run to this website from <em>New Run</em>.
+                        No tests yet — save a run to this project from <em>New Run</em>.
                       </p>
                     ) : (
                       <ul className="divide-y divide-border rounded-lg border border-border">

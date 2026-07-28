@@ -129,10 +129,10 @@ export default function NewRunModal({
         cdp_url: cdpUrl.trim() || undefined,
         fresh_profile: cdpActive ? false : freshProfile,
         website_id: runWebsiteId,
-        ...(useAutomatic && sourceRunId
+        ...(sourceRunId
           ? {
               source_run_id: sourceRunId,
-              use_replay_script: true,
+              use_replay_script: useAutomatic,
             }
           : { use_replay_script: false }),
       }
@@ -197,14 +197,14 @@ export default function NewRunModal({
           <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
             <div className="space-y-2">
               <Label htmlFor="website">
-                Website <span className="text-muted-foreground font-normal">(optional)</span>
+                Project <span className="text-muted-foreground font-normal">(optional)</span>
               </Label>
               <Select value={websiteId} onValueChange={setWebsiteId}>
                 <SelectTrigger id="website">
-                  <SelectValue placeholder="No website — run standalone" />
+                  <SelectValue placeholder="No project — run standalone" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={NO_WEBSITE}>No website</SelectItem>
+                  <SelectItem value={NO_WEBSITE}>No project</SelectItem>
                   {websites.map((w) => (
                     <SelectItem key={w.id} value={w.id}>
                       {w.name}
@@ -396,7 +396,7 @@ export default function NewRunModal({
                         onCheckedChange={setSaveToWebsite}
                       />
                       <Label htmlFor="save-website" className="font-normal">
-                        Save test to website
+                        Save test to project
                       </Label>
                     </div>
                     {saveToWebsite && (
@@ -409,7 +409,7 @@ export default function NewRunModal({
                               onChange={() => setWebsiteMode('new')}
                               className="accent-primary"
                             />
-                            New website
+                            New project
                           </label>
                           <label
                             className={`flex items-center gap-1.5 text-sm ${
@@ -425,19 +425,19 @@ export default function NewRunModal({
                               disabled={websites.length === 0}
                               className="accent-primary"
                             />
-                            Existing website
+                            Existing project
                           </label>
                         </div>
                         {websiteMode === 'new' ? (
                           <Input
                             value={newWebsiteName}
                             onChange={(e) => setNewWebsiteName(e.target.value)}
-                            placeholder="Website name…"
+                            placeholder="Project name…"
                           />
                         ) : (
                           <Select value={saveWebsiteId} onValueChange={setSaveWebsiteId}>
                             <SelectTrigger>
-                              <SelectValue placeholder="Select a website…" />
+                              <SelectValue placeholder="Select a project…" />
                             </SelectTrigger>
                             <SelectContent>
                               {websites.map((w) => (

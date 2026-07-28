@@ -18,6 +18,14 @@ def save_run_history(run_id: str, history: AgentStepHistory) -> Path:
     return path
 
 
+def delete_run_history(run_id: str) -> None:
+    path = history_path(run_id)
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def load_run_history(run_id: str) -> AgentStepHistory | None:
     path = history_path(run_id)
     if not path.is_file():

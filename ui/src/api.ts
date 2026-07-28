@@ -58,6 +58,10 @@ export async function cancelRun(runId: string): Promise<void> {
   await request(`/runs/${runId}`, { method: 'DELETE' })
 }
 
+export async function deleteRun(runId: string): Promise<void> {
+  await request(`/runs/${runId}?purge=true`, { method: 'DELETE' })
+}
+
 export async function takeControl(
   runId: string,
 ): Promise<{ ok: boolean; human_controlling: boolean; pending?: boolean }> {

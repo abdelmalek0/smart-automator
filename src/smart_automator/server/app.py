@@ -41,9 +41,9 @@ from .models import (
     WebsiteUpdateRequest,
 )
 from .paths import ENV_FILE, HISTORY_DIR, REPLAY_DIR, REPORT_DIR, SCREENSHOT_DIR, UI_DIST
-from .history_store import load_run_history
-from .replay_store import has_replay_script, load_run_replay
-from .run_state import RunState, add_run, get_run, list_runs
+from .history_store import delete_run_history, load_run_history
+from .replay_store import delete_run_replay, has_replay_script, load_run_replay
+from .run_state import RunState, add_run, get_run, list_runs, remove_run
 from .runner import run_automation
 from .step_mapper import compose_agent_task
 from .tools import list_action_tools
@@ -227,14 +227,10 @@ async def download_report(run_id: str):
     )
 
 
-@app.delete("/api/runs/{run_id}")
-async def cancel_run(run_id: str):
-    run = get_run(run_id)
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found")
+def _cancel_active_run(run: RunState) -> None:
     if run.status not in ("pending", "running", "awaiting_human"):
-        return {"ok": True}
-    log.info("DELETE /api/runs/%s — cancelling", run_id[:8])
+        return
+    log.info("DELETE /api/runs/%s — cancelling", run.run_id[:8])
     run._cancelled.set()
     if run.executor is not None:
         run.executor.cancel()
@@ -242,6 +238,45 @@ async def cancel_run(run_id: str):
     run.finished_at = time.time()
     run.broadcast({"type": "status", "status": "cancelled"})
     run.broadcast({"type": "closed"})
+
+
+def _purge_run_artifacts(run_id: str, *, report_path: str | None = None) -> None:
+    delete_run_history(run_id)
+    delete_run_replay(run_id)
+
+    report_candidates = [REPORT_DIR / f"{run_id}.html"]
+    if report_path:
+        report_candidates.append(Path(report_path))
+    for path in report_candidates:
+        try:
+            if path.is_file():
+                path.unlink()
+        except OSError:
+            pass
+
+    prefix = f"{run_id[:8]}_step_"
+    try:
+        for path in SCREENSHOT_DIR.glob(f"{prefix}*.png"):
+            path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+@app.delete("/api/runs/{run_id}")
+async def cancel_run(run_id: str, purge: bool = False):
+    run = get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if purge:
+        report_path = run.report_path
+        _cancel_active_run(run)
+        remove_run(run_id)
+        _purge_run_artifacts(run_id, report_path=report_path)
+        log.info("DELETE /api/runs/%s — purged", run_id[:8])
+        return {"ok": True}
+    if run.status not in ("pending", "running", "awaiting_human"):
+        return {"ok": True}
+    _cancel_active_run(run)
     return {"ok": True}
 
 

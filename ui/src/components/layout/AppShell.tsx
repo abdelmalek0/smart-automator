@@ -1,5 +1,4 @@
-import type { ComponentType } from 'react'
-import { Link, Outlet, useLocation } from 'react-router-dom'
+import { Outlet, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { listRuns } from '@/api'
 import Sidebar from '@/components/Sidebar'
@@ -29,34 +28,5 @@ export default function AppShell() {
         </div>
       </RunModalProvider>
     </TooltipProvider>
-  )
-}
-
-export function NavLink({
-  to,
-  icon: Icon,
-  label,
-  end = false,
-}: {
-  to: string
-  icon: ComponentType<{ className?: string }>
-  label: string
-  end?: boolean
-}) {
-  const location = useLocation()
-  const active = end ? location.pathname === to : location.pathname.startsWith(to)
-
-  return (
-    <Link
-      to={to}
-      className={`flex items-center gap-2.5 px-3 py-2 text-sm rounded-md transition-colors ${
-        active
-          ? 'bg-accent text-accent-foreground font-medium'
-          : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
-      }`}
-    >
-      <Icon className="h-4 w-4 shrink-0" />
-      {label}
-    </Link>
   )
 }
