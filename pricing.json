@@ -19,5 +19,12 @@
     "input": 0.15,
     "output": 0.6,
     "cache_read": 0.0
+  },
+  {
+    "provider": "groq",
+    "model": "qwen/qwen3.6-27b",
+    "input": 0.6,
+    "output": 3.0,
+    "cache_read": 0.0
   }
 ]

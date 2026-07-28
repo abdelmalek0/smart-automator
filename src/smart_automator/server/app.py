@@ -272,11 +272,11 @@ async def take_control(run_id: str):
         run.executor.submit_hitl_command,
         "take_control",
         source="manual",
+        wait=False,
     )
     if not ok:
         raise HTTPException(status_code=400, detail=error or "Failed to take control")
-    run.human_controlling = True
-    return {"ok": True, "human_controlling": True}
+    return {"ok": True, "human_controlling": run.human_controlling, "pending": True}
 
 
 @app.post("/api/runs/{run_id}/return-control")

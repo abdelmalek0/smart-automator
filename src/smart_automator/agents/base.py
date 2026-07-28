@@ -12,7 +12,7 @@ from ..agent.messages.utils import (
     remove_think_tags,
     validate_navigator_actions,
 )
-from .errors import ResponseParseError, classify_llm_error
+from .errors import ResponseParseError, HitlInterruptedError, classify_llm_error
 from .output_schemas import validate_navigator_output
 
 if TYPE_CHECKING:
@@ -73,6 +73,8 @@ class BaseAgent:
     ) -> tuple[dict, str]:
         try:
             response = self.invoke(messages, temperature)
+        except HitlInterruptedError:
+            raise
         except Exception as error:
             raise classify_llm_error(error) from error
         cleaned = remove_think_tags(response)

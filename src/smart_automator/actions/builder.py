@@ -314,7 +314,7 @@ class NavigatorActionRegistry:
 
         try:
             for i, action in enumerate(actions):
-                if context.paused or context.stopped:
+                if context.hitl_interrupt or context.paused or context.stopped:
                     break
 
                 attempt = self._run_action_attempt(
@@ -577,8 +577,19 @@ class ActionBuilder:
 
         def wait_action(args, _selector_map):
             seconds = int(args.get("seconds", args.get("duration", 3)))
-            time.sleep(seconds)
-            return ActionResult(extracted_content=f"Waited {seconds} seconds", include_in_memory=True)
+            deadline = time.time() + seconds
+            while time.time() < deadline:
+                if ctx.hitl_interrupt or ctx.paused or ctx.stopped:
+                    break
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
+                time.sleep(min(0.2, remaining))
+            waited = max(0, int(round(seconds - max(0.0, deadline - time.time()))))
+            return ActionResult(
+                extracted_content=f"Waited {waited} seconds",
+                include_in_memory=True,
+            )
 
         def click_element(args, selector_map):
             element = get_element(args.get("index"), selector_map)

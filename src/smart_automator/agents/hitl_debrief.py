@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 from ..agent.context import PendingHitlHandoff
 from ..agent.hitl import HitlController
-from ..utils.prompts import build_browser_state_message
 from .base import BaseAgent
 from .output_schemas import validate_hitl_debrief_output
 from ..llm.base import BaseLLM
@@ -16,31 +16,28 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+MAX_DEBRIEF_ACTION_LINES = 20
+
 HITL_DEBRIEF_SYSTEM_PROMPT = """You analyze completed human browser interventions for a QA automation agent.
 
-Review the task, trigger context, ordered human action trace, and CURRENT browser state.
 Output ONLY valid JSON:
-
 {
   "inferred_reason": "why the human likely intervened",
   "goal_achieved": "concise goal or state reached",
   "outcome": "achieved",
   "evidence": "action/page evidence supporting the conclusion",
-  "remaining_work": "what the agent should do next",
+  "remaining_work": "what the agent should do next from the current page only",
   "confidence": "high"
 }
 
 Rules:
-- outcome must be one of: achieved, partial, unclear, failed
-- confidence must be one of: high, medium, low
-- Infer intent only from the human action trace labels, URL/title transition, and current page state
-- Do not infer goals from the task text or trigger context unless the action trace and page evidence support them
-- For manual take-control, treat the trigger reason as weak context
-- For agent-requested help, use the supplied reason as context but still verify against the action trace and current page
-- If action labels are missing or evidence is weak (tag + xpath only), set outcome=unclear and confidence=low instead of guessing
-- If evidence is insufficient, set outcome=unclear and confidence=low instead of guessing
-- Do not reproduce passwords, PINs, or other sensitive typed values in the analysis
-- Do not output browser actions; only analyze what happened
+- outcome: achieved | partial | unclear | failed
+- confidence: high | medium | low
+- Infer intent only from the human action trace labels and URL/title transition
+- Do not infer goals from the task text or trigger context unless action evidence supports them
+- remaining_work must describe forward progress from the current page only; do not name a different navigation target than the end page implies when evidence is weak
+- If action labels are weak (tag + xpath only), set outcome=unclear and confidence=low and leave remaining_work empty
+- Do not reproduce passwords or sensitive typed values
 - No commentary outside JSON
 """
 
@@ -60,6 +57,12 @@ class HitlDebriefAgent(BaseAgent):
         )
         self._context = context
 
+    @staticmethod
+    def _page_identity_message(end_url: str, end_title: str) -> str:
+        if end_url or end_title:
+            return f"Current page: {end_url or 'unknown'} ({end_title or ''})"
+        return ""
+
     def _build_compact_messages(
         self,
         *,
@@ -68,15 +71,20 @@ class HitlDebriefAgent(BaseAgent):
         state_message: str,
         success_criteria: str = "",
     ) -> list[dict]:
+        recorded = handoff.recorded[-MAX_DEBRIEF_ACTION_LINES:]
         action_lines = [
             f"- {HitlController._format_human_action_line(action_name, args, result)}"
-            for action_name, args, result in handoff.recorded
+            for action_name, args, result in recorded
         ]
+        if len(handoff.recorded) > MAX_DEBRIEF_ACTION_LINES:
+            action_lines.insert(
+                0,
+                f"- ... {len(handoff.recorded) - MAX_DEBRIEF_ACTION_LINES} earlier actions omitted",
+            )
         user_parts = [
             f"Task: {task.strip()}",
             f"Intervention source: {handoff.intervention_source or 'unknown'}",
             f"Trigger context: {handoff.intervention_reason or 'unknown'}",
-            f"Intervention cycle: {handoff.cycle}",
             (
                 "Page transition: "
                 f"{handoff.start_url or 'unknown'} ({handoff.start_title or ''})"
@@ -104,20 +112,7 @@ class HitlDebriefAgent(BaseAgent):
         handoff: PendingHitlHandoff,
         success_criteria: str = "",
     ) -> dict[str, Any]:
-        state_message = ""
-        if self._context is not None:
-            try:
-                browser_state = self._context.browser_context.get_state(
-                    show_highlights=False,
-                    wait_for_stable=False,
-                )
-                state_message = build_browser_state_message(
-                    self._context,
-                    browser_state,
-                    include_action_results=False,
-                )
-            except Exception:
-                state_message = ""
+        state_message = self._page_identity_message(handoff.end_url, handoff.end_title)
 
         messages = self._build_compact_messages(
             task=task,
@@ -125,11 +120,17 @@ class HitlDebriefAgent(BaseAgent):
             state_message=state_message,
             success_criteria=success_criteria,
         )
+        llm_started = time.perf_counter()
         try:
-            response = self.get_json_response(messages, temperature=0.2)
-            return validate_hitl_debrief_output(response)
+            response = self.get_json_response(messages, temperature=0.0)
+            llm_ms = int((time.perf_counter() - llm_started) * 1000)
+            result = validate_hitl_debrief_output(response)
+            result["debrief_llm_ms"] = llm_ms
+            result["debrief_get_state_ms"] = 0
+            return result
         except Exception as error:
-            log.warning("HITL debrief failed: %s", error)
+            llm_ms = int((time.perf_counter() - llm_started) * 1000)
+            log.warning("HITL debrief failed after %sms: %s", llm_ms, error)
             return {
                 "inferred_reason": handoff.intervention_reason or "Human intervention",
                 "goal_achieved": "",
@@ -138,6 +139,8 @@ class HitlDebriefAgent(BaseAgent):
                 "remaining_work": "Continue from the current page state.",
                 "confidence": "low",
                 "error": str(error),
+                "debrief_llm_ms": llm_ms,
+                "debrief_get_state_ms": 0,
             }
 
     @staticmethod

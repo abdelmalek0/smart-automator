@@ -42,7 +42,7 @@ class OpenAICompatLLM(BaseLLM):
     def chat(self, messages: list[dict], temperature: float = 0.7) -> str:
         return call_with_retry(
             lambda: self._post(messages, temperature=temperature, json_mode=False),
-            cancel_check=self._check_cancelled,
+            cancel_check=self._check_abort,
         )
 
     def chat_json(self, messages: list[dict], temperature: float = 0.7) -> str:
@@ -50,18 +50,18 @@ class OpenAICompatLLM(BaseLLM):
         try:
             return call_with_retry(
                 lambda: self._post(prepared, temperature=temperature, json_mode=True),
-                cancel_check=self._check_cancelled,
+                cancel_check=self._check_abort,
             )
         except httpx.HTTPStatusError as error:
             if error.response.status_code != 400:
                 raise
             return call_with_retry(
                 lambda: self._post(messages, temperature=temperature, json_mode=False),
-                cancel_check=self._check_cancelled,
+                cancel_check=self._check_abort,
             )
 
     def _post(self, messages: list[dict], *, temperature: float, json_mode: bool) -> str:
-        self._check_cancelled()
+        self._check_abort()
         payload: dict = {
             "model": self._model,
             "messages": messages,

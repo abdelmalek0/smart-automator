@@ -502,13 +502,21 @@ class HitlController:
         action: str,
         *,
         timeout: float = 60.0,
+        wait: bool = True,
         **kwargs: Any,
     ) -> tuple[bool, str | None]:
         """Queue a HITL command for execution on the browser/executor thread."""
+        if action == "take_control":
+            self._context.hitl_interrupt = True
+            self._emit({"type": "take_control_pending"})
         command = _HitlCommand(action=action, kwargs=kwargs)
         self._command_queue.put(command)
+        if not wait:
+            return True, None
         if not command.done.wait(timeout):
             command.cancelled = True
+            if action == "take_control":
+                self._context.hitl_interrupt = False
             return False, f"HITL command '{action}' timed out"
         return command.ok, command.error
 
@@ -537,6 +545,8 @@ class HitlController:
                 command.error = str(exc)
                 log.exception("HITL command %s failed", command.action)
             finally:
+                if command.action == "take_control":
+                    self._context.hitl_interrupt = False
                 command.done.set()
 
         if self._context.human_controlling:
@@ -599,6 +609,7 @@ class HitlController:
             self._session_start_url = ""
             self._session_start_title = ""
         context.human_controlling = True
+        context.hitl_interrupt = False
         self._recorder.start()
         self._emit({"type": "human_control_started", "source": source})
         return True
@@ -608,13 +619,17 @@ class HitlController:
         if not context.human_controlling and not context.awaiting_human:
             return True
 
-        recorded = self._capture_and_flush_recorded(set_handoff=True)
+        self._capture_and_flush_recorded(set_handoff=True)
 
+        context.message_manager.prepare_post_hitl_resume()
+        context.action_results.clear()
         context.human_controlling = False
         context.awaiting_human = False
         context.hitl_reason = ""
         context.hitl_deadline = None
-        context.force_replan_after_hitl = context.pending_hitl_handoff is not None
+        context.force_replan_after_hitl = True
+        context.post_hitl_fresh_start = True
+        context.hitl_interrupt = False
         context.stuck_episode_active = False
         context.stuck_recovery_attempts = 0
         context.critic_runs_this_episode = 0
@@ -667,24 +682,32 @@ class HitlController:
             self._recorder.flush_pending_inputs()
             recorded = self._recorder.stop(finalize=False)
         else:
-            recorded = self._recorder.recorded
+            recorded = list(self._recorder.recorded)
+
+        try:
+            page = context.browser_context.get_current_page()
+            end_url = page.url()
+            end_title = page.title()
+        except Exception:
+            end_url = ""
+            end_title = ""
+
+        if set_handoff:
+            context.pending_hitl_handoff = PendingHitlHandoff(
+                recorded=recorded,
+                intervention_reason=context.hitl_reason,
+                intervention_source=context.hitl_source,
+                cycle=self._intervention_cycle,
+                start_url=self._session_start_url,
+                start_title=self._session_start_title,
+                end_url=end_url,
+                end_title=end_title,
+            )
 
         if not recorded:
             return []
 
         try:
-            page = context.browser_context.get_current_page()
-            if set_handoff:
-                context.pending_hitl_handoff = PendingHitlHandoff(
-                    recorded=recorded,
-                    intervention_reason=context.hitl_reason,
-                    intervention_source=context.hitl_source,
-                    cycle=self._intervention_cycle,
-                    start_url=self._session_start_url,
-                    start_title=self._session_start_title,
-                    end_url=page.url(),
-                    end_title=page.title(),
-                )
             self._flush_to_history(recorded)
             self._recorder.clear_recorded()
             return recorded
@@ -799,6 +822,16 @@ class HitlController:
             for action_name, args, result in recorded
         ]
 
+    @staticmethod
+    def _should_include_remaining_work(analysis: dict[str, Any] | None) -> bool:
+        if not analysis:
+            return False
+        confidence = str(analysis.get("confidence", "") or "").strip().lower()
+        outcome = str(analysis.get("outcome", "") or "").strip().lower()
+        if confidence in {"", "low"} or outcome in {"", "unclear"}:
+            return False
+        return bool(str(analysis.get("remaining_work", "") or "").strip())
+
     @classmethod
     def format_human_memory_message(
         cls,
@@ -822,12 +855,21 @@ class HitlController:
                 ("goal_achieved", "Goal achieved"),
                 ("outcome", "Outcome"),
                 ("evidence", "Evidence"),
-                ("remaining_work", "Remaining work"),
                 ("confidence", "Confidence"),
             ):
                 value = str(analysis.get(key, "") or "").strip()
                 if value:
                     lines.append(f"{label}: {value}")
+            if cls._should_include_remaining_work(analysis):
+                remaining_work = str(analysis.get("remaining_work", "") or "").strip()
+                if remaining_work:
+                    lines.append(f"Remaining work: {remaining_work}")
+            elif str(analysis.get("confidence", "") or "").strip().lower() in {"", "low"} or str(
+                analysis.get("outcome", "") or ""
+            ).strip().lower() in {"", "unclear"}:
+                lines.append(
+                    "Guidance: Continue from the current page; do not undo human navigation."
+                )
         if recorded:
             lines.append("Human action trace:")
             lines.extend(
@@ -851,4 +893,5 @@ class HitlController:
         )
         self._context.message_manager.add_message_with_tokens(
             {"role": "user", "content": message},
+            "hitl_handoff",
         )

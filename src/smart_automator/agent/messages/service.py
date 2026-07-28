@@ -16,6 +16,21 @@ HISTORY_START_MARKER = "[Your task history memory starts here]"
 CURRENT_STATE_MARKER = "[Current state starts here]"
 SUMMARY_MARKER = "[Earlier history summarized]"
 PLAN_MARKER = "<plan>"
+SUPERSEDED_PLAN_MARKER = "<plan superseded"
+VOID_SUPERSEDED_PLAN_CONTENT = "<plan superseded after human intervention>void</plan superseded>"
+HITL_HANDOFF_MESSAGE_TYPE = "hitl_handoff"
+HITL_REPLAN_MESSAGE_TYPE = "hitl_replan"
+INTERRUPTED_NAVIGATOR_OUTPUT = json.dumps(
+    {
+        "current_state": {
+            "evaluation_previous_goal": "Interrupted",
+            "memory": "Navigator turn interrupted for human intervention.",
+            "next_goal": "",
+        },
+        "action": [],
+    },
+    ensure_ascii=False,
+)
 
 
 @dataclass
@@ -277,7 +292,75 @@ class MessageManager:
 
     def _is_plan_message(self, stored: StoredMessage) -> bool:
         content = stored.message.get("content", "")
-        return isinstance(content, str) and PLAN_MARKER in content
+        if not isinstance(content, str):
+            return False
+        if SUPERSEDED_PLAN_MARKER in content:
+            return False
+        return PLAN_MARKER in content
+
+    def _is_hitl_protected_message(self, stored: StoredMessage) -> bool:
+        message_type = stored.metadata.message_type
+        return message_type in {HITL_HANDOFF_MESSAGE_TYPE, HITL_REPLAN_MESSAGE_TYPE}
+
+    def _is_active_plan_message(self, stored: StoredMessage) -> bool:
+        content = stored.message.get("content", "")
+        if not isinstance(content, str):
+            return False
+        if SUPERSEDED_PLAN_MARKER in content:
+            return False
+        return PLAN_MARKER in content
+
+    def _is_navigator_output_message(self, stored: StoredMessage) -> bool:
+        if stored.message.get("role") != "assistant":
+            return False
+        content = stored.message.get("content", "")
+        if not isinstance(content, str) or PLAN_MARKER in content:
+            return False
+        if SUPERSEDED_PLAN_MARKER in content:
+            return False
+        try:
+            parsed = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            return False
+        return isinstance(parsed, dict) and "current_state" in parsed
+
+    def _last_active_plan_index(self) -> int:
+        last_index = -1
+        for index, stored in enumerate(self.history.messages):
+            if self._is_active_plan_message(stored):
+                last_index = index
+        return last_index
+
+    def supersede_all_plans(self) -> None:
+        """Void every active plan so old next_steps cannot bias post-HITL replan."""
+        self._latest_plan_index = None
+        for stored in self.history.messages:
+            if not self._is_active_plan_message(stored):
+                continue
+            stored.message = {"role": "assistant", "content": VOID_SUPERSEDED_PLAN_CONTENT}
+            stored.metadata.tokens = self._count_tokens(stored.message)
+
+    def supersede_latest_plan(self) -> None:
+        self.supersede_all_plans()
+
+    def invalidate_navigator_outputs_since_last_plan(self) -> None:
+        last_plan_index = self._last_active_plan_index()
+        for index in range(len(self.history.messages) - 1, last_plan_index, -1):
+            stored = self.history.messages[index]
+            if not self._is_navigator_output_message(stored):
+                continue
+            stored.message = {
+                "role": "assistant",
+                "content": INTERRUPTED_NAVIGATOR_OUTPUT,
+            }
+            stored.metadata.tokens = self._count_tokens(stored.message)
+
+    def invalidate_last_navigator_output(self) -> None:
+        self.invalidate_navigator_outputs_since_last_plan()
+
+    def prepare_post_hitl_resume(self) -> None:
+        self.invalidate_navigator_outputs_since_last_plan()
+        self.supersede_all_plans()
 
     def _trimmable_indices(self) -> list[int]:
         prefix_end = self._protected_prefix_end()
@@ -289,6 +372,8 @@ class MessageManager:
             if self._is_summary_message(stored):
                 continue
             if self._is_plan_message(stored):
+                continue
+            if self._is_hitl_protected_message(stored):
                 continue
             indices.append(index)
         return indices

@@ -109,6 +109,8 @@ class AgentContext:
         self.hitl_timed_out = False
         self.force_replan_after_hitl = False
         self.pending_hitl_handoff: PendingHitlHandoff | None = None
+        self.hitl_interrupt = False
+        self.post_hitl_fresh_start = False
         self.stuck_recovery_attempts = 0
         self.cancel_event = threading.Event()
         self.n_steps = 0

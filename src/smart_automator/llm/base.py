@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 import threading
 
 from .tokens import count_message_tokens, count_text_tokens
@@ -9,6 +10,7 @@ from .tokens import count_message_tokens, count_text_tokens
 class BaseLLM(ABC):
     def __init__(self):
         self._cancel_event: threading.Event | None = None
+        self._interrupt_check: Callable[[], bool] | None = None
         self._usage = {
             "prompt_tokens": 0,
             "completion_tokens": 0,
@@ -26,11 +28,24 @@ class BaseLLM(ABC):
     def set_cancel_event(self, cancel_event: threading.Event | None) -> None:
         self._cancel_event = cancel_event
 
+    def set_interrupt_check(self, interrupt_check: Callable[[], bool] | None) -> None:
+        self._interrupt_check = interrupt_check
+
     def _check_cancelled(self) -> None:
         if self._cancel_event and self._cancel_event.is_set():
             from ..agents.errors import RequestCancelledError
 
             raise RequestCancelledError("LLM request cancelled")
+
+    def _check_hitl_interrupt(self) -> None:
+        if self._interrupt_check and self._interrupt_check():
+            from ..agents.errors import HitlInterruptedError
+
+            raise HitlInterruptedError("HITL interrupt")
+
+    def _check_abort(self) -> None:
+        self._check_cancelled()
+        self._check_hitl_interrupt()
 
     def _record_usage(self, usage: dict) -> None:
         self._usage["prompt_tokens"] += int(usage.get("prompt_tokens", 0) or 0)

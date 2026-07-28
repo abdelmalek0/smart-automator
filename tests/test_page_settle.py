@@ -93,8 +93,8 @@ class TestPageSettle(unittest.TestCase):
         page = Page(pw_page, page_id=0)
 
         with (
-            patch.object(page, "_wait_for_stable_network") as mock_network,
-            patch.object(page, "_wait_for_dom_stable") as mock_dom,
+            patch.object(page, "_wait_for_stable_network", return_value=False) as mock_network,
+            patch.object(page, "_wait_for_dom_stable", return_value=False) as mock_dom,
         ):
             mock_monotonic.side_effect = [0.0, 0.3]
             page.wait_for_page_stable()
@@ -112,15 +112,37 @@ class TestPageSettle(unittest.TestCase):
             page_id=0,
             minimum_wait_page_load_time=0.5,
         )
+        clock = {"now": 0.1}
+        bootstrap = iter([0.0, 0.1])
+
+        def monotonic_side_effect():
+            try:
+                return next(bootstrap)
+            except StopIteration:
+                return clock["now"]
+
+        mock_monotonic.side_effect = monotonic_side_effect
+        mock_sleep.side_effect = lambda seconds: clock.__setitem__(
+            "now", clock["now"] + seconds
+        )
 
         with (
-            patch.object(page, "_wait_for_stable_network"),
-            patch.object(page, "_wait_for_dom_stable"),
+            patch.object(page, "_wait_for_stable_network", return_value=False),
+            patch.object(page, "_wait_for_dom_stable", return_value=False),
         ):
-            mock_monotonic.side_effect = [0.0, 0.1]
             page.wait_for_page_stable()
 
-        mock_sleep.assert_called_once_with(0.4)
+        total_slept = sum(call.args[0] for call in mock_sleep.call_args_list)
+        self.assertAlmostEqual(total_slept, 0.4, places=1)
+
+    def test_get_dom_state_returns_minimal_state_when_aborted(self):
+        pw_page = MagicMock()
+        page = Page(pw_page, page_id=0)
+        with patch("smart_automator.browser.page.build_dom_tree") as mock_build:
+            state = page.get_dom_state(should_abort=lambda: True)
+        mock_build.assert_not_called()
+        self.assertEqual(state.selector_map, {})
+        self.assertEqual(state.element_tree.tag_name, "body")
 
 
 if __name__ == "__main__":

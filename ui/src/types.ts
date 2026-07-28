@@ -221,6 +221,7 @@ export type WSEvent =
   | { type: 'status'; status: string }
   | { type: 'human_intervention_required'; reason: string; deadline?: number; source?: string; cycle?: number }
   | { type: 'human_control_started'; source?: string }
+  | { type: 'take_control_pending' }
   | { type: 'human_intervention_ended'; cycle?: number }
   | { type: 'human_action'; action: string; args: Record<string, unknown>; result: string; step?: Step; cycle?: number }
   | { type: 'human_handoff'; analysis: Record<string, unknown>; actions: Array<Record<string, unknown>>; step?: Step; intervention_reason?: string; intervention_source?: string; start_url?: string; end_url?: string; cycle?: number }

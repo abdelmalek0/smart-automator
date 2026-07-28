@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import platform
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from playwright.sync_api import Frame, Page as PlaywrightPage, ElementHandle, Request, Response
@@ -133,15 +134,24 @@ class Page:
     def playwright_page(self) -> PlaywrightPage:
         return self._page
 
-    def wait_for_page_stable(self, minimum_wait: float | None = None) -> None:
+    def wait_for_page_stable(
+        self,
+        minimum_wait: float | None = None,
+        *,
+        should_abort: Callable[[], bool] | None = None,
+    ) -> bool:
+        """Wait for page stability. Returns True if aborted early."""
         start = time.monotonic()
-        self._wait_for_stable_network()
-        self._wait_for_dom_stable()
+        if self._wait_for_stable_network(should_abort=should_abort):
+            return True
+        if self._wait_for_dom_stable(should_abort=should_abort):
+            return True
         elapsed = time.monotonic() - start
         min_wait = minimum_wait if minimum_wait is not None else self._minimum_wait_page_load_time
         remaining = max(min_wait - elapsed, 0.0)
-        if remaining > 0:
-            time.sleep(remaining)
+        if remaining > 0 and self._sleep_interruptible(remaining, should_abort=should_abort):
+            return True
+        return False
 
     def _probe_dom_signature(self) -> str:
         try:
@@ -149,21 +159,46 @@ class Page:
         except Exception:
             return ""
 
-    def _wait_for_dom_stable(self) -> None:
+    def _sleep_interruptible(
+        self,
+        duration: float,
+        *,
+        should_abort: Callable[[], bool] | None = None,
+    ) -> bool:
+        deadline = time.monotonic() + duration
+        while time.monotonic() < deadline:
+            if should_abort and should_abort():
+                return True
+            time.sleep(min(0.1, deadline - time.monotonic()))
+        return False
+
+    def _wait_for_dom_stable(
+        self,
+        *,
+        should_abort: Callable[[], bool] | None = None,
+    ) -> bool:
         start = time.monotonic()
         last_signature: str | None = None
         last_change = time.monotonic()
 
         while time.monotonic() - start < self._maximum_wait_page_load_time:
+            if should_abort and should_abort():
+                return True
             signature = self._probe_dom_signature()
             if signature != last_signature:
                 last_signature = signature
                 last_change = time.monotonic()
             elif time.monotonic() - last_change >= self._wait_for_network_idle_page_load_time:
-                return
-            time.sleep(0.1)
+                return False
+            if self._sleep_interruptible(0.1, should_abort=should_abort):
+                return True
+        return False
 
-    def _wait_for_stable_network(self) -> None:
+    def _wait_for_stable_network(
+        self,
+        *,
+        should_abort: Callable[[], bool] | None = None,
+    ) -> bool:
         pending_requests: set[Request] = set()
         last_activity = time.monotonic()
 
@@ -208,7 +243,10 @@ class Page:
         try:
             start = time.monotonic()
             while True:
-                time.sleep(0.1)
+                if should_abort and should_abort():
+                    return True
+                if self._sleep_interruptible(0.1, should_abort=should_abort):
+                    return True
                 idle_for = time.monotonic() - last_activity
                 if not pending_requests and idle_for >= self._wait_for_network_idle_page_load_time:
                     break
@@ -217,6 +255,7 @@ class Page:
         finally:
             self._page.remove_listener("request", _track_request)
             self._page.remove_listener("response", _track_response)
+        return False
 
     def _check_and_handle_navigation(self) -> None:
         current_url = self._page.url
@@ -274,15 +313,25 @@ class Page:
     def _clear_highlight_signature(self) -> None:
         self._last_highlight_signature = None
 
+    def _minimal_dom_state(self) -> DOMState:
+        root = DOMElementNode(tag_name="body", xpath="/html/body")
+        return DOMState(element_tree=root, selector_map={})
+
     def get_dom_state(
         self,
         show_highlights: bool = True,
         *,
         wait_for_stable: bool = False,
         focus_element: int = -1,
+        should_abort: Callable[[], bool] | None = None,
     ) -> DOMState:
+        if should_abort and should_abort():
+            return self._minimal_dom_state()
+
         if wait_for_stable:
-            self.wait_for_page_stable()
+            self.wait_for_page_stable(should_abort=should_abort)
+            if should_abort and should_abort():
+                return self._minimal_dom_state()
 
         state_probe = build_dom_tree(
             self._page,

@@ -51,6 +51,7 @@ export default function RunView({ runId, onRunComplete }: Props) {
   const { openNewRun } = useRunModal()
   const [hitlCountdown, setHitlCountdown] = useState<string | null>(null)
   const [hitlBusy, setHitlBusy] = useState(false)
+  const [takeControlPending, setTakeControlPending] = useState(false)
   const [hitlError, setHitlError] = useState<string | null>(null)
   const { data: websites = [] } = useQuery({
     queryKey: ['websites'],
@@ -105,6 +106,12 @@ export default function RunView({ runId, onRunComplete }: Props) {
   const showReport =
     reportReady || (run?.status && ['pass', 'fail', 'error'].includes(run.status))
 
+  useEffect(() => {
+    if (humanControlling) {
+      setTakeControlPending(false)
+    }
+  }, [humanControlling])
+
   async function handleCancel() {
     try {
       await cancelRun(runId)
@@ -117,9 +124,11 @@ export default function RunView({ runId, onRunComplete }: Props) {
   async function handleTakeControl() {
     setHitlBusy(true)
     setHitlError(null)
+    setTakeControlPending(true)
     try {
       await takeControl(runId)
     } catch (err) {
+      setTakeControlPending(false)
       setHitlError(err instanceof Error ? err.message : 'Failed to take control')
     } finally {
       setHitlBusy(false)
@@ -226,9 +235,14 @@ export default function RunView({ runId, onRunComplete }: Props) {
               )}
               <div className="flex items-center gap-2">
                 {!humanControlling ? (
-                  <Button size="sm" variant="outline" onClick={handleTakeControl} disabled={hitlBusy}>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleTakeControl}
+                    disabled={hitlBusy || takeControlPending}
+                  >
                     <Hand className="h-3.5 w-3.5" />
-                    Take control
+                    {takeControlPending ? 'Taking control…' : 'Take control'}
                   </Button>
                 ) : (
                   <Button size="sm" onClick={handleReturnControl} disabled={hitlBusy}>

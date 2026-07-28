@@ -27,6 +27,10 @@ class RequestCancelledError(Exception):
     pass
 
 
+class HitlInterruptedError(Exception):
+    """Raised when HITL take-control interrupts an in-flight agent turn."""
+
+
 class MaxStepsReachedError(Exception):
     pass
 

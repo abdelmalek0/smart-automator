@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from playwright.sync_api import sync_playwright, Browser, BrowserContext as PlaywrightContext
 
 from ..config import Config, resolve_chrome_user_data
@@ -172,11 +174,13 @@ class BrowserContext:
         show_highlights: bool = True,
         *,
         wait_for_stable: bool = False,
+        should_abort: Callable[[], bool] | None = None,
     ) -> BrowserState:
         page = self.get_current_page()
         dom_state = page.get_dom_state(
             show_highlights=show_highlights,
             wait_for_stable=wait_for_stable,
+            should_abort=should_abort,
         )
         mark_new_elements(dom_state, self._previous_branch_hashes)
         self._previous_branch_hashes = calc_branch_path_hash_set(dom_state)

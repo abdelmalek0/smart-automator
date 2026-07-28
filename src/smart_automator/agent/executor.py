@@ -14,6 +14,7 @@ from ..agents.errors import (
     ChatModelAuthError,
     ChatModelBadRequestError,
     ChatModelForbiddenError,
+    HitlInterruptedError,
     MaxFailuresReachedError,
     MaxStepsReachedError,
     RequestCancelledError,
@@ -154,6 +155,9 @@ class Executor:
 
         self._llm.set_cancel_event(self._context.cancel_event)
         self._planner_llm.set_cancel_event(self._context.cancel_event)
+        interrupt_check = lambda: self._context.hitl_interrupt
+        self._llm.set_interrupt_check(interrupt_check)
+        self._planner_llm.set_interrupt_check(interrupt_check)
 
         action_registry = ActionBuilder(self._context).build_default_actions()
         self._navigator = NavigatorAgent(llm, self._context, message_manager, action_registry)
@@ -179,8 +183,14 @@ class Executor:
     def hitl(self) -> HitlController:
         return self._hitl
 
-    def submit_hitl_command(self, action: str, **kwargs: Any) -> tuple[bool, str | None]:
-        return self._hitl.submit_command(action, **kwargs)
+    def submit_hitl_command(
+        self,
+        action: str,
+        *,
+        wait: bool = True,
+        **kwargs: Any,
+    ) -> tuple[bool, str | None]:
+        return self._hitl.submit_command(action, wait=wait, **kwargs)
 
     def _emit(self, event: dict) -> None:
         if self._on_event:
@@ -290,6 +300,11 @@ class Executor:
                     if context.force_replan_after_hitl:
                         context.force_replan_after_hitl = False
                     latest_plan = self._run_planner()
+                    if context.hitl_interrupt:
+                        self._hitl.process_pending_commands()
+                        if self._should_stop():
+                            break
+                        continue
                     if self._is_non_web_task_complete(latest_plan):
                         return context.final_answer
                     if self._check_task_completion(latest_plan):
@@ -297,10 +312,18 @@ class Executor:
                     if self._should_skip_navigation(latest_plan):
                         continue
 
+                self._hitl.process_pending_commands()
+                if self._should_stop():
+                    break
+
                 navigator_requested_done = False
                 nav_outcome = self._navigate()
                 if nav_outcome == "complete":
                     return context.final_answer
+                if nav_outcome == "interrupted":
+                    if self._should_stop():
+                        break
+                    continue
                 if nav_outcome == "requested_done":
                     navigator_requested_done = True
                     latest_plan = self._run_planner()
@@ -327,6 +350,7 @@ class Executor:
             raise
         finally:
             context.browser_context.remove_highlight()
+            context.hitl_interrupt = False
 
     def replay_history(
         self,
@@ -378,10 +402,19 @@ class Executor:
                 border_style="yellow",
             )
         )
+        debrief_started = time.time()
         analysis = self._hitl_debrief.analyze(
             task=self._task,
             handoff=handoff,
             success_criteria=self._success_criteria,
+        )
+        debrief_ms = int((time.time() - debrief_started) * 1000)
+        console.print(
+            Panel(
+                f"[dim]Debrief completed in {debrief_ms}ms[/dim]",
+                title="HITL debrief",
+                border_style="yellow",
+            )
         )
         self._hitl.inject_human_memory(
             handoff.recorded,
@@ -444,12 +477,36 @@ class Executor:
         context = self._context
         try:
             context.check_cancelled()
+            if context.hitl_interrupt:
+                return None
+            if context.post_hitl_fresh_start:
+                context.message_manager.add_message_with_tokens(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Human intervention completed. All prior plan next_steps are void. "
+                            "Produce a new plan from the current page and human handoff only. "
+                            "Treat the current page as authoritative — continue from where the human "
+                            "left the browser. Do not navigate back to undo human path corrections. "
+                            "Recompute remaining work from the task and current page evidence only."
+                        ),
+                    },
+                    "hitl_replan",
+                )
             position_for_plan = 0
-            if len(self._tasks) > 1 or context.n_steps > 0:
+            needs_current_state = (
+                len(self._tasks) > 1
+                or context.n_steps > 0
+                or context.post_hitl_fresh_start
+            )
+            if needs_current_state:
                 self._navigator.add_state_message_to_memory(
                     show_highlights=False,
                     wait_for_stable=False,
                 )
+                if context.hitl_interrupt:
+                    self._navigator.remove_last_state_message_from_memory()
+                    return None
                 position_for_plan = context.message_manager.length() - 1
             else:
                 position_for_plan = context.message_manager.length()
@@ -463,6 +520,8 @@ class Executor:
             )
             plan_output = self._planner.execute()
             self._navigator.remove_last_state_message_from_memory()
+            if context.hitl_interrupt:
+                return None
             if plan_output.get("result"):
                 result = plan_output["result"]
                 context.message_manager.add_plan(
@@ -484,6 +543,8 @@ class Executor:
             raise
         except RequestCancelledError:
             raise
+        except HitlInterruptedError:
+            return None
         except Exception as error:
             classified = classify_llm_error(error) if isinstance(error, Exception) else error
             if isinstance(
@@ -603,11 +664,35 @@ class Executor:
             if context.paused or context.stopped:
                 return None
 
+            if nav_output.get("interrupted"):
+                self._hitl.process_pending_commands()
+                interrupted = nav_output.get("result", {})
+                self._emit(
+                    {
+                        "type": "step_end",
+                        "index": step_index,
+                        "nav_result": {
+                            "interrupted": True,
+                            "page_url": interrupted.get("page_url", ""),
+                            "page_title": interrupted.get("page_title", ""),
+                            "action_results": [],
+                            "current_state": {
+                                "evaluation_previous_goal": "Interrupted",
+                                "memory": "Navigator interrupted for human control",
+                                "next_goal": "",
+                            },
+                        },
+                    }
+                )
+                return "interrupted"
+
             if nav_output.get("error"):
                 raise RuntimeError(nav_output["error"])
 
             result = nav_output.get("result", {})
             context.n_steps += 1
+            if context.post_hitl_fresh_start:
+                context.post_hitl_fresh_start = False
             if result:
                 metrics = context.last_step_metrics
                 nav_display = dict(result)

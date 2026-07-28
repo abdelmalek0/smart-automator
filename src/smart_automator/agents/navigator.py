@@ -24,6 +24,7 @@ from .errors import (
     ChatModelAuthError,
     ChatModelBadRequestError,
     ChatModelForbiddenError,
+    HitlInterruptedError,
     RequestCancelledError,
     ResponseParseError,
     classify_llm_error,
@@ -60,6 +61,17 @@ class NavigatorAgent(BaseAgent):
         self._context = context
         self._action_registry = action_registry
 
+    def _hitl_should_abort(self) -> bool:
+        return self._context.hitl_interrupt
+
+    def _build_interrupted_result(self, browser_state) -> dict:
+        return {
+            "interrupted": True,
+            "page_url": browser_state.url,
+            "page_title": browser_state.title,
+            "action_results": [],
+        }
+
     def add_state_message_to_memory(
         self,
         *,
@@ -87,6 +99,7 @@ class NavigatorAgent(BaseAgent):
         browser_state = self._context.browser_context.get_state(
             show_highlights=show_highlights,
             wait_for_stable=wait_for_stable,
+            should_abort=self._hitl_should_abort,
         )
         state_message = build_browser_state_message(self._context, browser_state)
         message_manager.add_state_message(state_message)
@@ -103,11 +116,25 @@ class NavigatorAgent(BaseAgent):
         output: dict = {"id": self.id}
         recovery_attempts = 0
         try:
+            if self._context.hitl_interrupt:
+                browser_state = self._context.browser_context.get_state(
+                    show_highlights=False,
+                    wait_for_stable=False,
+                )
+                output["interrupted"] = True
+                output["result"] = self._build_interrupted_result(browser_state)
+                return output
+
             dom_start = time.perf_counter()
             browser_state = self.add_state_message_to_memory(
                 show_highlights=True,
                 wait_for_stable=True,
             )
+            if self._context.hitl_interrupt:
+                self.remove_last_state_message_from_memory()
+                output["interrupted"] = True
+                output["result"] = self._build_interrupted_result(browser_state)
+                return output
             if (
                 self._context.last_step_had_commit
                 and self._context.last_commit_snapshot is not None
@@ -136,6 +163,11 @@ class NavigatorAgent(BaseAgent):
             llm_ms = (time.perf_counter() - llm_start) * 1000
 
             self.remove_last_state_message_from_memory()
+
+            if self._context.hitl_interrupt:
+                output["interrupted"] = True
+                output["result"] = self._build_interrupted_result(browser_state)
+                return output
 
             response = coerce_navigator_response(response)
             fixed_actions = fix_actions(response)
@@ -271,10 +303,16 @@ class NavigatorAgent(BaseAgent):
             batch_ms = (time.perf_counter() - batch_start) * 1000
             self._context.action_results = action_results
 
+            if self._context.hitl_interrupt:
+                output["interrupted"] = True
+                output["result"] = self._build_interrupted_result(browser_state)
+                return output
+
             settle_start = time.perf_counter()
             after_state = self._context.browser_context.get_state(
                 show_highlights=False,
                 wait_for_stable=True,
+                should_abort=self._hitl_should_abort,
             )
             settle_ms = (time.perf_counter() - settle_start) * 1000
             self._context.browser_context.remove_highlight()
@@ -349,6 +387,24 @@ class NavigatorAgent(BaseAgent):
                 actions=actions,
                 action_results=action_results,
             )
+            return output
+        except HitlInterruptedError:
+            self.remove_last_state_message_from_memory()
+            try:
+                browser_state = self._context.browser_context.get_state(
+                    show_highlights=False,
+                    wait_for_stable=False,
+                )
+            except Exception:
+                browser_state = BrowserState(
+                    tab_id=0,
+                    url="",
+                    title="",
+                    element_tree=DOMElementNode(tag_name="body", xpath="/html/body"),
+                    selector_map={},
+                )
+            output["interrupted"] = True
+            output["result"] = self._build_interrupted_result(browser_state)
             return output
         except Exception as error:
             self.remove_last_state_message_from_memory()

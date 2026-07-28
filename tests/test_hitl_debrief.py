@@ -74,6 +74,39 @@ class HitlDebriefAgentTests(unittest.TestCase):
         self.assertIn("CAPTCHA on login page", user_message)
         self.assertIn("Human clicked button", user_message)
 
+    def test_format_human_memory_message_omits_weak_remaining_work(self):
+        recorded = []
+        message = HitlController.format_human_memory_message(
+            recorded,
+            intervention_reason="Manual take control",
+            intervention_source="manual",
+            analysis={
+                "inferred_reason": "",
+                "goal_achieved": "",
+                "outcome": "unclear",
+                "evidence": "",
+                "remaining_work": "Go back to context B and pick an item",
+                "confidence": "low",
+            },
+        )
+        self.assertNotIn("context B", message)
+        self.assertIn("Continue from the current page", message)
+
+    def test_format_human_memory_message_includes_high_confidence_remaining_work(self):
+        recorded = []
+        message = HitlController.format_human_memory_message(
+            recorded,
+            analysis={
+                "inferred_reason": "Completed login",
+                "goal_achieved": "Signed in",
+                "outcome": "achieved",
+                "evidence": "Dashboard visible",
+                "remaining_work": "Continue checkout from dashboard",
+                "confidence": "high",
+            },
+        )
+        self.assertIn("Remaining work: Continue checkout from dashboard", message)
+
     def test_format_human_memory_message_uses_analysis(self):
         recorded = [
             (
@@ -101,11 +134,8 @@ class HitlDebriefAgentTests(unittest.TestCase):
         self.assertIn("[redacted]", message)
         self.assertNotIn("secret", message)
 
-    def test_analyze_omits_prior_agent_action_results_from_state(self):
+    def test_analyze_uses_compact_page_identity_only(self):
         context = _make_context()
-        context.action_results = [
-            ActionResult(error="prior agent failure"),
-        ]
         agent = HitlDebriefAgent(MagicMock(), context.message_manager, context=context)
         handoff = PendingHitlHandoff(
             recorded=[],
@@ -114,20 +144,9 @@ class HitlDebriefAgentTests(unittest.TestCase):
             cycle=1,
             start_url="https://example.com",
             start_title="Home",
-            end_url="https://example.com",
-            end_title="Home",
+            end_url="https://example.com/items",
+            end_title="Items",
         )
-        browser_state = MagicMock()
-        browser_state.element_tree = None
-        browser_state.selector_map = {}
-        browser_state.tab_id = 1
-        browser_state.url = "https://example.com"
-        browser_state.title = "Home"
-        browser_state.tabs = []
-        browser_state.scroll_height = 100
-        browser_state.scroll_y = 0
-        browser_state.visual_viewport_height = 100
-        context.browser_context.get_state.return_value = browser_state
 
         with patch.object(
             agent,
@@ -143,9 +162,10 @@ class HitlDebriefAgentTests(unittest.TestCase):
         ) as response_mock:
             agent.analyze(task="Complete task", handoff=handoff)
 
-        messages = response_mock.call_args[0][0]
-        state_blob = messages[1]["content"]
-        self.assertNotIn("prior agent failure", state_blob)
+        context.browser_context.get_state.assert_not_called()
+        user_message = response_mock.call_args[0][0][1]["content"]
+        self.assertIn("Current page: https://example.com/items", user_message)
+        self.assertNotIn("[Current state starts here]", user_message)
 
 
 if __name__ == "__main__":

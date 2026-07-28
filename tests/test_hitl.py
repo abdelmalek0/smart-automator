@@ -96,6 +96,67 @@ class HitlControllerTests(unittest.TestCase):
         self.assertEqual(hitl.recorder.recorded, [])
         self.assertIsNotNone(context.pending_hitl_handoff)
         self.assertTrue(context.force_replan_after_hitl)
+        self.assertTrue(context.post_hitl_fresh_start)
+
+    def test_return_control_without_recorded_actions_still_creates_handoff(self):
+        context = _make_context()
+        hitl = HitlController(context, emit=lambda _event: None)
+        hitl.request_intervention("Manual take control", source="manual")
+        with patch.object(hitl.recorder, "start", side_effect=lambda: _activate_recorder(hitl.recorder)), patch.object(
+            hitl.recorder,
+            "stop",
+            return_value=[],
+        ), patch.object(hitl.recorder, "flush_pending_inputs"):
+            hitl.take_control()
+            hitl.return_control()
+
+        self.assertIsNotNone(context.pending_hitl_handoff)
+        self.assertEqual(context.pending_hitl_handoff.recorded, [])
+        self.assertTrue(context.force_replan_after_hitl)
+
+    def test_submit_take_control_sets_interrupt_flag(self):
+        context = _make_context()
+        hitl = HitlController(context, emit=lambda _event: None)
+        holder: dict[str, object] = {}
+
+        def api_thread():
+            ok, error = hitl.submit_command("take_control", timeout=2.0)
+            holder["ok"] = ok
+            holder["error"] = error
+
+        with patch.object(hitl, "take_control", return_value=True):
+            worker = threading.Thread(target=api_thread)
+            worker.start()
+            time.sleep(0.05)
+            self.assertTrue(context.hitl_interrupt)
+            hitl.process_pending_commands()
+            worker.join(timeout=3.0)
+
+        self.assertTrue(holder.get("ok"), holder.get("error"))
+        self.assertFalse(context.hitl_interrupt)
+
+    def test_submit_take_control_without_wait_returns_immediately(self):
+        context = _make_context()
+        hitl = HitlController(context, emit=lambda _event: None)
+
+        ok, error = hitl.submit_command("take_control", wait=False)
+
+        self.assertTrue(ok)
+        self.assertIsNone(error)
+        self.assertTrue(context.hitl_interrupt)
+        self.assertFalse(context.human_controlling)
+        hitl.process_pending_commands()
+        self.assertTrue(context.human_controlling)
+        self.assertFalse(context.hitl_interrupt)
+
+    def test_submit_take_control_emits_pending_event(self):
+        context = _make_context()
+        events: list[dict] = []
+        hitl = HitlController(context, emit=events.append)
+
+        hitl.submit_command("take_control", wait=False)
+
+        self.assertEqual(events[0], {"type": "take_control_pending"})
 
     def test_headless_disables_intervention(self):
         context = _make_context(hitl_enabled=False)
@@ -693,6 +754,78 @@ class UiStepIndexTests(unittest.TestCase):
         self.assertEqual(context.ui_step_index, 2)
 
 
+class MessageManagerHitlTests(unittest.TestCase):
+    def test_supersede_all_plans_strips_next_steps_from_every_plan(self):
+        from smart_automator.agent.messages.service import (
+            MessageManager,
+            PLAN_MARKER,
+            VOID_SUPERSEDED_PLAN_CONTENT,
+        )
+
+        manager = MessageManager()
+        manager.add_message_with_tokens({"role": "user", "content": "task"}, "init")
+        manager.add_plan('{"next_steps":"go to context B"}')
+        manager.add_plan('{"next_steps":"pick item in context B"}')
+        manager.supersede_all_plans()
+        for message in manager.get_messages():
+            content = message.get("content", "")
+            if not isinstance(content, str):
+                continue
+            self.assertNotIn("context B", content)
+            if PLAN_MARKER in content:
+                self.assertEqual(content, VOID_SUPERSEDED_PLAN_CONTENT)
+
+    def test_prepare_post_hitl_resume_invalidates_navigator_output(self):
+        from smart_automator.agent.messages.service import MessageManager
+
+        manager = MessageManager()
+        manager.add_plan('{"next_steps":"click login"}')
+        manager.add_model_output(
+            {
+                "current_state": {
+                    "evaluation_previous_goal": "In progress",
+                    "memory": "Trying login",
+                    "next_goal": "Click submit",
+                },
+                "action": [{"click_element": {"index": 1}}],
+            }
+        )
+        manager.prepare_post_hitl_resume()
+        last = manager.get_messages()[-1]["content"]
+        self.assertIn("Interrupted", last)
+        self.assertIn('"action": []', last)
+
+    def test_prepare_post_hitl_resume_invalidates_multiple_navigator_turns(self):
+        from smart_automator.agent.messages.service import MessageManager
+
+        manager = MessageManager()
+        manager.add_plan('{"next_steps":"open context B"}')
+        manager.add_model_output(
+            {
+                "current_state": {
+                    "evaluation_previous_goal": "Success",
+                    "memory": "Opened context B",
+                    "next_goal": "Pick item",
+                },
+                "action": [{"click_element": {"index": 1}}],
+            }
+        )
+        manager.add_model_output(
+            {
+                "current_state": {
+                    "evaluation_previous_goal": "In progress",
+                    "memory": "Still in context B",
+                    "next_goal": "Pick item",
+                },
+                "action": [{"click_element": {"index": 2}}],
+            }
+        )
+        manager.prepare_post_hitl_resume()
+        contents = [message["content"] for message in manager.get_messages()[-2:]]
+        self.assertTrue(all("Interrupted" in content for content in contents))
+        self.assertTrue(all("context B" not in content for content in contents))
+
+
 class StepOrderingTests(unittest.TestCase):
     def test_late_human_step_inserts_by_index(self):
         """Mirror of ui/src/lib/run-steps.ts upsertStep ordering contract."""
@@ -940,7 +1073,7 @@ class ExecutorHitlReplanTests(unittest.TestCase):
             executor,
             "_navigate",
             return_value=None,
-        ) as navigate_mock, patch.object(executor, "_should_stop", side_effect=[False, True]):
+        ) as navigate_mock, patch.object(executor, "_should_stop", side_effect=[False, False, True]):
             executor.execute()
 
         planner_mock.assert_called_once()
@@ -983,7 +1116,7 @@ class ExecutorHitlReplanTests(unittest.TestCase):
             executor,
             "_navigate",
             side_effect=lambda: call_order.append("navigate") or None,
-        ) as navigate_mock, patch.object(executor, "_should_stop", side_effect=[False, True]):
+        ) as navigate_mock, patch.object(executor, "_should_stop", side_effect=[False, False, True]):
             executor.execute()
 
         debrief_mock.assert_called_once()
