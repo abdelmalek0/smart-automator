@@ -6,6 +6,7 @@ from smart_automator.agent.context import ActionResult
 from smart_automator.agent.history import AgentStepHistory, AgentStepRecord, BrowserStateHistory
 from smart_automator.browser.history import DOMHistoryElement
 from smart_automator.reporting.builder import (
+    aggregate_turn_timing,
     build_action_timeline,
     build_report_data,
     embed_step_screenshots,
@@ -60,6 +61,87 @@ class TestReportBuilder(unittest.TestCase):
         self.assertEqual(entry["action"], "click_element")
         self.assertEqual(entry["element"]["xpath"], "/html/body/button[1]")
         self.assertEqual(entry["verification_status"], "verified")
+
+    def test_aggregate_turn_timing_median_excludes_human_steps(self):
+        steps = [
+            {
+                "index": 1,
+                "elapsed_ms": 1000,
+                "turn_timing": {"snapshot_ms": 100, "llm_navigator_ms": 400, "batch_ms": 50, "settle_ms": 10},
+            },
+            {
+                "index": 2,
+                "elapsed_ms": 3000,
+                "turn_timing": {"snapshot_ms": 200, "llm_navigator_ms": 800, "batch_ms": 150, "settle_ms": 30},
+            },
+            {
+                "index": 3,
+                "elapsed_ms": 2000,
+                "turn_timing": {"snapshot_ms": 150, "llm_navigator_ms": 600, "batch_ms": 100, "settle_ms": 20},
+            },
+            {
+                "index": 4,
+                "elapsed_ms": 9000,
+                "source": "human",
+                "turn_timing": {"snapshot_ms": 900, "llm_navigator_ms": 8000},
+            },
+        ]
+        timing = aggregate_turn_timing(steps)
+        self.assertEqual(timing["turn_ms"], 2000)
+        self.assertEqual(timing["snapshot_ms"], 150)
+        self.assertEqual(timing["llm_navigator_ms"], 600)
+        self.assertEqual(timing["batch_ms"], 100)
+        self.assertEqual(timing["settle_ms"], 20)
+        self.assertEqual(timing["act_ms"], 1250)
+
+    def test_build_report_data_uses_typical_turn_timing(self):
+        run = RunState(
+            run_id="test-run-id",
+            task="Log in",
+            headless=True,
+            max_steps=10,
+            success_criteria="User is logged in",
+        )
+        run.status = "pass"
+        run.turn_timing = {"turn_ms": 9999, "snapshot_ms": 1, "llm_navigator_ms": 1}
+        run.steps = [
+            {
+                "index": 1,
+                "elapsed_ms": 1000,
+                "turn_timing": {"snapshot_ms": 100, "llm_navigator_ms": 400},
+            },
+            {
+                "index": 2,
+                "elapsed_ms": 3000,
+                "turn_timing": {"snapshot_ms": 200, "llm_navigator_ms": 800},
+            },
+        ]
+
+        data = build_report_data(run, AgentStepHistory())
+        self.assertEqual(data["turn_timing"]["turn_ms"], 2000)
+        self.assertEqual(data["turn_timing"]["snapshot_ms"], 150)
+        self.assertEqual(data["turn_timing"]["llm_navigator_ms"], 600)
+
+    def test_render_html_report_shows_typical_turn_timing(self):
+        run = RunState(run_id="abc-123", task="Test task", headless=True, max_steps=5, success_criteria="Done")
+        run.status = "pass"
+        run.finished_at = run.started_at + 3
+        run.steps = [
+            {
+                "index": 1,
+                "elapsed_ms": 1000,
+                "turn_timing": {"snapshot_ms": 100, "llm_navigator_ms": 400},
+            },
+            {
+                "index": 2,
+                "elapsed_ms": 3000,
+                "turn_timing": {"snapshot_ms": 200, "llm_navigator_ms": 800},
+            },
+        ]
+        data = build_report_data(run, AgentStepHistory())
+        html = render_html_report(data)
+        self.assertIn("Typical turn timing", html)
+        self.assertNotIn("Last turn timing", html)
 
     def test_build_report_data_includes_tokens_and_timing(self):
         run = RunState(

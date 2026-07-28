@@ -164,9 +164,9 @@ def _render_stat_cards(data: dict[str, Any]) -> str:
         <div class="stat-value">{_esc(_fmt_duration_ms(data.get("step_elapsed_ms")))}</div>
       </div>
       <div class="stat-card">
-        <div class="stat-label">Last turn timing</div>
+        <div class="stat-label">Typical turn timing</div>
         <div class="stat-value">{_esc(_fmt_duration_ms(timing.get("turn_ms")))}</div>
-        <div class="stat-sub">DOM {_esc(_fmt_duration_ms(timing.get("snapshot_ms")))} · LLM {_esc(_fmt_duration_ms(timing.get("llm_navigator_ms")))} · Act {_esc(_fmt_duration_ms(timing.get("batch_ms")))} · Settle {_esc(_fmt_duration_ms(timing.get("settle_ms")))}</div>
+        <div class="stat-sub">DOM {_esc(_fmt_duration_ms(timing.get("snapshot_ms")))} · LLM {_esc(_fmt_duration_ms(timing.get("llm_navigator_ms")))} · Act {_esc(_fmt_duration_ms(timing.get("act_ms")))} · Actions {_esc(_fmt_duration_ms(timing.get("batch_ms")))} · Settle {_esc(_fmt_duration_ms(timing.get("settle_ms")))}</div>
       </div>
     </div>
     """

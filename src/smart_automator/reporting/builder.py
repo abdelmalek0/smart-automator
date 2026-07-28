@@ -21,6 +21,69 @@ _URL_RE = re.compile(r"https?://[^\s<>\"']+")
 _WEBSITE_RE = re.compile(r"^Website:\s*(.+?)\s*\((https?://[^)]+)\)\s*$", re.MULTILINE)
 
 
+def _median(nums: list[float | int]) -> float:
+    if not nums:
+        return 0.0
+    sorted_nums = sorted(nums)
+    mid = len(sorted_nums) // 2
+    if len(sorted_nums) % 2 == 0:
+        return (sorted_nums[mid - 1] + sorted_nums[mid]) / 2
+    return float(sorted_nums[mid])
+
+
+def _has_turn_timing(timing: dict[str, Any] | None) -> bool:
+    if not timing:
+        return False
+    return (
+        int(timing.get("turn_ms") or 0) > 0
+        or int(timing.get("snapshot_ms") or 0) > 0
+        or int(timing.get("llm_navigator_ms") or 0) > 0
+    )
+
+
+def _step_act_duration_ms(step: dict[str, Any]) -> float:
+    timing = step.get("turn_timing") or {}
+    turn_ms = int(timing.get("turn_ms") or step.get("elapsed_ms") or 0)
+    snapshot_ms = int(timing.get("snapshot_ms") or 0)
+    llm_ms = int(timing.get("llm_navigator_ms") or 0)
+    return max(0.0, turn_ms - snapshot_ms - llm_ms)
+
+
+def aggregate_turn_timing(steps: list[dict[str, Any]]) -> dict[str, float]:
+    timed_steps = [
+        step
+        for step in steps
+        if step.get("source") != "human" and _has_turn_timing(step.get("turn_timing"))
+    ]
+    if not timed_steps:
+        return {}
+
+    return {
+        "turn_ms": _median(
+            [
+                int(step.get("elapsed_ms") or (step.get("turn_timing") or {}).get("turn_ms") or 0)
+                for step in timed_steps
+            ]
+        ),
+        "snapshot_ms": _median(
+            [int((step.get("turn_timing") or {}).get("snapshot_ms") or 0) for step in timed_steps]
+        ),
+        "llm_navigator_ms": _median(
+            [
+                int((step.get("turn_timing") or {}).get("llm_navigator_ms") or 0)
+                for step in timed_steps
+            ]
+        ),
+        "batch_ms": _median(
+            [int((step.get("turn_timing") or {}).get("batch_ms") or 0) for step in timed_steps]
+        ),
+        "settle_ms": _median(
+            [int((step.get("turn_timing") or {}).get("settle_ms") or 0) for step in timed_steps]
+        ),
+        "act_ms": _median([_step_act_duration_ms(step) for step in timed_steps]),
+    }
+
+
 def _format_duration(seconds: float | None) -> str:
     if seconds is None or seconds < 0:
         return "—"
@@ -229,7 +292,7 @@ def build_report_data(
             "cache": run.cache_tokens,
             "cost_usd": run.cost_usd,
         },
-        "turn_timing": run.turn_timing,
+        "turn_timing": aggregate_turn_timing(run.steps),
         "llm": {
             "provider": llm_provider,
             "model": llm_model,

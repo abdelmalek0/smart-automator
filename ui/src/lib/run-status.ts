@@ -1,4 +1,52 @@
-import type { RunStatus, TurnTiming } from '@/types'
+import type { RunStatus, Step, TurnTiming } from '@/types'
+
+export function median(nums: number[]): number {
+  if (nums.length === 0) return 0
+  const sorted = [...nums].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  if (sorted.length % 2 === 0) {
+    return (sorted[mid - 1] + sorted[mid]) / 2
+  }
+  return sorted[mid]
+}
+
+function isTimedAgentStep(step: Step): boolean {
+  if (step.source === 'human') return false
+  return hasTurnTiming(step.turn_timing)
+}
+
+function stepActDurationMs(step: Step): number {
+  if (!step.turn_timing) return 0
+  return actDurationMs({
+    ...step.turn_timing,
+    turn_ms: step.turn_timing.turn_ms ?? step.elapsed_ms,
+  })
+}
+
+export function aggregateTurnTiming(steps: Step[]): TurnTiming | null {
+  const timedSteps = steps.filter(isTimedAgentStep)
+  if (timedSteps.length === 0) return null
+
+  const turnMs = median(
+    timedSteps.map((step) => step.elapsed_ms ?? step.turn_timing?.turn_ms ?? 0),
+  )
+
+  return {
+    turn_ms: turnMs,
+    snapshot_ms: median(timedSteps.map((step) => step.turn_timing?.snapshot_ms ?? 0)),
+    llm_navigator_ms: median(
+      timedSteps.map((step) => step.turn_timing?.llm_navigator_ms ?? 0),
+    ),
+    batch_ms: median(timedSteps.map((step) => step.turn_timing?.batch_ms ?? 0)),
+    settle_ms: median(timedSteps.map((step) => step.turn_timing?.settle_ms ?? 0)),
+  }
+}
+
+export function aggregateTypicalActMs(steps: Step[]): number {
+  const timedSteps = steps.filter(isTimedAgentStep)
+  if (timedSteps.length === 0) return 0
+  return median(timedSteps.map(stepActDurationMs))
+}
 
 export function hasTurnTiming(timing?: TurnTiming | null): timing is TurnTiming {
   if (!timing) return false

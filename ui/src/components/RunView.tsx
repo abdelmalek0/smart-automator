@@ -26,6 +26,7 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 import type { RunStatus } from '@/types'
 import {
+  aggregateTurnTiming,
   executionModeChipClass,
   executionModeLabel,
   executionModeShortLabel,
@@ -292,7 +293,9 @@ export default function RunView({ runId, onRunComplete }: Props) {
               completionTokens={run?.completion_tokens}
               cacheTokens={run?.cache_tokens}
               costUsd={run?.cost_usd}
-              turnTiming={run?.turn_timing}
+              steps={run?.steps}
+              typicalTiming={run ? aggregateTurnTiming(run.steps) : null}
+              currentTiming={isRunning ? run?.turn_timing : undefined}
             />
           </div>
         </div>
