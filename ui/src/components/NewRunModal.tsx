@@ -77,7 +77,11 @@ export default function NewRunModal({
     websiteId !== NO_WEBSITE ? websiteList.find((w) => w.id === websiteId) : null
 
   useEffect(() => {
-    if (config && !initialValues) setFreshProfile(config.fresh_profile ?? true)
+    if (!config || initialValues) return
+    setFreshProfile(config.fresh_profile ?? true)
+    const globalCdp = config.cdp_url ?? ''
+    setCdpUrl(globalCdp)
+    if (globalCdp.trim()) setAdvancedOpen(true)
   }, [config, initialValues])
 
   useEffect(() => {
