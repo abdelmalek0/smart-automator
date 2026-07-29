@@ -18,7 +18,7 @@
     "model": "openai/gpt-oss-120b",
     "input": 0.15,
     "output": 0.6,
-    "cache_read": 0.0
+    "cache_read": 0.075
   },
   {
     "provider": "groq",
