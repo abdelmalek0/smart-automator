@@ -167,6 +167,7 @@ function reducer(state: StreamState, action: Action): StreamState {
           ...mergeProgress(state.run, action.progress),
           status: action.status as RunDetails['status'],
           summary: action.summary,
+          finished_at: state.run.finished_at ?? Date.now() / 1000,
         },
       }
     case 'REPORT_READY':
@@ -189,6 +190,7 @@ function reducer(state: StreamState, action: Action): StreamState {
           ...state.run,
           status: action.status as RunDetails['status'],
           summary: action.summary,
+          finished_at: state.run.finished_at ?? Date.now() / 1000,
         },
       }
     case 'STATUS':

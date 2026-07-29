@@ -27,6 +27,7 @@ import { cn } from '@/lib/utils'
 import type { RunStatus } from '@/types'
 import {
   aggregateTurnTiming,
+  elapsedSeconds,
   executionModeChipClass,
   executionModeLabel,
   executionModeShortLabel,
@@ -287,7 +288,7 @@ export default function RunView({ runId, onRunComplete }: Props) {
             <RunStats
               stepCount={run?.steps.length}
               status={run?.status}
-              elapsedS={run ? Date.now() / 1000 - run.started_at : undefined}
+              elapsedS={run ? elapsedSeconds(run.started_at, run.finished_at) : undefined}
               tokens={run?.tokens}
               promptTokens={run?.prompt_tokens}
               completionTokens={run?.completion_tokens}
