@@ -78,6 +78,17 @@ export function executionModeChipClass(useReplayScript?: boolean): string {
     : 'bg-warning/15 text-warning border-warning/30'
 }
 
+/** Automatic replay is only valid when a passed training (or automatic run) has a saved script. */
+export function canRunUseAutomatic(run: {
+  has_replay_script?: boolean
+  use_replay_script?: boolean
+  status: RunStatus
+}): boolean {
+  if (!run.has_replay_script) return false
+  if (run.use_replay_script) return true
+  return run.status === 'pass'
+}
+
 export function statusBadgeVariant(
   status: RunStatus,
 ): 'running' | 'success' | 'destructive' | 'warning' | 'secondary' {

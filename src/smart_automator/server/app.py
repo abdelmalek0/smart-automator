@@ -448,7 +448,7 @@ async def create_website_task(
     )
     if not task:
         raise HTTPException(status_code=404, detail="Website not found")
-    return task_to_api_dict(task)
+    return task_to_api_dict(task, user_id=user.id)
 
 
 @app.put("/api/websites/{website_id}/tasks/{task_id}")
@@ -471,7 +471,7 @@ async def update_website_task(
     )
     if not task:
         raise HTTPException(status_code=404, detail="Website or task not found")
-    return task_to_api_dict(task)
+    return task_to_api_dict(task, user_id=user.id)
 
 
 @app.delete("/api/websites/{website_id}/tasks/{task_id}")

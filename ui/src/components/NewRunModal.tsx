@@ -25,6 +25,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
+import { canRunUseAutomatic } from '@/lib/run-status'
 import type { RunDraft } from '@/types'
 
 const NO_PROJECT = '__none__'
@@ -72,7 +73,7 @@ export default function NewRunModal({
     queryFn: () => getRun(sourceRunId!),
     enabled: Boolean(sourceRunId),
   })
-  const canUseAutomatic = Boolean(sourceRunId && sourceRun?.has_replay_script)
+  const canUseAutomatic = Boolean(sourceRunId && sourceRun && canRunUseAutomatic(sourceRun))
   const selectedProject =
     projectId !== NO_PROJECT ? projectList.find((p) => p.id === projectId) : null
 
@@ -94,10 +95,11 @@ export default function NewRunModal({
     setFreshProfile(initialValues.fresh_profile ?? true)
     setMaxSteps(initialValues.max_steps ?? 100)
     setCdpUrl(initialValues.cdp_url ?? '')
-    const wantsAutomatic =
-      initialValues.use_replay_script ?? Boolean(initialValues.source_run_id)
+    const wantsAutomatic = initialValues.use_replay_script ?? false
     if (initialValues.source_run_id && sourceRun === undefined) return
-    setUseReplayScript(wantsAutomatic && Boolean(sourceRun?.has_replay_script))
+    setUseReplayScript(
+      wantsAutomatic && sourceRun ? canRunUseAutomatic(sourceRun) : false,
+    )
   }, [initialValues, sourceRun])
 
   useEffect(() => {

@@ -1,4 +1,9 @@
 import type { Project, RunDraft, RunSummary } from '@/types'
+import { canRunUseAutomatic } from '@/lib/run-status'
+
+function isFailedTrainingRun(run: RunSummary): boolean {
+  return !run.use_replay_script && (run.status === 'fail' || run.status === 'error')
+}
 
 export function runSummaryToDraft(run: RunSummary, projects?: Project[]): RunDraft {
   const base: RunDraft = {
@@ -14,8 +19,17 @@ export function runSummaryToDraft(run: RunSummary, projects?: Project[]): RunDra
   }
 
   let sourceRunId = run.run_id
-  let useReplayScript = true
+  let useReplayScript = false
   let websiteTaskId = run.website_task_id ?? undefined
+
+  if (isFailedTrainingRun(run)) {
+    return {
+      ...base,
+      website_task_id: websiteTaskId,
+      source_run_id: sourceRunId,
+      use_replay_script: false,
+    }
+  }
 
   if (projects && run.website_id && run.website_task_id) {
     const project = projects.find((p) => p.id === run.website_id)
@@ -24,7 +38,11 @@ export function runSummaryToDraft(run: RunSummary, projects?: Project[]): RunDra
       sourceRunId = task.last_trained_run_id
       useReplayScript = true
       websiteTaskId = task.id
+    } else if (canRunUseAutomatic(run)) {
+      useReplayScript = true
     }
+  } else if (canRunUseAutomatic(run)) {
+    useReplayScript = true
   }
 
   return {

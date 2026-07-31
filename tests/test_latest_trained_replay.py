@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from smart_automator.agent.history import AgentStepHistory, AgentStepRecord
 from smart_automator.agent.context import ActionResult
 from smart_automator.server import replay_store
+from smart_automator.server.run_store import save_run_record
 from smart_automator.server.run_state import RunState, add_run
 from smart_automator.server.runner import _set_terminal_status, run_automation
 from smart_automator.storage.websites import WebsiteStore
@@ -39,11 +40,60 @@ def test_website_task_round_trips_trained_replay_fields(client: TestClient) -> N
         [{"index": 1, "action": "wait", "args": {"seconds": 1}}],
         "# script",
     )
+    trained_run = RunState(
+        run_id="trained-run",
+        user_id=user_id,
+        task=task["task"],
+        headless=True,
+        max_steps=5,
+        success_criteria=task["success_criteria"],
+        website_id=website["id"],
+        website_task_id=task["id"],
+    )
+    trained_run.status = "pass"
+    trained_run.finished_at = time.time()
+    add_run(trained_run)
+    trained_run.persist()
 
     refreshed = client.get(f"/api/websites/{website['id']}").json()
     task_data = next(item for item in refreshed["tasks"] if item["id"] == task["id"])
     assert task_data["last_trained_run_id"] == "trained-run"
     assert task_data["has_trained_replay"] is True
+
+
+def test_failed_training_replay_does_not_count_as_trained(client: TestClient) -> None:
+    website, task = _create_website_with_task(client)
+    user_id = client.get("/api/auth/me").json()["user"]["id"]
+    failed_run_id = "failed-trained-run"
+    WebsiteStore(user_id).update_task(
+        website["id"],
+        task["id"],
+        last_trained_run_id=failed_run_id,
+    )
+    replay_store.save_run_replay(
+        failed_run_id,
+        [{"index": 1, "action": "wait", "args": {"seconds": 1}}],
+        "# script",
+    )
+    failed_run = RunState(
+        run_id=failed_run_id,
+        user_id=user_id,
+        task=task["task"],
+        headless=True,
+        max_steps=5,
+        success_criteria=task["success_criteria"],
+        website_id=website["id"],
+        website_task_id=task["id"],
+    )
+    failed_run.status = "fail"
+    failed_run.finished_at = time.time()
+    add_run(failed_run)
+    failed_run.persist()
+
+    refreshed = client.get(f"/api/websites/{website['id']}").json()
+    task_data = next(item for item in refreshed["tasks"] if item["id"] == task["id"])
+    assert task_data["last_trained_run_id"] == failed_run_id
+    assert task_data["has_trained_replay"] is False
 
 
 def test_start_run_with_website_task_id(client: TestClient) -> None:
@@ -210,6 +260,16 @@ def test_pass_training_updates_task_pointer(client: TestClient) -> None:
         browser_context_cls.return_value.new_page = MagicMock()
         browser_context_cls.return_value.close = MagicMock()
         run_automation(run)
+        save_run_record(
+            user_id,
+            run.run_id,
+            {
+                "run_id": run.run_id,
+                "user_id": user_id,
+                "status": "pass",
+                "use_replay_script": False,
+            },
+        )
 
     refreshed = client.get(f"/api/websites/{website['id']}").json()
     task_data = next(item for item in refreshed["tasks"] if item["id"] == task["id"])

@@ -329,14 +329,23 @@ class WebsiteStore:
         return False
 
 
-def task_to_api_dict(task: WebsiteTask) -> dict[str, Any]:
+def task_to_api_dict(task: WebsiteTask, *, user_id: str) -> dict[str, Any]:
     from ..server.replay_store import has_replay_script
+    from ..server.run_store import load_run_record
 
     data = task.to_dict()
     last_id = task.last_trained_run_id
+    has_trained = False
     if last_id:
         data["last_trained_run_id"] = last_id
-    data["has_trained_replay"] = bool(last_id and has_replay_script(last_id))
+        if has_replay_script(last_id):
+            record = load_run_record(user_id, last_id)
+            has_trained = bool(
+                record
+                and record.get("status") == "pass"
+                and not record.get("use_replay_script", False)
+            )
+    data["has_trained_replay"] = has_trained
     return data
 
 
@@ -346,6 +355,6 @@ def website_to_api_dict(website: Website) -> dict[str, Any]:
         "name": website.name,
         "url": website.url,
         "context_prompt": website.context_prompt,
-        "tasks": [task_to_api_dict(t) for t in website.tasks],
+        "tasks": [task_to_api_dict(t, user_id=website.user_id) for t in website.tasks],
         "user_id": website.user_id,
     }

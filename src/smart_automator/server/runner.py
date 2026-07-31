@@ -18,7 +18,7 @@ from ..main import create_llm
 from .config_service import config_for_run
 from .history_store import save_run_history
 from .paths import REPORT_DIR, SCREENSHOT_DIR
-from .replay_store import has_replay_script, load_run_replay, save_run_replay
+from .replay_store import has_replay_script, load_run_replay, save_run_replay, delete_run_replay
 from ..storage.websites import WebsiteStore
 from .step_mapper import (
     build_step_start,
@@ -481,6 +481,15 @@ def run_automation(run: RunState) -> None:
                             run.run_id[:8],
                             exc,
                         )
+            elif not run.use_replay_script:
+                try:
+                    delete_run_replay(run.run_id)
+                except Exception as exc:
+                    log.warning(
+                        "[run:%s] stale replay cleanup failed: %s",
+                        run.run_id[:8],
+                        exc,
+                    )
             _generate_report(run, executor, config)
         run.executor = None
         if executor is not None:
