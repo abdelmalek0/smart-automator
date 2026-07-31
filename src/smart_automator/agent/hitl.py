@@ -370,11 +370,13 @@ class HumanActionRecorder:
         return ""
 
     def _element_from_payload(self, payload: dict[str, Any]) -> DOMHistoryElement:
+        accessible_name = self._element_label(payload) or None
         element = DOMHistoryElement(
             tag_name=payload.get("tagName", ""),
             xpath=payload.get("xpath", ""),
             highlight_index=None,
             attributes=dict(payload.get("attributes") or {}),
+            accessible_name=accessible_name,
         )
         css_selector = enhanced_css_selector_for_history_element(element)
         if css_selector:

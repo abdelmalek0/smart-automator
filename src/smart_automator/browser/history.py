@@ -22,9 +22,10 @@ class DOMHistoryElement:
     attributes: dict[str, str] = field(default_factory=dict)
     shadow_root: bool = False
     css_selector: str | None = None
+    accessible_name: str | None = None
 
     def to_dict(self) -> dict:
-        return {
+        payload = {
             "tagName": self.tag_name,
             "xpath": self.xpath,
             "highlightIndex": self.highlight_index,
@@ -33,6 +34,9 @@ class DOMHistoryElement:
             "shadowRoot": self.shadow_root,
             "cssSelector": self.css_selector,
         }
+        if self.accessible_name:
+            payload["accessibleName"] = self.accessible_name
+        return payload
 
     @classmethod
     def from_dict(cls, data: dict) -> DOMHistoryElement:
@@ -46,6 +50,7 @@ class DOMHistoryElement:
             attributes=data.get("attributes", {}),
             shadow_root=data.get("shadowRoot", data.get("shadow_root", False)),
             css_selector=data.get("cssSelector", data.get("css_selector")),
+            accessible_name=data.get("accessibleName", data.get("accessible_name")),
         )
 
 
@@ -83,6 +88,7 @@ def hash_dom_history_element(dom_history_element: DOMHistoryElement) -> HashedDo
 
 
 def convert_dom_element_to_history_element(dom_element: DOMElementNode) -> DOMHistoryElement:
+    accessible_name = dom_element.get_all_text_till_next_clickable_element().strip() or None
     return DOMHistoryElement(
         tag_name=dom_element.tag_name,
         xpath=dom_element.xpath,
@@ -91,6 +97,7 @@ def convert_dom_element_to_history_element(dom_element: DOMElementNode) -> DOMHi
         attributes=dict(dom_element.attributes),
         shadow_root=dom_element.shadow_root,
         css_selector=dom_element.enhanced_css_selector_for_element(),
+        accessible_name=accessible_name,
     )
 
 

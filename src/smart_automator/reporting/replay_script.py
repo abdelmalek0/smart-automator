@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from playwright.sync_api import Locator, Page as PlaywrightPage
+
 _FLUTTER_ID_IN_CSS = re.compile(r'\[id="flt-semantic-node-\d+"\]')
 
 DOM_ACTIONS = frozenset({
@@ -21,20 +23,36 @@ DOM_ACTIONS = frozenset({
 NON_REPLAYABLE = frozenset({"done", "cache_content"})
 
 
+def _element_accessible_name(element: dict[str, Any] | None) -> str | None:
+    if not element:
+        return None
+    raw = element.get("accessibleName", element.get("accessible_name"))
+    if raw is None:
+        return None
+    name = str(raw).strip()
+    return name or None
+
+
 def _format_element_label(element: dict[str, Any] | None) -> str | None:
     if not element:
         return None
     tag = element.get("tagName") or element.get("tag_name") or "element"
     attrs = element.get("attributes") or {}
-    if attrs.get("id"):
-        return f"<{tag}#{attrs['id']}>"
     for key in ("aria-label", "name", "placeholder", "type"):
         value = attrs.get(key)
         if value:
             return f'<{tag} {key}="{value}">'
+    accessible_name = _element_accessible_name(element)
+    if accessible_name:
+        return f"<{tag} ({accessible_name[:40]})>"
+    element_id = attrs.get("id")
+    if element_id and not _is_unstable_flutter_id(element_id):
+        return f"<{tag}#{element_id}>"
     text_hint = attrs.get("value") or attrs.get("title")
     if text_hint:
         return f"<{tag} ({text_hint[:40]})>"
+    if element_id:
+        return f"<{tag}#{element_id}>"
     return f"<{tag}>"
 
 
@@ -119,14 +137,21 @@ def _normalize_xpath(xpath: str) -> str:
     return xpath_target
 
 
-def _playwright_locator(step: dict[str, Any]) -> str:
+def _replay_locator_candidates(step: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     args = step.get("args") or {}
     attrs = _element_attrs(step)
+    element = step.get("element") or {}
+    candidates: list[tuple[str, dict[str, Any]]] = []
 
     if label := attrs.get("aria-label"):
-        return f'page.get_by_label({label!r})'
+        candidates.append(("label", {"label": label}))
     if placeholder := attrs.get("placeholder"):
-        return f'page.get_by_placeholder({placeholder!r})'
+        candidates.append(("placeholder", {"placeholder": placeholder}))
+
+    role = attrs.get("role")
+    accessible_name = _element_accessible_name(element)
+    if role and accessible_name:
+        candidates.append(("role", {"role": role, "name": accessible_name}))
 
     element_id = attrs.get("id")
     css = args.get("css_selector")
@@ -134,22 +159,88 @@ def _playwright_locator(step: dict[str, Any]) -> str:
 
     if element_id and _is_unstable_flutter_id(element_id):
         if css:
-            return f"page.locator({_sanitize_css_for_flutter(css)!r})"
+            candidates.append(("css", {"selector": _sanitize_css_for_flutter(css)}))
         if xpath:
-            return f"page.locator({_normalize_xpath(xpath)!r})"
+            candidates.append(("xpath", {"xpath": _normalize_xpath(xpath)}))
     elif element_id:
-        return f'page.locator({("#" + element_id)!r})'
+        candidates.append(("css", {"selector": f"#{element_id}"}))
 
-    if css:
-        return f"page.locator({css!r})"
-    if xpath:
-        return f"page.locator({_normalize_xpath(xpath)!r})"
-    if text := args.get("text"):
-        if step.get("action") == "scroll_to_text":
-            return f'page.get_by_text({text!r})'
+    if css and not any(kind == "css" for kind, _ in candidates):
+        candidates.append(("css", {"selector": css}))
+    if xpath and not any(kind == "xpath" for kind, _ in candidates):
+        candidates.append(("xpath", {"xpath": _normalize_xpath(xpath)}))
+    if (text := args.get("text")) and step.get("action") == "scroll_to_text":
+        candidates.append(("text", {"text": text}))
     if index := args.get("index"):
-        return f"page.locator({f'[data-sa-index=\"{index}\"]'!r})  # unstable highlight index"
+        candidates.append(("index", {"index": index}))
+
+    return candidates
+
+
+def _apply_replay_locator(page: PlaywrightPage, kind: str, params: dict[str, Any]) -> Locator:
+    if kind == "label":
+        return page.get_by_label(params["label"], exact=True)
+    if kind == "placeholder":
+        return page.get_by_placeholder(params["placeholder"], exact=True)
+    if kind == "role":
+        return page.get_by_role(params["role"], name=params["name"], exact=True)
+    if kind == "css":
+        return page.locator(params["selector"])
+    if kind == "xpath":
+        return page.locator(params["xpath"])
+    if kind == "text":
+        return page.get_by_text(params["text"], exact=True)
+    if kind == "index":
+        return page.locator(f'[data-sa-index="{params["index"]}"]')
+    return page.locator("body")
+
+
+def resolve_replay_locator(page: PlaywrightPage, step: dict[str, Any]) -> Locator:
+    candidates = _replay_locator_candidates(step)
+    if not candidates:
+        return page.locator("body")
+
+    last_locator: Locator | None = None
+    for kind, params in candidates:
+        locator = _apply_replay_locator(page, kind, params)
+        last_locator = locator
+        try:
+            if locator.count() == 1:
+                return locator
+        except Exception:
+            continue
+
+    return last_locator if last_locator is not None else page.locator("body")
+
+
+def _format_replay_locator_expr(kind: str, params: dict[str, Any]) -> str:
+    if kind == "label":
+        return f'page.get_by_label({params["label"]!r}, exact=True)'
+    if kind == "placeholder":
+        return f'page.get_by_placeholder({params["placeholder"]!r}, exact=True)'
+    if kind == "role":
+        return (
+            f'page.get_by_role({params["role"]!r}, name={params["name"]!r}, exact=True)'
+        )
+    if kind == "css":
+        return f"page.locator({params['selector']!r})"
+    if kind == "xpath":
+        return f"page.locator({_normalize_xpath(params['xpath'])!r})"
+    if kind == "text":
+        return f'page.get_by_text({params["text"]!r}, exact=True)'
+    if kind == "index":
+        index = params["index"]
+        selector = f'[data-sa-index="{index}"]'
+        return f"page.locator({selector!r})  # unstable highlight index"
     return "page.locator('body')  # fallback — no stable locator captured"
+
+
+def _playwright_locator(step: dict[str, Any]) -> str:
+    candidates = _replay_locator_candidates(step)
+    if not candidates:
+        return "page.locator('body')  # fallback — no stable locator captured"
+    kind, params = candidates[0]
+    return _format_replay_locator_expr(kind, params)
 
 
 def _playwright_keyboard_key(keys: str) -> str:

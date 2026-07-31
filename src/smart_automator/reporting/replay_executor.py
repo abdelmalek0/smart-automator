@@ -7,13 +7,7 @@ from playwright.sync_api import Locator, Page as PlaywrightPage
 
 from ..agent.context import ActionResult
 from ..browser.context import BrowserContext
-from .replay_script import (
-    _element_attrs,
-    _is_unstable_flutter_id,
-    _normalize_xpath,
-    _playwright_keyboard_key,
-    _sanitize_css_for_flutter,
-)
+from .replay_script import _playwright_keyboard_key, resolve_replay_locator
 
 _INTERACTIVE_ACTIONS = frozenset({
     "click_element",
@@ -27,35 +21,7 @@ def _needs_settle_wait(step: dict[str, Any]) -> bool:
 
 
 def _resolve_locator(page: PlaywrightPage, step: dict[str, Any]) -> Locator:
-    args = step.get("args") or {}
-    attrs = _element_attrs(step)
-
-    if label := attrs.get("aria-label"):
-        return page.get_by_label(label)
-    if placeholder := attrs.get("placeholder"):
-        return page.get_by_placeholder(placeholder)
-
-    element_id = attrs.get("id")
-    css = args.get("css_selector")
-    xpath = args.get("xpath")
-
-    if element_id and _is_unstable_flutter_id(element_id):
-        if css:
-            return page.locator(_sanitize_css_for_flutter(css))
-        if xpath:
-            return page.locator(_normalize_xpath(xpath))
-    elif element_id:
-        return page.locator(f"#{element_id}")
-
-    if css:
-        return page.locator(css)
-    if xpath:
-        return page.locator(_normalize_xpath(xpath))
-    if text := args.get("text") and step.get("action") == "scroll_to_text":
-        return page.get_by_text(text)
-    if index := args.get("index"):
-        return page.locator(f'[data-sa-index="{index}"]')
-    return page.locator("body")
+    return resolve_replay_locator(page, step)
 
 
 def _uses_element_locator(step: dict[str, Any]) -> bool:

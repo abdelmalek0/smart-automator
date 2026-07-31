@@ -8,9 +8,10 @@ from unittest.mock import MagicMock, patch
 from smart_automator.actions.schemas import Action
 from smart_automator.agent.context import ActionResult, AgentContext, AgentOptions
 from smart_automator.agent.history import AgentStepRecord, BrowserStateHistory
-from smart_automator.browser.dom import DOMElementNode
+from smart_automator.browser.dom import DOMElementNode, DOMTextNode
 from smart_automator.browser.history import (
     DOMHistoryElement,
+    convert_dom_element_to_history_element,
     find_element_by_id_in_tree,
     find_element_by_xpath_in_tree,
     resolve_history_element_in_tree,
@@ -20,6 +21,23 @@ from smart_automator.reporting.replay_script import build_replay_action_args
 
 
 class TestBuildReplayActionArgs(unittest.TestCase):
+    def test_history_element_stores_accessible_name(self):
+        button = DOMElementNode(
+            tag_name="flt-semantics",
+            xpath="html/body/flt-semantics",
+            attributes={"id": "flt-semantic-node-8", "role": "button"},
+            highlight_index=2,
+        )
+        child = DOMElementNode(tag_name="span", xpath="html/body/flt-semantics/span")
+        child.parent = button
+        button.children = [child]
+        child.children = [DOMTextNode(text="Continue")]
+
+        history = convert_dom_element_to_history_element(button)
+
+        self.assertEqual(history.accessible_name, "Continue")
+        self.assertEqual(history.to_dict()["accessibleName"], "Continue")
+
     def test_injects_xpath_and_drops_index(self):
         element = {
             "xpath": "html/body/input[1]",

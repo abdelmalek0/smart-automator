@@ -432,7 +432,7 @@ class TestReportBuilder(unittest.TestCase):
         self.assertIn("from playwright.sync_api import sync_playwright", script)
         self.assertIn("# Excluded: 1 errored, 1 done", script)
         self.assertIn("page.goto('https://example.com/login')", script)
-        self.assertIn("page.get_by_label('Email').fill('user@example.com')", script)
+        self.assertIn("page.get_by_label('Email', exact=True).fill('user@example.com')", script)
         self.assertIn("page.locator('#submit').click()", script)
         self.assertIn('if __name__ == "__main__":', script)
 
