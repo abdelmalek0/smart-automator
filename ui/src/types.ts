@@ -22,6 +22,7 @@ export interface RunDraft {
   task: string
   success_criteria: string
   website_id?: string
+  website_task_id?: string
   headless?: boolean
   max_steps?: number
   cdp_url?: string
@@ -45,6 +46,7 @@ export interface RunSummary {
   use_replay_script?: boolean
   has_replay_script?: boolean
   website_id?: string | null
+  website_task_id?: string | null
   headless?: boolean
   max_steps?: number
   cdp_url?: string | null
@@ -138,6 +140,8 @@ export interface ProjectTask {
   max_steps: number
   cdp_url?: string
   fresh_profile?: boolean
+  last_trained_run_id?: string | null
+  has_trained_replay?: boolean
 }
 
 export interface Project {

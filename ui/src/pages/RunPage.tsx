@@ -14,6 +14,7 @@ export default function RunPage() {
       runId={runId}
       onRunComplete={() => {
         queryClient.invalidateQueries({ queryKey: ['runs'] })
+        queryClient.invalidateQueries({ queryKey: ['projects'] })
       }}
     />
   )

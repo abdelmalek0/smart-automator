@@ -44,7 +44,7 @@ import {
   statusLabel,
 } from '@/lib/run-status'
 import { cn } from '@/lib/utils'
-import type { RunStatus, RunSummary } from '@/types'
+import type { Project, RunStatus, RunSummary } from '@/types'
 
 interface Props {
   runs: RunSummary[]
@@ -53,6 +53,7 @@ interface Props {
   limit?: number
   emptyMessage?: string
   projectNames?: Record<string, string>
+  projects?: Project[]
 }
 
 function StatusDot({ status }: { status: RunStatus }) {
@@ -93,10 +94,11 @@ function MetaSep() {
 
 interface RunActionsProps {
   run: RunSummary
+  projects?: Project[]
   onDelete: (run: RunSummary) => void
 }
 
-function RunActions({ run, onDelete }: RunActionsProps) {
+function RunActions({ run, projects, onDelete }: RunActionsProps) {
   const { openNewRun } = useRunModal()
 
   return (
@@ -119,7 +121,7 @@ function RunActions({ run, onDelete }: RunActionsProps) {
         <DropdownMenuItem
           onClick={(e) => {
             e.stopPropagation()
-            openNewRun(runSummaryToDraft(run))
+            openNewRun(runSummaryToDraft(run, projects))
           }}
         >
           <RotateCcw className="h-3.5 w-3.5" />
@@ -146,10 +148,11 @@ interface RunRowProps {
   indented?: boolean
   label?: string
   roomy?: boolean
+  projects?: Project[]
   onDelete: (run: RunSummary) => void
 }
 
-function RunRow({ run, active, indented = false, label, roomy = false, onDelete }: RunRowProps) {
+function RunRow({ run, active, indented = false, label, roomy = false, projects, onDelete }: RunRowProps) {
   const title = label ?? (run.name || run.task)
   const showModeChip = !label
 
@@ -191,7 +194,7 @@ function RunRow({ run, active, indented = false, label, roomy = false, onDelete 
         </div>
       </Link>
       <div className="absolute right-0.5 top-1/2 -translate-y-1/2">
-        <RunActions run={run} onDelete={onDelete} />
+        <RunActions run={run} projects={projects} onDelete={onDelete} />
       </div>
     </div>
   )
@@ -288,6 +291,7 @@ interface TestGroupBlockProps {
   onToggle: () => void
   onDelete: (run: RunSummary) => void
   roomy?: boolean
+  projects?: Project[]
 }
 
 function TestGroupBlock({
@@ -297,6 +301,7 @@ function TestGroupBlock({
   onToggle,
   onDelete,
   roomy = false,
+  projects,
 }: TestGroupBlockProps) {
   return (
     <div className="space-y-px">
@@ -317,6 +322,7 @@ function TestGroupBlock({
               indented
               label={testRunLabel(run, test)}
               roomy={roomy}
+              projects={projects}
               onDelete={onDelete}
             />
           ))}
@@ -336,6 +342,7 @@ interface ProjectThreadBlockProps {
   onDelete: (run: RunSummary) => void
   projectNames: Record<string, string>
   roomy?: boolean
+  projects?: Project[]
 }
 
 function ProjectThreadBlock({
@@ -348,6 +355,7 @@ function ProjectThreadBlock({
   onDelete,
   projectNames,
   roomy = false,
+  projects,
 }: ProjectThreadBlockProps) {
   const testGroups = thread.testGroups ?? []
 
@@ -370,6 +378,7 @@ function ProjectThreadBlock({
               onToggle={() => onToggleTest(test.id)}
               onDelete={onDelete}
               roomy={roomy}
+              projects={projects}
             />
           ))}
         </div>
@@ -386,6 +395,7 @@ interface ChainThreadBlockProps {
   onDelete: (run: RunSummary) => void
   projectNames: Record<string, string>
   roomy?: boolean
+  projects?: Project[]
 }
 
 function ChainThreadBlock({
@@ -396,6 +406,7 @@ function ChainThreadBlock({
   onDelete,
   projectNames,
   roomy = false,
+  projects,
 }: ChainThreadBlockProps) {
   return (
     <div className="space-y-px">
@@ -415,6 +426,7 @@ function ChainThreadBlock({
               indented
               label={threadRunLabel(run, thread)}
               roomy={roomy}
+              projects={projects}
               onDelete={onDelete}
             />
           ))}
@@ -431,6 +443,7 @@ export default function RunThreadList({
   limit,
   emptyMessage = 'No runs yet',
   projectNames = {},
+  projects = [],
 }: Props) {
   const threads = useMemo(() => buildRunThreads(runs), [runs])
   const visibleThreads = useMemo(() => {
@@ -520,6 +533,7 @@ export default function RunThreadList({
                 run={run}
                 active={activeRunId === run.run_id}
                 roomy={roomy}
+                projects={projects}
                 onDelete={setDeleteTarget}
               />
             )
@@ -538,6 +552,7 @@ export default function RunThreadList({
                 onDelete={setDeleteTarget}
                 projectNames={projectNames}
                 roomy={roomy}
+                projects={projects}
               />
             )
           }
@@ -552,6 +567,7 @@ export default function RunThreadList({
               onDelete={setDeleteTarget}
               projectNames={projectNames}
               roomy={roomy}
+              projects={projects}
             />
           )
         })}

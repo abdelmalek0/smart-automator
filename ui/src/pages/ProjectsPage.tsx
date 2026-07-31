@@ -38,6 +38,7 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { cn } from '@/lib/utils'
+import { executionModeChipClass } from '@/lib/run-status'
 
 export default function ProjectsPage() {
   const navigate = useNavigate()
@@ -69,6 +70,7 @@ export default function ProjectsPage() {
   async function handleRunTask(project: Project, task: ProjectTask) {
     setRunningId(task.id)
     try {
+      const canAutomatic = Boolean(task.has_trained_replay && task.last_trained_run_id)
       const run = await startRun({
         name: task.name ?? undefined,
         task: task.task,
@@ -78,8 +80,16 @@ export default function ProjectsPage() {
         cdp_url: task.cdp_url,
         fresh_profile: task.fresh_profile ?? true,
         website_id: project.id,
+        website_task_id: task.id,
+        ...(canAutomatic
+          ? {
+              source_run_id: task.last_trained_run_id!,
+              use_replay_script: true,
+            }
+          : { use_replay_script: false }),
       })
       await queryClient.invalidateQueries({ queryKey: ['runs'] })
+      await queryClient.invalidateQueries({ queryKey: ['projects'] })
       navigate(`/runs/${run.run_id}`)
     } finally {
       setRunningId(null)
@@ -297,9 +307,22 @@ export default function ProjectsPage() {
                             )}
                           >
                             <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium leading-snug line-clamp-1">
-                                {task.name || 'Untitled test'}
-                              </p>
+                              <div className="flex items-center gap-2 min-w-0">
+                                <p className="text-sm font-medium leading-snug line-clamp-1 truncate">
+                                  {task.name || 'Untitled test'}
+                                </p>
+                                {task.has_trained_replay && (
+                                  <span
+                                    title="Successful training saved"
+                                    className={cn(
+                                      'inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[10px] font-medium',
+                                      executionModeChipClass(true),
+                                    )}
+                                  >
+                                    Trained
+                                  </span>
+                                )}
+                              </div>
                               <p className="text-sm leading-snug line-clamp-2 text-muted-foreground mt-0.5">
                                 {task.task}
                               </p>

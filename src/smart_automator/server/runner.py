@@ -19,7 +19,7 @@ from .config_service import config_for_run
 from .history_store import save_run_history
 from .paths import REPORT_DIR, SCREENSHOT_DIR
 from .replay_store import has_replay_script, load_run_replay, save_run_replay
-from .run_state import RunState
+from ..storage.websites import WebsiteStore
 from .step_mapper import (
     build_step_start,
     history_item_to_step,
@@ -459,10 +459,28 @@ def run_automation(run: RunState) -> None:
                 save_run_history(run.run_id, executor.context.history)
             except Exception as exc:
                 log.warning("[run:%s] history save failed: %s", run.run_id[:8], exc)
-            try:
-                _save_run_replay_data(run, executor)
-            except Exception as exc:
-                log.warning("[run:%s] replay save failed: %s", run.run_id[:8], exc)
+            if not run.use_replay_script and run.status == "pass":
+                try:
+                    _save_run_replay_data(run, executor)
+                except Exception as exc:
+                    log.warning("[run:%s] replay save failed: %s", run.run_id[:8], exc)
+                if (
+                    run.website_id
+                    and run.website_task_id
+                    and has_replay_script(run.run_id)
+                ):
+                    try:
+                        WebsiteStore(run.user_id).update_task(
+                            run.website_id,
+                            run.website_task_id,
+                            last_trained_run_id=run.run_id,
+                        )
+                    except Exception as exc:
+                        log.warning(
+                            "[run:%s] task replay pointer update failed: %s",
+                            run.run_id[:8],
+                            exc,
+                        )
             _generate_report(run, executor, config)
         run.executor = None
         if executor is not None:

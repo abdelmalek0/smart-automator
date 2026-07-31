@@ -59,6 +59,7 @@ export default function Sidebar({ runs, activeRunId }: Props) {
             activeRunId={activeRunId}
             variant="sidebar"
             projectNames={projectNames}
+            projects={projects}
           />
         </div>
       </ScrollArea>

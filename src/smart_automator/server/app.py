@@ -22,7 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from ..storage.websites import WebsiteStore
+from ..storage.websites import WebsiteStore, task_to_api_dict, website_to_api_dict
 from ..browser.chrome_profiles import discover_chrome_profiles
 from .auth import auth_router, get_current_user
 from .auth.dependencies import SESSION_COOKIE_NAME, resolve_user_from_session
@@ -172,10 +172,23 @@ async def start_run(req: StartRunRequest, user: User = Depends(get_current_user)
     test_name = req.name.strip() if req.name else None
     effective_task = display_task
     website_id = req.website_id
-    if website_id:
+    website_task_id = req.website_task_id
+    if website_task_id:
+        if not website_id:
+            raise HTTPException(
+                status_code=400,
+                detail="website_id is required when website_task_id is set",
+            )
         website = _websites(user).get_website(website_id)
         if not website:
             raise HTTPException(status_code=404, detail="Website not found")
+        if not any(task.id == website_task_id for task in website.tasks):
+            raise HTTPException(status_code=404, detail="Website task not found")
+    elif website_id:
+        website = _websites(user).get_website(website_id)
+        if not website:
+            raise HTTPException(status_code=404, detail="Website not found")
+    if website_id:
         effective_task = compose_agent_task(
             display_task,
             name=website.name,
@@ -206,6 +219,7 @@ async def start_run(req: StartRunRequest, user: User = Depends(get_current_user)
         name=test_name,
         source_run_id=source_run_id,
         use_replay_script=req.use_replay_script,
+        website_task_id=website_task_id,
     )
     run._loop = asyncio.get_event_loop()
     add_run(run)
@@ -298,6 +312,7 @@ async def cancel_run(run_id: str, purge: bool = False, user: User = Depends(get_
     if purge:
         report_path = run.report_path
         _cancel_active_run(run)
+        _websites(user).clear_last_trained_run_id(run_id)
         delete_run_for_user(user.id, run_id)
         _purge_run_artifacts(run_id, report_path=report_path)
         log.info("DELETE /api/runs/%s — purged", run_id[:8])
@@ -368,7 +383,7 @@ async def _safe_ws_send_json(websocket: WebSocket, payload: dict) -> bool:
 
 @app.get("/api/websites")
 async def api_list_websites(user: User = Depends(get_current_user)):
-    return [website.to_dict() for website in _websites(user).list_websites()]
+    return [website_to_api_dict(website) for website in _websites(user).list_websites()]
 
 
 @app.post("/api/websites", status_code=201)
@@ -376,7 +391,7 @@ async def create_website(req: WebsiteCreateRequest, user: User = Depends(get_cur
     if not req.name.strip():
         raise HTTPException(status_code=400, detail="Name is required")
     website = _websites(user).create_website(req.name, req.url, req.context_prompt)
-    return website.to_dict()
+    return website_to_api_dict(website)
 
 
 @app.get("/api/websites/{website_id}")
@@ -384,7 +399,7 @@ async def api_get_website(website_id: str, user: User = Depends(get_current_user
     website = _websites(user).get_website(website_id)
     if not website:
         raise HTTPException(status_code=404, detail="Website not found")
-    return website.to_dict()
+    return website_to_api_dict(website)
 
 
 @app.put("/api/websites/{website_id}")
@@ -401,7 +416,7 @@ async def update_website(
     )
     if not website:
         raise HTTPException(status_code=404, detail="Website not found")
-    return website.to_dict()
+    return website_to_api_dict(website)
 
 
 @app.delete("/api/websites/{website_id}")
@@ -433,7 +448,7 @@ async def create_website_task(
     )
     if not task:
         raise HTTPException(status_code=404, detail="Website not found")
-    return task.to_dict()
+    return task_to_api_dict(task)
 
 
 @app.put("/api/websites/{website_id}/tasks/{task_id}")
@@ -456,7 +471,7 @@ async def update_website_task(
     )
     if not task:
         raise HTTPException(status_code=404, detail="Website or task not found")
-    return task.to_dict()
+    return task_to_api_dict(task)
 
 
 @app.delete("/api/websites/{website_id}/tasks/{task_id}")

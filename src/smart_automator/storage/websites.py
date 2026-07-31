@@ -35,15 +35,19 @@ class WebsiteTask:
     max_steps: int = 100
     cdp_url: str | None = None
     fresh_profile: bool = True
+    last_trained_run_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         if data.get("name") is None:
             data.pop("name", None)
+        if data.get("last_trained_run_id") is None:
+            data.pop("last_trained_run_id", None)
         return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> WebsiteTask:
+        last_trained = data.get("last_trained_run_id")
         return cls(
             id=str(data["id"]),
             task=str(data["task"]),
@@ -53,6 +57,7 @@ class WebsiteTask:
             max_steps=int(data.get("max_steps", 100)),
             cdp_url=data.get("cdp_url") or None,
             fresh_profile=bool(data.get("fresh_profile", True)),
+            last_trained_run_id=str(last_trained) if last_trained else None,
         )
 
 
@@ -282,9 +287,29 @@ class WebsiteStore:
                         task_data["cdp_url"] = fields["cdp_url"] or None
                     if "fresh_profile" in fields and fields["fresh_profile"] is not None:
                         task_data["fresh_profile"] = bool(fields["fresh_profile"])
+                    if "last_trained_run_id" in fields:
+                        last_trained = fields["last_trained_run_id"]
+                        task_data["last_trained_run_id"] = (
+                            str(last_trained).strip() if last_trained else None
+                        )
                     self._save_raw(raw)
                     return WebsiteTask.from_dict(task_data)
         return None
+
+    def clear_last_trained_run_id(self, run_id: str) -> None:
+        """Clear last_trained_run_id on any task that points to run_id."""
+        with self._lock:
+            raw = self._load_raw()
+            changed = False
+            for item in raw:
+                if item.get("user_id") and item.get("user_id") != self._user_id:
+                    continue
+                for task_data in item.get("tasks", []):
+                    if task_data.get("last_trained_run_id") == run_id:
+                        task_data["last_trained_run_id"] = None
+                        changed = True
+            if changed:
+                self._save_raw(raw)
 
     def delete_task(self, website_id: str, task_id: str) -> bool:
         with self._lock:
@@ -302,3 +327,25 @@ class WebsiteStore:
                 self._save_raw(raw)
                 return True
         return False
+
+
+def task_to_api_dict(task: WebsiteTask) -> dict[str, Any]:
+    from ..server.replay_store import has_replay_script
+
+    data = task.to_dict()
+    last_id = task.last_trained_run_id
+    if last_id:
+        data["last_trained_run_id"] = last_id
+    data["has_trained_replay"] = bool(last_id and has_replay_script(last_id))
+    return data
+
+
+def website_to_api_dict(website: Website) -> dict[str, Any]:
+    return {
+        "id": website.id,
+        "name": website.name,
+        "url": website.url,
+        "context_prompt": website.context_prompt,
+        "tasks": [task_to_api_dict(t) for t in website.tasks],
+        "user_id": website.user_id,
+    }

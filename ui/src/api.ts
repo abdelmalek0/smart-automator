@@ -104,6 +104,7 @@ export async function startRun(payload: {
   cdp_url?: string
   fresh_profile?: boolean
   website_id?: string
+  website_task_id?: string
   source_run_id?: string
   use_replay_script?: boolean
 }): Promise<RunSummary> {

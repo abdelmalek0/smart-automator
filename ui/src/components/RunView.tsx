@@ -95,6 +95,7 @@ export default function RunView({ runId, onRunComplete }: Props) {
     if (closed || isTerminal) {
       onRunComplete?.()
       queryClient.invalidateQueries({ queryKey: ['runs'] })
+      queryClient.invalidateQueries({ queryKey: ['projects'] })
     }
   }, [closed, run?.status, onRunComplete, queryClient])
 
@@ -118,6 +119,7 @@ export default function RunView({ runId, onRunComplete }: Props) {
     try {
       await cancelRun(runId)
       queryClient.invalidateQueries({ queryKey: ['runs'] })
+      queryClient.invalidateQueries({ queryKey: ['projects'] })
     } catch {
       // ignore
     }
@@ -266,7 +268,7 @@ export default function RunView({ runId, onRunComplete }: Props) {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => openNewRun(runSummaryToDraft(run))}
+              onClick={() => openNewRun(runSummaryToDraft(run, projects))}
             >
               <RotateCcw className="h-3.5 w-3.5" />
               Re-run

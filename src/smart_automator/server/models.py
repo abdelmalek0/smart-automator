@@ -26,6 +26,7 @@ class StartRunRequest(BaseModel):
     cdp_url: Optional[str] = None
     fresh_profile: bool = True
     website_id: Optional[str] = None
+    website_task_id: Optional[str] = None
     source_run_id: Optional[str] = None
     use_replay_script: bool = False
 

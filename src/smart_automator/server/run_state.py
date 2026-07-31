@@ -29,6 +29,7 @@ class RunState:
         name: Optional[str] = None,
         source_run_id: Optional[str] = None,
         use_replay_script: bool = False,
+        website_task_id: Optional[str] = None,
     ):
         self.run_id = run_id
         self.user_id = user_id
@@ -38,6 +39,7 @@ class RunState:
         self.source_run_id = source_run_id
         self.use_replay_script = use_replay_script
         self.website_id = website_id
+        self.website_task_id = website_task_id
         self.effective_task = effective_task or task
         self.headless = headless
         self.max_steps = max_steps
@@ -98,6 +100,7 @@ class RunState:
             "use_replay_script": self.use_replay_script,
             "has_replay_script": has_replay_script,
             "website_id": self.website_id,
+            "website_task_id": self.website_task_id,
             "headless": self.headless,
             "max_steps": self.max_steps,
             "cdp_url": self.cdp_url,
@@ -155,6 +158,7 @@ class RunState:
             name=data.get("name"),
             source_run_id=data.get("source_run_id"),
             use_replay_script=bool(data.get("use_replay_script", False)),
+            website_task_id=data.get("website_task_id"),
         )
         run.criteria_verdict = dict(data.get("criteria_verdict") or {})
         run.status = str(data.get("status", "pending"))

@@ -121,6 +121,7 @@ export default function NewRunModal({
     setError(null)
     try {
       let runProjectId = projectId !== NO_PROJECT ? projectId : undefined
+      let websiteTaskId = initialValues?.website_task_id
 
       const useAutomatic = canUseAutomatic && useReplayScript
 
@@ -133,6 +134,7 @@ export default function NewRunModal({
         cdp_url: cdpUrl.trim() || undefined,
         fresh_profile: cdpActive ? false : freshProfile,
         website_id: runProjectId,
+        ...(websiteTaskId ? { website_task_id: websiteTaskId } : {}),
         ...(sourceRunId
           ? {
               source_run_id: sourceRunId,
@@ -149,7 +151,7 @@ export default function NewRunModal({
           runProjectId = runProjectId ?? project.id
         }
         if (targetProjectId) {
-          await addTaskToProject({
+          const createdTask = await addTaskToProject({
             projectId: targetProjectId,
             name: payload.name,
             task: payload.task,
@@ -159,11 +161,16 @@ export default function NewRunModal({
             cdp_url: payload.cdp_url,
             fresh_profile: payload.fresh_profile ?? true,
           })
+          websiteTaskId = createdTask.id
           if (!runProjectId) runProjectId = targetProjectId
         }
       }
 
-      const run = await startRun({ ...payload, website_id: runProjectId })
+      const run = await startRun({
+        ...payload,
+        website_id: runProjectId,
+        ...(websiteTaskId ? { website_task_id: websiteTaskId } : {}),
+      })
       await queryClient.invalidateQueries({ queryKey: ['runs'] })
       onClose()
       if (redirectOnStart) {
