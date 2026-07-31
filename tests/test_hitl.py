@@ -397,6 +397,7 @@ class HitlControllerTests(unittest.TestCase):
             headless=False,
             max_steps=5,
             success_criteria="Done",
+            user_id="test-user",
         )
 
         with patch("smart_automator.server.runner.save_run_replay") as save_mock:
@@ -575,6 +576,7 @@ class RunnerHumanActionTests(unittest.TestCase):
             headless=False,
             max_steps=5,
             success_criteria="Done",
+            user_id="test-user",
         )
         browser_context = MagicMock()
 
@@ -604,6 +606,7 @@ class RunnerHumanActionTests(unittest.TestCase):
             headless=False,
             max_steps=5,
             success_criteria="Done",
+            user_id="test-user",
         )
         run.steps = [{"index": 1}, {"index": 3}]
         self.assertEqual(_next_step_index(run), 4)
@@ -641,6 +644,7 @@ class RunnerHumanActionTests(unittest.TestCase):
             headless=False,
             max_steps=5,
             success_criteria="Done",
+            user_id="test-user",
         )
         run.steps = [
             {"index": 1, "action": "agent", "status": "pass"},
@@ -676,6 +680,7 @@ class RunnerHumanActionTests(unittest.TestCase):
             headless=False,
             max_steps=5,
             success_criteria="Done",
+            user_id="test-user",
         )
         browser_context = MagicMock()
         for index in (1, 2, 3):

@@ -14,18 +14,15 @@ from smart_automator.server.run_state import RunState, add_run, get_run
 from smart_automator.agent.history import AgentStepHistory
 
 
-@pytest.fixture
-def client() -> TestClient:
-    return TestClient(app)
-
-
 def test_purge_run_removes_from_memory(client: TestClient) -> None:
+    user_id = client.get("/api/auth/me").json()["user"]["id"]
     run = RunState(
         run_id="test-purge-run-id",
         task="Smoke test",
         headless=True,
         max_steps=10,
         success_criteria="Page loads",
+        user_id=user_id,
     )
     run.status = "pass"
     run.finished_at = time.time()
@@ -62,12 +59,14 @@ def test_purge_run_deletes_artifacts(client: TestClient, tmp_path, monkeypatch) 
     screenshot_dir.mkdir(parents=True, exist_ok=True)
     (screenshot_dir / f"{run_id[:8]}_step_1.png").write_bytes(b"png")
 
+    user_id = client.get("/api/auth/me").json()["user"]["id"]
     run = RunState(
         run_id=run_id,
         task="Artifact test",
         headless=True,
         max_steps=5,
         success_criteria="ok",
+        user_id=user_id,
     )
     run.status = "fail"
     run.finished_at = time.time()
@@ -83,12 +82,14 @@ def test_purge_run_deletes_artifacts(client: TestClient, tmp_path, monkeypatch) 
 
 
 def test_delete_without_purge_leaves_finished_run(client: TestClient) -> None:
+    user_id = client.get("/api/auth/me").json()["user"]["id"]
     run = RunState(
         run_id="keep-finished-run",
         task="Keep me",
         headless=True,
         max_steps=5,
         success_criteria="ok",
+        user_id=user_id,
     )
     run.status = "pass"
     run.finished_at = time.time()

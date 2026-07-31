@@ -11,8 +11,8 @@ import {
   Plus,
   Trash2,
 } from 'lucide-react'
-import type { Website, WebsiteTask } from '@/types'
-import { useWebsites } from '@/hooks/useWebsites'
+import type { Project, ProjectTask } from '@/types'
+import { useProjects } from '@/hooks/useProjects'
 import { startRun } from '@/api'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -39,17 +39,17 @@ import {
 } from '@/components/ui/alert-dialog'
 import { cn } from '@/lib/utils'
 
-export default function WebsitesPage() {
+export default function ProjectsPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const {
-    websites,
+    projects,
     isLoading,
-    createWebsite,
-    updateWebsite,
-    deleteWebsite,
-    removeTaskFromWebsite,
-  } = useWebsites()
+    createProject,
+    updateProject,
+    deleteProject,
+    removeTaskFromProject,
+  } = useProjects()
 
   const [newName, setNewName] = useState('')
   const [runningId, setRunningId] = useState<string | null>(null)
@@ -61,12 +61,12 @@ export default function WebsitesPage() {
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault()
     if (!newName.trim()) return
-    const website = await createWebsite({ name: newName.trim() })
+    const project = await createProject({ name: newName.trim() })
     setNewName('')
-    setExpandedId(website.id)
+    setExpandedId(project.id)
   }
 
-  async function handleRunTask(website: Website, task: WebsiteTask) {
+  async function handleRunTask(project: Project, task: ProjectTask) {
     setRunningId(task.id)
     try {
       const run = await startRun({
@@ -77,7 +77,7 @@ export default function WebsitesPage() {
         max_steps: task.max_steps,
         cdp_url: task.cdp_url,
         fresh_profile: task.fresh_profile ?? true,
-        website_id: website.id,
+        website_id: project.id,
       })
       await queryClient.invalidateQueries({ queryKey: ['runs'] })
       navigate(`/runs/${run.run_id}`)
@@ -86,16 +86,16 @@ export default function WebsitesPage() {
     }
   }
 
-  function startEditContext(website: Website) {
-    setEditingContextId(website.id)
-    setUrlDraft(website.url ?? '')
-    setContextDraft(website.context_prompt)
-    setExpandedId(website.id)
+  function startEditContext(project: Project) {
+    setEditingContextId(project.id)
+    setUrlDraft(project.url ?? '')
+    setContextDraft(project.context_prompt)
+    setExpandedId(project.id)
   }
 
-  async function saveContext(websiteId: string) {
-    await updateWebsite({
-      websiteId,
+  async function saveContext(projectId: string) {
+    await updateProject({
+      projectId,
       url: urlDraft.trim(),
       context_prompt: contextDraft,
     })
@@ -136,22 +136,22 @@ export default function WebsitesPage() {
           </p>
         )}
 
-        {!isLoading && websites.length === 0 && (
+        {!isLoading && projects.length === 0 && (
           <p className="text-sm text-muted-foreground text-center py-16 max-w-md mx-auto">
             No projects yet. Create one above or attach a project when starting a new run.
           </p>
         )}
 
         <div className="space-y-4 max-w-3xl">
-          {websites.map((website) => {
-            const expanded = expandedId === website.id
+          {projects.map((project) => {
+            const expanded = expandedId === project.id
             return (
-              <Card key={website.id}>
+              <Card key={project.id}>
                 <CardHeader className="py-3 px-4">
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => setExpandedId(expanded ? null : website.id)}
+                      onClick={() => setExpandedId(expanded ? null : project.id)}
                       className="text-muted-foreground hover:text-foreground"
                     >
                       {expanded ? (
@@ -161,13 +161,13 @@ export default function WebsitesPage() {
                       )}
                     </button>
                     <div className="flex-1 min-w-0">
-                      <CardTitle className="text-sm">{website.name}</CardTitle>
+                      <CardTitle className="text-sm">{project.name}</CardTitle>
                       <CardDescription className="text-xs truncate">
-                        {website.tasks.length} test{website.tasks.length !== 1 ? 's' : ''}
-                        {website.url && (
-                          <span className="mono ml-1">· {website.url}</span>
+                        {project.tasks.length} test{project.tasks.length !== 1 ? 's' : ''}
+                        {project.url && (
+                          <span className="mono ml-1">· {project.url}</span>
                         )}
-                        {!website.url && website.context_prompt && ' · notes configured'}
+                        {!project.url && project.context_prompt && ' · notes configured'}
                       </CardDescription>
                     </div>
                     <AlertDialog>
@@ -178,7 +178,7 @@ export default function WebsitesPage() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={() => startEditContext(website)}>
+                          <DropdownMenuItem onClick={() => startEditContext(project)}>
                             Edit context
                           </DropdownMenuItem>
                           <AlertDialogTrigger asChild>
@@ -194,14 +194,14 @@ export default function WebsitesPage() {
                       </DropdownMenu>
                       <AlertDialogContent>
                         <AlertDialogHeader>
-                          <AlertDialogTitle>Delete &quot;{website.name}&quot;?</AlertDialogTitle>
+                          <AlertDialogTitle>Delete &quot;{project.name}&quot;?</AlertDialogTitle>
                           <AlertDialogDescription>
                             This removes the project, its context prompt, and all saved tests.
                           </AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>
                           <AlertDialogCancel>Cancel</AlertDialogCancel>
-                          <AlertDialogAction onClick={() => deleteWebsite(website.id)}>
+                          <AlertDialogAction onClick={() => deleteProject(project.id)}>
                             Delete
                           </AlertDialogAction>
                         </AlertDialogFooter>
@@ -216,14 +216,14 @@ export default function WebsitesPage() {
                       <Label className="text-xs text-muted-foreground uppercase tracking-wide">
                         Project configuration
                       </Label>
-                      {editingContextId === website.id ? (
+                      {editingContextId === project.id ? (
                         <>
                           <div className="space-y-1.5">
-                            <Label htmlFor={`url-${website.id}`} className="text-xs">
+                            <Label htmlFor={`url-${project.id}`} className="text-xs">
                               URL
                             </Label>
                             <Input
-                              id={`url-${website.id}`}
+                              id={`url-${project.id}`}
                               value={urlDraft}
                               onChange={(e) => setUrlDraft(e.target.value)}
                               placeholder="https://app.example.com"
@@ -231,11 +231,11 @@ export default function WebsitesPage() {
                             />
                           </div>
                           <div className="space-y-1.5">
-                            <Label htmlFor={`notes-${website.id}`} className="text-xs">
+                            <Label htmlFor={`notes-${project.id}`} className="text-xs">
                               Site notes
                             </Label>
                             <Textarea
-                              id={`notes-${website.id}`}
+                              id={`notes-${project.id}`}
                               value={contextDraft}
                               onChange={(e) => setContextDraft(e.target.value)}
                               placeholder="Login: admin@example.com / password123&#10;Default store: Downtown&#10;Test card: 4242..."
@@ -244,7 +244,7 @@ export default function WebsitesPage() {
                             />
                           </div>
                           <div className="flex gap-2">
-                            <Button size="sm" onClick={() => saveContext(website.id)}>
+                            <Button size="sm" onClick={() => saveContext(project.id)}>
                               Save
                             </Button>
                             <Button
@@ -258,14 +258,14 @@ export default function WebsitesPage() {
                         </>
                       ) : (
                         <>
-                          {website.url ? (
-                            <p className="text-xs mono text-primary break-all">{website.url}</p>
+                          {project.url ? (
+                            <p className="text-xs mono text-primary break-all">{project.url}</p>
                           ) : (
                             <p className="text-xs text-muted-foreground italic">No URL set</p>
                           )}
-                          {website.context_prompt ? (
+                          {project.context_prompt ? (
                             <pre className="text-xs text-muted-foreground whitespace-pre-wrap font-sans leading-relaxed">
-                              {website.context_prompt}
+                              {project.context_prompt}
                             </pre>
                           ) : (
                             <p className="text-xs text-muted-foreground italic">
@@ -275,21 +275,21 @@ export default function WebsitesPage() {
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={() => startEditContext(website)}
+                            onClick={() => startEditContext(project)}
                           >
-                            {website.url || website.context_prompt ? 'Edit configuration' : 'Add configuration'}
+                            {project.url || project.context_prompt ? 'Edit configuration' : 'Add configuration'}
                           </Button>
                         </>
                       )}
                     </div>
 
-                    {website.tasks.length === 0 ? (
+                    {project.tasks.length === 0 ? (
                       <p className="text-xs text-muted-foreground italic px-1">
                         No tests yet — save a run to this project from <em>New Run</em>.
                       </p>
                     ) : (
                       <ul className="divide-y divide-border rounded-lg border border-border">
-                        {website.tasks.map((task) => (
+                        {project.tasks.map((task) => (
                           <li
                             key={task.id}
                             className={cn(
@@ -316,7 +316,7 @@ export default function WebsitesPage() {
                             <div className="flex items-center gap-1 shrink-0">
                               <Button
                                 size="sm"
-                                onClick={() => handleRunTask(website, task)}
+                                onClick={() => handleRunTask(project, task)}
                                 disabled={runningId === task.id}
                               >
                                 {runningId === task.id ? (
@@ -331,8 +331,8 @@ export default function WebsitesPage() {
                                 size="icon"
                                 className="h-8 w-8 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive"
                                 onClick={() =>
-                                  removeTaskFromWebsite({
-                                    websiteId: website.id,
+                                  removeTaskFromProject({
+                                    projectId: project.id,
                                     taskId: task.id,
                                   })
                                 }

@@ -98,7 +98,7 @@ is_zerotier_ip() {
 }
 
 api_reachable() {
-  curl -sf --connect-timeout 2 "http://${GAMING_HOST}:${UI_PORT}/api/runs" >/dev/null 2>&1
+  curl -sf --connect-timeout 2 "http://${GAMING_HOST}:${UI_PORT}/api/auth/setup" >/dev/null 2>&1
 }
 
 resolve_mode() {

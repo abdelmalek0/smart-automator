@@ -14,17 +14,22 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-if ! curl -sf --connect-timeout 1 http://127.0.0.1:8400/api/runs >/dev/null 2>&1; then
+# /api/auth/setup is public; /api/runs requires a session and returns 401.
+api_ready() {
+  curl -sf --connect-timeout 1 http://127.0.0.1:8400/api/auth/setup >/dev/null 2>&1
+}
+
+if ! api_ready; then
   echo "Starting API on http://127.0.0.1:8400 ..."
   uv run smart-automator-api &
   API_PID=$!
   for _ in $(seq 1 30); do
-    if curl -sf --connect-timeout 1 http://127.0.0.1:8400/api/runs >/dev/null 2>&1; then
+    if api_ready; then
       break
     fi
     sleep 0.2
   done
-  if ! curl -sf --connect-timeout 1 http://127.0.0.1:8400/api/runs >/dev/null 2>&1; then
+  if ! api_ready; then
     echo "API failed to start on port 8400" >&2
     exit 1
   fi

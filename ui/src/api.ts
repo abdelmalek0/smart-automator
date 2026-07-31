@@ -1,4 +1,4 @@
-import type { ChromeProfile, Config, PricingEntry, RunDetails, RunSummary, Website, WebsiteTask } from './types'
+import type { ChromeProfile, Config, PricingEntry, Project, ProjectTask, RunDetails, RunSummary } from './types'
 import { normalizeProvider } from './providers'
 
 const BASE = '/api'
@@ -14,16 +14,75 @@ export type ConfigUpdatePayload = {
   cdp_url?: string
 }
 
+function formatApiError(status: number, text: string): string {
+  try {
+    const body = JSON.parse(text) as { detail?: unknown }
+    if (typeof body.detail === 'string' && body.detail.trim()) {
+      return body.detail
+    }
+  } catch {
+    // fall through
+  }
+  return text.trim() || `Request failed (${status})`
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json', ...init?.headers },
     ...init,
   })
+  if (res.status === 401) {
+    throw new Error('Not authenticated')
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText)
-    throw new Error(`${res.status}: ${text}`)
+    throw new Error(formatApiError(res.status, text))
+  }
+  if (res.status === 204) {
+    return undefined as T
   }
   return res.json() as Promise<T>
+}
+
+export type AuthSetup = {
+  needs_registration: boolean
+  registration_open: boolean
+}
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+export function getAuthSetup(): Promise<AuthSetup> {
+  return request('/auth/setup')
+}
+
+export function getMe(): Promise<{ user: import('./types').AuthUser } | null> {
+  return fetch(`${BASE}/auth/me`, { credentials: 'include' }).then(async (res) => {
+    if (res.status === 401) return null
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText)
+      throw new Error(`${res.status}: ${text}`)
+    }
+    return res.json() as Promise<{ user: import('./types').AuthUser }>
+  })
+}
+
+export function login(username: string, password: string): Promise<{ user: import('./types').AuthUser }> {
+  return request('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ username, password }),
+  })
+}
+
+export function register(username: string, password: string): Promise<{ user: import('./types').AuthUser }> {
+  return request('/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ username, password }),
+  })
+}
+
+export async function logout(): Promise<void> {
+  await request('/auth/logout', { method: 'POST' })
 }
 
 // ── Runs ──────────────────────────────────────────────────────────────────────
@@ -120,62 +179,62 @@ export async function savePricing(entries: PricingEntry[]): Promise<void> {
   await request('/pricing', { method: 'PUT', body: JSON.stringify(entries) })
 }
 
-// ── Websites ────────────────────────────────────────────────────────────────────
+// ── Projects (API path: /websites) ─────────────────────────────────────────────
 
-export function listWebsites(): Promise<Website[]> {
+export function listProjects(): Promise<Project[]> {
   return request('/websites')
 }
 
-export function getWebsite(websiteId: string): Promise<Website> {
-  return request(`/websites/${websiteId}`)
+export function getProject(projectId: string): Promise<Project> {
+  return request(`/websites/${projectId}`)
 }
 
-export async function createWebsite(payload: {
+export async function createProject(payload: {
   name: string
   url?: string
   context_prompt?: string
-}): Promise<Website> {
+}): Promise<Project> {
   return request('/websites', {
     method: 'POST',
     body: JSON.stringify(payload),
   })
 }
 
-export async function updateWebsite(
-  websiteId: string,
+export async function updateProject(
+  projectId: string,
   payload: { name?: string; url?: string; context_prompt?: string },
-): Promise<Website> {
-  return request(`/websites/${websiteId}`, {
+): Promise<Project> {
+  return request(`/websites/${projectId}`, {
     method: 'PUT',
     body: JSON.stringify(payload),
   })
 }
 
-export async function deleteWebsite(websiteId: string): Promise<void> {
-  await request(`/websites/${websiteId}`, { method: 'DELETE' })
+export async function deleteProject(projectId: string): Promise<void> {
+  await request(`/websites/${projectId}`, { method: 'DELETE' })
 }
 
-export async function createWebsiteTask(
-  websiteId: string,
-  payload: Omit<WebsiteTask, 'id'>,
-): Promise<WebsiteTask> {
-  return request(`/websites/${websiteId}/tasks`, {
+export async function createProjectTask(
+  projectId: string,
+  payload: Omit<ProjectTask, 'id'>,
+): Promise<ProjectTask> {
+  return request(`/websites/${projectId}/tasks`, {
     method: 'POST',
     body: JSON.stringify(payload),
   })
 }
 
-export async function updateWebsiteTask(
-  websiteId: string,
+export async function updateProjectTask(
+  projectId: string,
   taskId: string,
-  payload: Partial<Omit<WebsiteTask, 'id'>>,
-): Promise<WebsiteTask> {
-  return request(`/websites/${websiteId}/tasks/${taskId}`, {
+  payload: Partial<Omit<ProjectTask, 'id'>>,
+): Promise<ProjectTask> {
+  return request(`/websites/${projectId}/tasks/${taskId}`, {
     method: 'PUT',
     body: JSON.stringify(payload),
   })
 }
 
-export async function deleteWebsiteTask(websiteId: string, taskId: string): Promise<void> {
-  await request(`/websites/${websiteId}/tasks/${taskId}`, { method: 'DELETE' })
+export async function deleteProjectTask(projectId: string, taskId: string): Promise<void> {
+  await request(`/websites/${projectId}/tasks/${taskId}`, { method: 'DELETE' })
 }

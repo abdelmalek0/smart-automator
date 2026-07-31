@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, Globe, Hand, Loader2, RotateCcw } from 'lucide-react'
-import { cancelRun, listWebsites, returnControl, takeControl } from '@/api'
+import { cancelRun, listProjects, returnControl, takeControl } from '@/api'
 import { useRunStream } from '@/hooks/useRunStream'
 import RunStats from '@/components/RunStats'
 import StepCard from '@/components/StepCard'
@@ -55,13 +55,13 @@ export default function RunView({ runId, onRunComplete }: Props) {
   const [hitlBusy, setHitlBusy] = useState(false)
   const [takeControlPending, setTakeControlPending] = useState(false)
   const [hitlError, setHitlError] = useState<string | null>(null)
-  const { data: websites = [] } = useQuery({
-    queryKey: ['websites'],
-    queryFn: listWebsites,
+  const { data: projects = [] } = useQuery({
+    queryKey: ['projects'],
+    queryFn: listProjects,
     staleTime: 60_000,
   })
-  const websiteName = run?.website_id
-    ? websites.find((w) => w.id === run.website_id)?.name
+  const projectName = run?.website_id
+    ? projects.find((p) => p.id === run.website_id)?.name
     : null
 
   useEffect(() => {
@@ -167,10 +167,10 @@ export default function RunView({ runId, onRunComplete }: Props) {
               </span>
             )}
           </div>
-          {websiteName && (
+          {projectName && (
             <Badge variant="outline" className="mb-1.5 text-[10px] gap-1">
               <Globe className="h-3 w-3" />
-              {websiteName}
+              {projectName}
             </Badge>
           )}
           <h2 className="text-sm font-medium leading-snug line-clamp-5">

@@ -7,6 +7,16 @@ from pydantic import BaseModel, model_validator
 from smart_automator.config import normalize_browser_overrides
 
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+
+
 class StartRunRequest(BaseModel):
     task: str
     success_criteria: str

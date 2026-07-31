@@ -57,6 +57,7 @@ class TestScriptReplayCriteria(unittest.TestCase):
             headless=True,
             max_steps=10,
             success_criteria="Order total is visible",
+            user_id="test-user",
             source_run_id="source-run",
             use_replay_script=True,
         )
@@ -106,6 +107,7 @@ class TestTrainingRerun(unittest.TestCase):
             headless=False,
             max_steps=10,
             success_criteria="Order total is visible",
+            user_id="test-user",
             source_run_id="source-run",
             use_replay_script=False,
         )

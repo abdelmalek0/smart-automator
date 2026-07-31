@@ -5,11 +5,13 @@ description = "AI-powered browser automation tool using Playwright"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "bcrypt>=4.2.0",
     "fastapi>=0.115.0",
     "httpx>=0.28.1",
     "json-repair>=0.39.1",
     "playwright>=1.48.0",
     "pydantic>=2.10.6",
+    "pytest>=8.0.0",
     "python-dotenv>=1.0.1",
     "python-multipart>=0.0.20",
     "rich>=14.3.4",

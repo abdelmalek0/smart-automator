@@ -31,11 +31,6 @@ from smart_automator.config import (
 from smart_automator.server.app import app
 
 
-@pytest.fixture
-def client() -> TestClient:
-    return TestClient(app)
-
-
 def test_resolve_chrome_user_data_uses_default_when_not_fresh() -> None:
     resolved = resolve_chrome_user_data("", fresh_profile=False)
     assert resolved == default_chrome_user_data()

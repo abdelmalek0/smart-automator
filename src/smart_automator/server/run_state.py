@@ -5,6 +5,8 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any, Optional
 
+from .run_store import delete_run_record, list_run_records, load_run_record, save_run_record
+
 if TYPE_CHECKING:
     from ..agent.executor import Executor
 
@@ -19,6 +21,7 @@ class RunState:
         headless: bool,
         max_steps: int,
         success_criteria: str,
+        user_id: str,
         website_id: Optional[str] = None,
         effective_task: Optional[str] = None,
         cdp_url: Optional[str] = None,
@@ -28,6 +31,7 @@ class RunState:
         use_replay_script: bool = False,
     ):
         self.run_id = run_id
+        self.user_id = user_id
         self.task = task
         self.name = name
         self.success_criteria = success_criteria
@@ -86,6 +90,7 @@ class RunState:
     def to_summary(self, *, has_replay_script: bool = False) -> dict[str, Any]:
         return {
             "run_id": self.run_id,
+            "user_id": self.user_id,
             "name": self.name,
             "task": self.task,
             "success_criteria": self.success_criteria,
@@ -127,6 +132,62 @@ class RunState:
             "turn_timing": self.turn_timing,
         }
 
+    def to_persisted_dict(self, *, has_replay_script: bool = False) -> dict[str, Any]:
+        data = self.to_dict(has_replay_script=has_replay_script)
+        # Not part of the public API payload, but required to rehydrate after restart.
+        data["effective_task"] = self.effective_task
+        data["report_path"] = self.report_path
+        return data
+
+    @classmethod
+    def from_persisted_dict(cls, data: dict[str, Any]) -> RunState:
+        run = cls(
+            run_id=str(data["run_id"]),
+            user_id=str(data["user_id"]),
+            task=str(data.get("task", "")),
+            headless=bool(data.get("headless", False)),
+            max_steps=int(data.get("max_steps", 100)),
+            success_criteria=str(data.get("success_criteria", "")),
+            website_id=data.get("website_id"),
+            effective_task=data.get("effective_task"),
+            cdp_url=data.get("cdp_url"),
+            fresh_profile=bool(data.get("fresh_profile", True)),
+            name=data.get("name"),
+            source_run_id=data.get("source_run_id"),
+            use_replay_script=bool(data.get("use_replay_script", False)),
+        )
+        run.criteria_verdict = dict(data.get("criteria_verdict") or {})
+        run.status = str(data.get("status", "pending"))
+        run.hitl_reason = str(data.get("hitl_reason", ""))
+        run.hitl_source = str(data.get("hitl_source", ""))
+        run.hitl_deadline = data.get("hitl_deadline")
+        run.human_controlling = bool(data.get("human_controlling", False))
+        run.steps = list(data.get("steps") or [])
+        run.plan = dict(data.get("plan") or {})
+        run.app_context = dict(data.get("app_context") or {})
+        run.extracted_steps = list(data.get("extracted_steps") or [])
+        run.current_atomic_step = data.get("current_atomic_step")
+        run.progress = dict(data.get("progress") or {})
+        run.summary = str(data.get("summary", ""))
+        run.new_tools = list(data.get("new_tools") or [])
+        run.tokens = int(data.get("tokens", 0))
+        run.prompt_tokens = int(data.get("prompt_tokens", 0))
+        run.completion_tokens = int(data.get("completion_tokens", 0))
+        run.cache_tokens = int(data.get("cache_tokens", 0))
+        run.cost_usd = data.get("cost_usd")
+        run.turn_timing = dict(data.get("turn_timing") or {})
+        run.started_at = float(data.get("started_at", time.time()))
+        run.finished_at = data.get("finished_at")
+        run.report_path = data.get("report_path")
+        return run
+
+    def persist(self, *, has_replay_script: bool = False) -> None:
+        save_run_record(
+            self.user_id,
+            self.run_id,
+            self.to_persisted_dict(has_replay_script=has_replay_script),
+        )
+
 
 _runs: dict[str, RunState] = {}
 _MAX_RUNS_IN_MEMORY = 200
@@ -159,3 +220,36 @@ def _evict_old_runs() -> None:
 
 def remove_run(run_id: str) -> RunState | None:
     return _runs.pop(run_id, None)
+
+
+def get_run_for_user(user_id: str, run_id: str) -> RunState | None:
+    run = get_run(run_id)
+    if run is not None:
+        if run.user_id != user_id:
+            return None
+        return run
+    record = load_run_record(user_id, run_id)
+    if record is None:
+        return None
+    run = RunState.from_persisted_dict(record)
+    add_run(run)
+    return run
+
+
+def list_runs_for_user(user_id: str) -> list[RunState]:
+    in_memory = [run for run in _runs.values() if run.user_id == user_id]
+    memory_ids = {run.run_id for run in in_memory}
+    for record in list_run_records(user_id):
+        run_id = str(record.get("run_id", ""))
+        if not run_id or run_id in memory_ids:
+            continue
+        run = RunState.from_persisted_dict(record)
+        add_run(run)
+        in_memory.append(run)
+    in_memory.sort(key=lambda run: run.started_at, reverse=True)
+    return in_memory
+
+
+def delete_run_for_user(user_id: str, run_id: str) -> None:
+    remove_run(run_id)
+    delete_run_record(user_id, run_id)

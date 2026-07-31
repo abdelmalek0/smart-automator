@@ -18,7 +18,7 @@ from ..main import create_llm
 from .config_service import config_for_run
 from .history_store import save_run_history
 from .paths import REPORT_DIR, SCREENSHOT_DIR
-from .replay_store import load_run_replay, save_run_replay
+from .replay_store import has_replay_script, load_run_replay, save_run_replay
 from .run_state import RunState
 from .step_mapper import (
     build_step_start,
@@ -477,4 +477,8 @@ def run_automation(run: RunState) -> None:
                 pass
         duration = time.time() - run.started_at
         log.info("[run:%s] finished status=%s duration=%.1fs", run.run_id[:8], run.status, duration)
+        try:
+            run.persist(has_replay_script=has_replay_script(run.run_id))
+        except Exception as exc:
+            log.warning("[run:%s] run persistence failed: %s", run.run_id[:8], exc)
         run.broadcast({"type": "closed"})

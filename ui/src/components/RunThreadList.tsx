@@ -52,7 +52,7 @@ interface Props {
   variant?: 'sidebar' | 'home'
   limit?: number
   emptyMessage?: string
-  websiteNames?: Record<string, string>
+  projectNames?: Record<string, string>
 }
 
 function StatusDot({ status }: { status: RunStatus }) {
@@ -216,14 +216,14 @@ function LivePulse() {
   )
 }
 
-interface WebsiteHeaderProps {
+interface ProjectHeaderProps {
   title: string
   expanded: boolean
   onToggle: () => void
   hasActiveRun: boolean
 }
 
-function WebsiteHeader({ title, expanded, onToggle, hasActiveRun }: WebsiteHeaderProps) {
+function ProjectHeader({ title, expanded, onToggle, hasActiveRun }: ProjectHeaderProps) {
   return (
     <button
       type="button"
@@ -326,7 +326,7 @@ function TestGroupBlock({
   )
 }
 
-interface WebsiteThreadBlockProps {
+interface ProjectThreadBlockProps {
   thread: RunThread
   activeRunId: string | null
   expanded: boolean
@@ -334,11 +334,11 @@ interface WebsiteThreadBlockProps {
   expandedTests: Set<string>
   onToggleTest: (testId: string) => void
   onDelete: (run: RunSummary) => void
-  websiteNames: Record<string, string>
+  projectNames: Record<string, string>
   roomy?: boolean
 }
 
-function WebsiteThreadBlock({
+function ProjectThreadBlock({
   thread,
   activeRunId,
   expanded,
@@ -346,15 +346,15 @@ function WebsiteThreadBlock({
   expandedTests,
   onToggleTest,
   onDelete,
-  websiteNames,
+  projectNames,
   roomy = false,
-}: WebsiteThreadBlockProps) {
+}: ProjectThreadBlockProps) {
   const testGroups = thread.testGroups ?? []
 
   return (
     <div className="space-y-px">
-      <WebsiteHeader
-        title={threadTitle(thread, websiteNames)}
+      <ProjectHeader
+        title={threadTitle(thread, projectNames)}
         expanded={expanded}
         onToggle={onToggle}
         hasActiveRun={threadHasActiveRun(thread)}
@@ -384,7 +384,7 @@ interface ChainThreadBlockProps {
   expanded: boolean
   onToggle: () => void
   onDelete: (run: RunSummary) => void
-  websiteNames: Record<string, string>
+  projectNames: Record<string, string>
   roomy?: boolean
 }
 
@@ -394,13 +394,13 @@ function ChainThreadBlock({
   expanded,
   onToggle,
   onDelete,
-  websiteNames,
+  projectNames,
   roomy = false,
 }: ChainThreadBlockProps) {
   return (
     <div className="space-y-px">
       <TestHeader
-        title={threadTitle(thread, websiteNames)}
+        title={threadTitle(thread, projectNames)}
         expanded={expanded}
         onToggle={onToggle}
         hasActiveRun={threadHasActiveRun(thread)}
@@ -430,7 +430,7 @@ export default function RunThreadList({
   variant = 'sidebar',
   limit,
   emptyMessage = 'No runs yet',
-  websiteNames = {},
+  projectNames = {},
 }: Props) {
   const threads = useMemo(() => buildRunThreads(runs), [runs])
   const visibleThreads = useMemo(() => {
@@ -525,9 +525,9 @@ export default function RunThreadList({
             )
           }
 
-          if (thread.websiteId && thread.testGroups) {
+          if (thread.projectId && thread.testGroups) {
             return (
-              <WebsiteThreadBlock
+              <ProjectThreadBlock
                 key={thread.id}
                 thread={thread}
                 activeRunId={activeRunId}
@@ -536,7 +536,7 @@ export default function RunThreadList({
                 expandedTests={expandedRoots}
                 onToggleTest={toggleExpanded}
                 onDelete={setDeleteTarget}
-                websiteNames={websiteNames}
+                projectNames={projectNames}
                 roomy={roomy}
               />
             )
@@ -550,7 +550,7 @@ export default function RunThreadList({
               expanded={expanded}
               onToggle={() => toggleExpanded(thread.id)}
               onDelete={setDeleteTarget}
-              websiteNames={websiteNames}
+              projectNames={projectNames}
               roomy={roomy}
             />
           )

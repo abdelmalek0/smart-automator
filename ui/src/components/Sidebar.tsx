@@ -1,14 +1,15 @@
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { Plus } from 'lucide-react'
+import { LogOut, Plus } from 'lucide-react'
 import logoUrl from '../../logo.jpeg'
 import type { RunSummary } from '@/types'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useRunModal } from '@/contexts/RunModalContext'
+import { useAuth } from '@/contexts/AuthContext'
 import RunThreadList from '@/components/RunThreadList'
 import SidebarNav from '@/components/SidebarNav'
-import { useWebsites } from '@/hooks/useWebsites'
+import { useProjects } from '@/hooks/useProjects'
 
 interface Props {
   runs: RunSummary[]
@@ -17,10 +18,11 @@ interface Props {
 
 export default function Sidebar({ runs, activeRunId }: Props) {
   const { openNewRun } = useRunModal()
-  const { websites } = useWebsites()
-  const websiteNames = useMemo(
-    () => Object.fromEntries(websites.map((website) => [website.id, website.name])),
-    [websites],
+  const { user, logout } = useAuth()
+  const { projects } = useProjects()
+  const projectNames = useMemo(
+    () => Object.fromEntries(projects.map((project) => [project.id, project.name])),
+    [projects],
   )
 
   return (
@@ -56,12 +58,35 @@ export default function Sidebar({ runs, activeRunId }: Props) {
             runs={runs}
             activeRunId={activeRunId}
             variant="sidebar"
-            websiteNames={websiteNames}
+            projectNames={projectNames}
           />
         </div>
       </ScrollArea>
 
-      <SidebarNav />
+      <footer className="border-t border-border/60">
+        <SidebarNav />
+
+        {user ? (
+          <div className="flex items-center gap-2 px-3 py-2.5 border-t border-border/60">
+            <div
+              aria-hidden
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/15 text-xs font-semibold text-primary"
+            >
+              {user.username.charAt(0).toUpperCase()}
+            </div>
+            <p className="min-w-0 flex-1 text-xs font-medium truncate">{user.username}</p>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+              title="Sign out"
+              onClick={() => void logout()}
+            >
+              <LogOut className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        ) : null}
+      </footer>
     </aside>
   )
 }

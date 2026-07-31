@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronDown, Globe, Loader2, Play } from 'lucide-react'
-import { getConfig, getRun, listWebsites, startRun } from '@/api'
-import { useWebsites } from '@/hooks/useWebsites'
+import { getConfig, getRun, listProjects, startRun } from '@/api'
+import { useProjects } from '@/hooks/useProjects'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -27,7 +27,7 @@ import {
 import { cn } from '@/lib/utils'
 import type { RunDraft } from '@/types'
 
-const NO_WEBSITE = '__none__'
+const NO_PROJECT = '__none__'
 
 interface Props {
   onClose: () => void
@@ -45,24 +45,24 @@ export default function NewRunModal({
   const [name, setName] = useState(initialValues?.name ?? '')
   const [task, setTask] = useState(initialValues?.task ?? '')
   const [successCriteria, setSuccessCriteria] = useState(initialValues?.success_criteria ?? '')
-  const [websiteId, setWebsiteId] = useState<string>(initialValues?.website_id ?? NO_WEBSITE)
+  const [projectId, setProjectId] = useState<string>(initialValues?.website_id ?? NO_PROJECT)
   const [headless, setHeadless] = useState(initialValues?.headless ?? false)
   const [freshProfile, setFreshProfile] = useState(initialValues?.fresh_profile ?? true)
   const [maxSteps, setMaxSteps] = useState(initialValues?.max_steps ?? 100)
   const [cdpUrl, setCdpUrl] = useState(initialValues?.cdp_url ?? '')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [saveToWebsite, setSaveToWebsite] = useState(false)
+  const [saveToProject, setSaveToProject] = useState(false)
   const [useReplayScript, setUseReplayScript] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
-  const [websiteMode, setWebsiteMode] = useState<'new' | 'existing'>('existing')
-  const [newWebsiteName, setNewWebsiteName] = useState('')
-  const [saveWebsiteId, setSaveWebsiteId] = useState('')
-  const { websites, createWebsite, addTaskToWebsite } = useWebsites()
+  const [projectMode, setProjectMode] = useState<'new' | 'existing'>('existing')
+  const [newProjectName, setNewProjectName] = useState('')
+  const [saveProjectId, setSaveProjectId] = useState('')
+  const { projects, createProject, addTaskToProject } = useProjects()
   const { data: config } = useQuery({ queryKey: ['config'], queryFn: getConfig })
-  const { data: websiteList = [] } = useQuery({
-    queryKey: ['websites'],
-    queryFn: listWebsites,
+  const { data: projectList = [] } = useQuery({
+    queryKey: ['projects'],
+    queryFn: listProjects,
   })
 
   const isRerun = Boolean(initialValues?.source_run_id)
@@ -73,8 +73,8 @@ export default function NewRunModal({
     enabled: Boolean(sourceRunId),
   })
   const canUseAutomatic = Boolean(sourceRunId && sourceRun?.has_replay_script)
-  const selectedWebsite =
-    websiteId !== NO_WEBSITE ? websiteList.find((w) => w.id === websiteId) : null
+  const selectedProject =
+    projectId !== NO_PROJECT ? projectList.find((p) => p.id === projectId) : null
 
   useEffect(() => {
     if (!config || initialValues) return
@@ -89,7 +89,7 @@ export default function NewRunModal({
     setName(initialValues.name ?? '')
     setTask(initialValues.task)
     setSuccessCriteria(initialValues.success_criteria)
-    setWebsiteId(initialValues.website_id ?? NO_WEBSITE)
+    setProjectId(initialValues.website_id ?? NO_PROJECT)
     setHeadless(initialValues.headless ?? false)
     setFreshProfile(initialValues.fresh_profile ?? true)
     setMaxSteps(initialValues.max_steps ?? 100)
@@ -120,7 +120,7 @@ export default function NewRunModal({
     setLoading(true)
     setError(null)
     try {
-      let runWebsiteId = websiteId !== NO_WEBSITE ? websiteId : undefined
+      let runProjectId = projectId !== NO_PROJECT ? projectId : undefined
 
       const useAutomatic = canUseAutomatic && useReplayScript
 
@@ -132,7 +132,7 @@ export default function NewRunModal({
         max_steps: maxSteps,
         cdp_url: cdpUrl.trim() || undefined,
         fresh_profile: cdpActive ? false : freshProfile,
-        website_id: runWebsiteId,
+        website_id: runProjectId,
         ...(sourceRunId
           ? {
               source_run_id: sourceRunId,
@@ -141,16 +141,16 @@ export default function NewRunModal({
           : { use_replay_script: false }),
       }
 
-      if (saveToWebsite) {
-        let targetWebsiteId = saveWebsiteId
-        if (websiteMode === 'new' && newWebsiteName.trim()) {
-          const website = await createWebsite({ name: newWebsiteName.trim() })
-          targetWebsiteId = website.id
-          runWebsiteId = runWebsiteId ?? website.id
+      if (saveToProject) {
+        let targetProjectId = saveProjectId
+        if (projectMode === 'new' && newProjectName.trim()) {
+          const project = await createProject({ name: newProjectName.trim() })
+          targetProjectId = project.id
+          runProjectId = runProjectId ?? project.id
         }
-        if (targetWebsiteId) {
-          await addTaskToWebsite({
-            websiteId: targetWebsiteId,
+        if (targetProjectId) {
+          await addTaskToProject({
+            projectId: targetProjectId,
             name: payload.name,
             task: payload.task,
             success_criteria: payload.success_criteria,
@@ -159,11 +159,11 @@ export default function NewRunModal({
             cdp_url: payload.cdp_url,
             fresh_profile: payload.fresh_profile ?? true,
           })
-          if (!runWebsiteId) runWebsiteId = targetWebsiteId
+          if (!runProjectId) runProjectId = targetProjectId
         }
       }
 
-      const run = await startRun({ ...payload, website_id: runWebsiteId })
+      const run = await startRun({ ...payload, website_id: runProjectId })
       await queryClient.invalidateQueries({ queryKey: ['runs'] })
       onClose()
       if (redirectOnStart) {
@@ -200,34 +200,34 @@ export default function NewRunModal({
         <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
           <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
             <div className="space-y-2">
-              <Label htmlFor="website">
+              <Label htmlFor="project">
                 Project <span className="text-muted-foreground font-normal">(optional)</span>
               </Label>
-              <Select value={websiteId} onValueChange={setWebsiteId}>
-                <SelectTrigger id="website">
+              <Select value={projectId} onValueChange={setProjectId}>
+                <SelectTrigger id="project">
                   <SelectValue placeholder="No project — run standalone" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={NO_WEBSITE}>No project</SelectItem>
-                  {websites.map((w) => (
-                    <SelectItem key={w.id} value={w.id}>
-                      {w.name}
+                  <SelectItem value={NO_PROJECT}>No project</SelectItem>
+                  {projects.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.name}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-              {selectedWebsite && (selectedWebsite.url || selectedWebsite.context_prompt) && (
+              {selectedProject && (selectedProject.url || selectedProject.context_prompt) && (
                 <div className="text-xs text-muted-foreground border border-border rounded-md p-3 space-y-1 bg-muted/30">
                   <p className="flex items-center gap-1 text-foreground font-medium">
                     <Globe className="h-3 w-3 text-primary" />
-                    {selectedWebsite.name} — passed to the agent
+                    {selectedProject.name} — passed to the agent
                   </p>
-                  {selectedWebsite.url && (
-                    <p className="mono text-primary break-all">{selectedWebsite.url}</p>
+                  {selectedProject.url && (
+                    <p className="mono text-primary break-all">{selectedProject.url}</p>
                   )}
-                  {selectedWebsite.context_prompt && (
+                  {selectedProject.context_prompt && (
                     <p className="whitespace-pre-wrap leading-relaxed line-clamp-4">
-                      {selectedWebsite.context_prompt}
+                      {selectedProject.context_prompt}
                     </p>
                   )}
                 </div>
@@ -395,58 +395,58 @@ export default function NewRunModal({
                   <div className="space-y-3 pt-1 border-t border-border">
                     <div className="flex items-center gap-2">
                       <Switch
-                        id="save-website"
-                        checked={saveToWebsite}
-                        onCheckedChange={setSaveToWebsite}
+                        id="save-project"
+                        checked={saveToProject}
+                        onCheckedChange={setSaveToProject}
                       />
-                      <Label htmlFor="save-website" className="font-normal">
+                      <Label htmlFor="save-project" className="font-normal">
                         Save test to project
                       </Label>
                     </div>
-                    {saveToWebsite && (
+                    {saveToProject && (
                       <div className="space-y-2">
                         <div className="flex gap-4">
                           <label className="flex items-center gap-1.5 cursor-pointer text-sm">
                             <input
                               type="radio"
-                              checked={websiteMode === 'new'}
-                              onChange={() => setWebsiteMode('new')}
+                              checked={projectMode === 'new'}
+                              onChange={() => setProjectMode('new')}
                               className="accent-primary"
                             />
                             New project
                           </label>
                           <label
                             className={`flex items-center gap-1.5 text-sm ${
-                              websites.length === 0
+                              projects.length === 0
                                 ? 'opacity-40 cursor-not-allowed'
                                 : 'cursor-pointer'
                             }`}
                           >
                             <input
                               type="radio"
-                              checked={websiteMode === 'existing'}
-                              onChange={() => setWebsiteMode('existing')}
-                              disabled={websites.length === 0}
+                              checked={projectMode === 'existing'}
+                              onChange={() => setProjectMode('existing')}
+                              disabled={projects.length === 0}
                               className="accent-primary"
                             />
                             Existing project
                           </label>
                         </div>
-                        {websiteMode === 'new' ? (
+                        {projectMode === 'new' ? (
                           <Input
-                            value={newWebsiteName}
-                            onChange={(e) => setNewWebsiteName(e.target.value)}
+                            value={newProjectName}
+                            onChange={(e) => setNewProjectName(e.target.value)}
                             placeholder="Project name…"
                           />
                         ) : (
-                          <Select value={saveWebsiteId} onValueChange={setSaveWebsiteId}>
+                          <Select value={saveProjectId} onValueChange={setSaveProjectId}>
                             <SelectTrigger>
                               <SelectValue placeholder="Select a project…" />
                             </SelectTrigger>
                             <SelectContent>
-                              {websites.map((w) => (
-                                <SelectItem key={w.id} value={w.id}>
-                                  {w.name}
+                              {projects.map((p) => (
+                                <SelectItem key={p.id} value={p.id}>
+                                  {p.name}
                                 </SelectItem>
                               ))}
                             </SelectContent>

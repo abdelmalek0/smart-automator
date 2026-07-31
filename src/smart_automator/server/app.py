@@ -17,13 +17,16 @@ import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..storage.websites import WebsiteStore
 from ..browser.chrome_profiles import discover_chrome_profiles
+from .auth import auth_router, get_current_user
+from .auth.dependencies import SESSION_COOKIE_NAME, resolve_user_from_session
+from .auth.stores import User
 from .config_service import (
     apply_config_update,
     build_config_response,
@@ -40,10 +43,17 @@ from .models import (
     WebsiteTaskUpdateRequest,
     WebsiteUpdateRequest,
 )
-from .paths import ENV_FILE, HISTORY_DIR, REPLAY_DIR, REPORT_DIR, SCREENSHOT_DIR, UI_DIST
+from .paths import AUTH_DIR, ENV_FILE, HISTORY_DIR, REPLAY_DIR, REPORT_DIR, RUNS_DIR, SCREENSHOT_DIR, UI_DIST, WEBSITES_DIR
+from .run_store import user_owns_run_prefix
 from .history_store import delete_run_history
 from .replay_store import delete_run_replay, has_replay_script, load_run_replay
-from .run_state import RunState, add_run, get_run, list_runs, remove_run
+from .run_state import (
+    RunState,
+    add_run,
+    delete_run_for_user,
+    get_run_for_user,
+    list_runs_for_user,
+)
 from .runner import run_automation
 from .step_mapper import compose_agent_task
 from .tools import list_action_tools
@@ -96,7 +106,7 @@ _cors_origins: list[str] = (
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Content-Type", "Authorization"],
 )
@@ -105,19 +115,26 @@ SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 REPORT_DIR.mkdir(parents=True, exist_ok=True)
 HISTORY_DIR.mkdir(parents=True, exist_ok=True)
 REPLAY_DIR.mkdir(parents=True, exist_ok=True)
+AUTH_DIR.mkdir(parents=True, exist_ok=True)
+RUNS_DIR.mkdir(parents=True, exist_ok=True)
+WEBSITES_DIR.mkdir(parents=True, exist_ok=True)
 
-_website_store: WebsiteStore | None = None
+app.include_router(auth_router)
 
 
-def _websites() -> WebsiteStore:
-    global _website_store
-    if _website_store is None:
-        _website_store = WebsiteStore()
-    return _website_store
+def _websites(user: User) -> WebsiteStore:
+    return WebsiteStore(user.id)
+
+
+def _require_owned_run(user: User, run_id: str) -> RunState:
+    run = get_run_for_user(user.id, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return run
 
 
 @app.post("/api/runs", status_code=201)
-async def start_run(req: StartRunRequest):
+async def start_run(req: StartRunRequest, user: User = Depends(get_current_user)):
     run_id = str(uuid.uuid4())
     display_task = req.task.strip()
     if not display_task:
@@ -131,6 +148,11 @@ async def start_run(req: StartRunRequest):
                 status_code=400,
                 detail="source_run_id is required when use_replay_script is true",
             )
+        if get_run_for_user(user.id, req.source_run_id) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Source run not found: {req.source_run_id}",
+            )
         if load_run_replay(req.source_run_id) is None:
             raise HTTPException(
                 status_code=400,
@@ -138,7 +160,7 @@ async def start_run(req: StartRunRequest):
             )
         source_run_id = req.source_run_id
     elif req.source_run_id:
-        if get_run(req.source_run_id) is None:
+        if get_run_for_user(user.id, req.source_run_id) is None:
             raise HTTPException(
                 status_code=404,
                 detail=f"Source run not found: {req.source_run_id}",
@@ -151,7 +173,7 @@ async def start_run(req: StartRunRequest):
     effective_task = display_task
     website_id = req.website_id
     if website_id:
-        website = _websites().get_website(website_id)
+        website = _websites(user).get_website(website_id)
         if not website:
             raise HTTPException(status_code=404, detail="Website not found")
         effective_task = compose_agent_task(
@@ -172,6 +194,7 @@ async def start_run(req: StartRunRequest):
 
     run = RunState(
         run_id=run_id,
+        user_id=user.id,
         task=display_task,
         headless=req.headless,
         max_steps=req.max_steps,
@@ -186,6 +209,7 @@ async def start_run(req: StartRunRequest):
     )
     run._loop = asyncio.get_event_loop()
     add_run(run)
+    run.persist(has_replay_script=has_replay_script(run.run_id))
 
     thread = threading.Thread(target=run_automation, args=(run,), daemon=True)
     thread.start()
@@ -193,33 +217,33 @@ async def start_run(req: StartRunRequest):
 
 
 @app.get("/api/runs")
-async def api_list_runs():
+async def api_list_runs(user: User = Depends(get_current_user)):
     return [
         run.to_summary(has_replay_script=has_replay_script(run.run_id))
-        for run in reversed(list_runs())
+        for run in list_runs_for_user(user.id)
     ]
 
 
 @app.get("/api/runs/{run_id}")
-async def api_get_run(run_id: str):
-    run = get_run(run_id)
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found")
+async def api_get_run(run_id: str, user: User = Depends(get_current_user)):
+    run = _require_owned_run(user, run_id)
     return run.to_dict(has_replay_script=has_replay_script(run_id))
 
 
 @app.get("/api/runs/{run_id}/report")
-async def download_report(run_id: str):
-    run = get_run(run_id)
-    if not run or not run.report_path:
-        raise HTTPException(status_code=404, detail="Report not yet available")
-    report_file = Path(run.report_path)
-    if not report_file.is_file():
+async def download_report(run_id: str, user: User = Depends(get_current_user)):
+    run = _require_owned_run(user, run_id)
+    report_file: Path | None = None
+    if run.report_path:
+        candidate = Path(run.report_path)
+        if candidate.is_file():
+            report_file = candidate
+    if report_file is None:
         candidate = REPORT_DIR / f"{run_id}.html"
         if candidate.is_file():
             report_file = candidate
-        else:
-            raise HTTPException(status_code=404, detail="Report not yet available")
+    if report_file is None:
+        raise HTTPException(status_code=404, detail="Report not yet available")
     return FileResponse(
         report_file,
         media_type="text/html",
@@ -238,6 +262,12 @@ def _cancel_active_run(run: RunState) -> None:
     run.finished_at = time.time()
     run.broadcast({"type": "status", "status": "cancelled"})
     run.broadcast({"type": "closed"})
+    try:
+        from .replay_store import has_replay_script as _has_replay
+
+        run.persist(has_replay_script=_has_replay(run.run_id))
+    except Exception:
+        log.debug("Failed to persist cancelled run %s", run.run_id[:8], exc_info=True)
 
 
 def _purge_run_artifacts(run_id: str, *, report_path: str | None = None) -> None:
@@ -263,14 +293,12 @@ def _purge_run_artifacts(run_id: str, *, report_path: str | None = None) -> None
 
 
 @app.delete("/api/runs/{run_id}")
-async def cancel_run(run_id: str, purge: bool = False):
-    run = get_run(run_id)
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found")
+async def cancel_run(run_id: str, purge: bool = False, user: User = Depends(get_current_user)):
+    run = _require_owned_run(user, run_id)
     if purge:
         report_path = run.report_path
         _cancel_active_run(run)
-        remove_run(run_id)
+        delete_run_for_user(user.id, run_id)
         _purge_run_artifacts(run_id, report_path=report_path)
         log.info("DELETE /api/runs/%s — purged", run_id[:8])
         return {"ok": True}
@@ -289,10 +317,8 @@ def _hitl_unavailable_reason(run) -> str | None:
 
 
 @app.post("/api/runs/{run_id}/take-control")
-async def take_control(run_id: str):
-    run = get_run(run_id)
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found")
+async def take_control(run_id: str, user: User = Depends(get_current_user)):
+    run = _require_owned_run(user, run_id)
     unavailable = _hitl_unavailable_reason(run)
     if unavailable:
         raise HTTPException(status_code=400, detail=unavailable)
@@ -315,10 +341,8 @@ async def take_control(run_id: str):
 
 
 @app.post("/api/runs/{run_id}/return-control")
-async def return_control(run_id: str):
-    run = get_run(run_id)
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found")
+async def return_control(run_id: str, user: User = Depends(get_current_user)):
+    run = _require_owned_run(user, run_id)
     unavailable = _hitl_unavailable_reason(run)
     if unavailable:
         raise HTTPException(status_code=400, detail=unavailable)
@@ -343,29 +367,33 @@ async def _safe_ws_send_json(websocket: WebSocket, payload: dict) -> bool:
 
 
 @app.get("/api/websites")
-async def api_list_websites():
-    return [website.to_dict() for website in _websites().list_websites()]
+async def api_list_websites(user: User = Depends(get_current_user)):
+    return [website.to_dict() for website in _websites(user).list_websites()]
 
 
 @app.post("/api/websites", status_code=201)
-async def create_website(req: WebsiteCreateRequest):
+async def create_website(req: WebsiteCreateRequest, user: User = Depends(get_current_user)):
     if not req.name.strip():
         raise HTTPException(status_code=400, detail="Name is required")
-    website = _websites().create_website(req.name, req.url, req.context_prompt)
+    website = _websites(user).create_website(req.name, req.url, req.context_prompt)
     return website.to_dict()
 
 
 @app.get("/api/websites/{website_id}")
-async def api_get_website(website_id: str):
-    website = _websites().get_website(website_id)
+async def api_get_website(website_id: str, user: User = Depends(get_current_user)):
+    website = _websites(user).get_website(website_id)
     if not website:
         raise HTTPException(status_code=404, detail="Website not found")
     return website.to_dict()
 
 
 @app.put("/api/websites/{website_id}")
-async def update_website(website_id: str, req: WebsiteUpdateRequest):
-    website = _websites().update_website(
+async def update_website(
+    website_id: str,
+    req: WebsiteUpdateRequest,
+    user: User = Depends(get_current_user),
+):
+    website = _websites(user).update_website(
         website_id,
         name=req.name,
         url=req.url,
@@ -377,19 +405,23 @@ async def update_website(website_id: str, req: WebsiteUpdateRequest):
 
 
 @app.delete("/api/websites/{website_id}")
-async def delete_website(website_id: str):
-    if not _websites().delete_website(website_id):
+async def delete_website(website_id: str, user: User = Depends(get_current_user)):
+    if not _websites(user).delete_website(website_id):
         raise HTTPException(status_code=404, detail="Website not found")
     return {"ok": True}
 
 
 @app.post("/api/websites/{website_id}/tasks", status_code=201)
-async def create_website_task(website_id: str, req: WebsiteTaskCreateRequest):
+async def create_website_task(
+    website_id: str,
+    req: WebsiteTaskCreateRequest,
+    user: User = Depends(get_current_user),
+):
     if not req.task.strip():
         raise HTTPException(status_code=400, detail="Task is required")
     if not req.success_criteria.strip():
         raise HTTPException(status_code=400, detail="Success criteria is required")
-    task = _websites().add_task(
+    task = _websites(user).add_task(
         website_id,
         task=req.task,
         success_criteria=req.success_criteria,
@@ -405,8 +437,13 @@ async def create_website_task(website_id: str, req: WebsiteTaskCreateRequest):
 
 
 @app.put("/api/websites/{website_id}/tasks/{task_id}")
-async def update_website_task(website_id: str, task_id: str, req: WebsiteTaskUpdateRequest):
-    task = _websites().update_task(
+async def update_website_task(
+    website_id: str,
+    task_id: str,
+    req: WebsiteTaskUpdateRequest,
+    user: User = Depends(get_current_user),
+):
+    task = _websites(user).update_task(
         website_id,
         task_id,
         task=req.task,
@@ -423,34 +460,34 @@ async def update_website_task(website_id: str, task_id: str, req: WebsiteTaskUpd
 
 
 @app.delete("/api/websites/{website_id}/tasks/{task_id}")
-async def delete_website_task(website_id: str, task_id: str):
-    if not _websites().delete_task(website_id, task_id):
+async def delete_website_task(website_id: str, task_id: str, user: User = Depends(get_current_user)):
+    if not _websites(user).delete_task(website_id, task_id):
         raise HTTPException(status_code=404, detail="Website or task not found")
     return {"ok": True}
 
 
 @app.get("/api/tools")
-async def api_list_tools():
+async def api_list_tools(user: User = Depends(get_current_user)):
     return list_action_tools()
 
 
 @app.get("/api/config")
-async def api_get_config():
+async def api_get_config(user: User = Depends(get_current_user)):
     return build_config_response()
 
 
 @app.get("/api/chrome-profiles")
-async def api_list_chrome_profiles():
+async def api_list_chrome_profiles(user: User = Depends(get_current_user)):
     return [profile.to_dict() for profile in discover_chrome_profiles()]
 
 
 @app.put("/api/config")
-async def api_update_config(update: ConfigUpdate):
+async def api_update_config(update: ConfigUpdate, user: User = Depends(get_current_user)):
     return apply_config_update(update)
 
 
 @app.post("/api/config/check")
-async def api_check_config(update: ConfigUpdate | None = None):
+async def api_check_config(update: ConfigUpdate | None = None, user: User = Depends(get_current_user)):
     try:
         check_llm_connection(update)
         return {"ok": True}
@@ -459,20 +496,23 @@ async def api_check_config(update: ConfigUpdate | None = None):
 
 
 @app.get("/api/pricing")
-async def api_get_pricing():
+async def api_get_pricing(user: User = Depends(get_current_user)):
     return load_pricing()
 
 
 @app.put("/api/pricing")
-async def api_save_pricing(entries: list[PricingEntryModel]):
+async def api_save_pricing(entries: list[PricingEntryModel], user: User = Depends(get_current_user)):
     count = save_pricing([entry.model_dump() for entry in entries])
     return {"ok": True, "count": count}
 
 
 @app.get("/screenshots/{filename}")
-async def serve_screenshot(filename: str):
+async def serve_screenshot(filename: str, user: User = Depends(get_current_user)):
     if "/" in filename or ".." in filename or not filename.endswith(".png"):
         raise HTTPException(status_code=400, detail="Invalid filename")
+    prefix = filename.split("_step_", maxsplit=1)[0]
+    if not user_owns_run_prefix(user.id, prefix):
+        raise HTTPException(status_code=404, detail="Screenshot not found")
     path = SCREENSHOT_DIR / filename
     if not path.exists():
         raise HTTPException(status_code=404, detail="Screenshot not found")
@@ -481,8 +521,14 @@ async def serve_screenshot(filename: str):
 
 @app.websocket("/ws/runs/{run_id}")
 async def ws_run_stream(websocket: WebSocket, run_id: str):
+    session_id = websocket.cookies.get(SESSION_COOKIE_NAME)
+    user = resolve_user_from_session(session_id)
     await websocket.accept()
-    run = get_run(run_id)
+    if user is None:
+        await websocket.close(code=1008)
+        return
+
+    run = get_run_for_user(user.id, run_id)
     if not run:
         await websocket.send_json({"type": "error", "message": "Run not found"})
         await websocket.close()

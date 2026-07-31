@@ -3,13 +3,26 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..server import paths as server_paths
 from ..server.paths import WEBSITES_FILE
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp_path, path)
 
 
 @dataclass
@@ -50,6 +63,7 @@ class Website:
     url: str = ""
     context_prompt: str = ""
     tasks: list[WebsiteTask] = field(default_factory=list)
+    user_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -58,23 +72,61 @@ class Website:
             "url": self.url,
             "context_prompt": self.context_prompt,
             "tasks": [t.to_dict() for t in self.tasks],
+            "user_id": self.user_id,
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> Website:
+    def from_dict(cls, data: dict[str, Any], *, user_id: str = "") -> Website:
         return cls(
             id=str(data["id"]),
             name=str(data["name"]),
             url=str(data.get("url") or ""),
             context_prompt=str(data.get("context_prompt") or ""),
             tasks=[WebsiteTask.from_dict(t) for t in data.get("tasks", [])],
+            user_id=str(data.get("user_id") or user_id),
         )
 
 
 class WebsiteStore:
-    def __init__(self, path: Path = WEBSITES_FILE) -> None:
-        self._path = path
+    def __init__(self, user_id: str, path: Path | None = None) -> None:
+        self._user_id = user_id
+        self._path = path or (server_paths.WEBSITES_DIR / f"{user_id}.json")
         self._lock = threading.Lock()
+        self._maybe_migrate_legacy()
+
+    def _maybe_migrate_legacy(self) -> None:
+        if self._path.exists() or not WEBSITES_FILE.exists():
+            return
+        # Only the first per-user store should claim the legacy file; otherwise every
+        # new account would get a copy of the same websites.
+        try:
+            if any(server_paths.WEBSITES_DIR.glob("*.json")):
+                return
+        except OSError:
+            return
+        try:
+            with open(WEBSITES_FILE, encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (json.JSONDecodeError, OSError):
+            return
+        websites = data.get("websites", []) if isinstance(data, dict) else []
+        if not isinstance(websites, list) or not websites:
+            return
+        migrated = []
+        for item in websites:
+            if not isinstance(item, dict):
+                continue
+            item = dict(item)
+            item["user_id"] = self._user_id
+            migrated.append(item)
+        if not migrated:
+            return
+        self._save_raw(migrated)
+        backup = WEBSITES_FILE.with_suffix(".json.migrated")
+        try:
+            WEBSITES_FILE.replace(backup)
+        except OSError:
+            pass
 
     def _load_raw(self) -> list[dict[str, Any]]:
         if not self._path.exists():
@@ -93,14 +145,15 @@ class WebsiteStore:
         return websites if isinstance(websites, list) else []
 
     def _save_raw(self, websites: list[dict[str, Any]]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self._path, "w", encoding="utf-8") as f:
-            json.dump({"websites": websites}, f, indent=2)
-            f.write("\n")
+        _atomic_write_json(self._path, {"websites": websites})
 
     def list_websites(self) -> list[Website]:
         with self._lock:
-            return [Website.from_dict(w) for w in self._load_raw()]
+            return [
+                Website.from_dict(w, user_id=self._user_id)
+                for w in self._load_raw()
+                if not w.get("user_id") or w.get("user_id") == self._user_id
+            ]
 
     def get_website(self, website_id: str) -> Website | None:
         for website in self.list_websites():
@@ -115,6 +168,7 @@ class WebsiteStore:
             url=(url or "").strip(),
             context_prompt=(context_prompt or "").strip(),
             tasks=[],
+            user_id=self._user_id,
         )
         with self._lock:
             raw = self._load_raw()
@@ -135,20 +189,27 @@ class WebsiteStore:
             for item in raw:
                 if item.get("id") != website_id:
                     continue
+                if item.get("user_id") and item.get("user_id") != self._user_id:
+                    continue
                 if name is not None:
                     item["name"] = name.strip()
                 if url is not None:
                     item["url"] = url.strip()
                 if context_prompt is not None:
                     item["context_prompt"] = context_prompt.strip()
+                item["user_id"] = self._user_id
                 self._save_raw(raw)
-                return Website.from_dict(item)
+                return Website.from_dict(item, user_id=self._user_id)
         return None
 
     def delete_website(self, website_id: str) -> bool:
         with self._lock:
             raw = self._load_raw()
-            next_raw = [w for w in raw if w.get("id") != website_id]
+            next_raw = [
+                w
+                for w in raw
+                if not (w.get("id") == website_id and (not w.get("user_id") or w.get("user_id") == self._user_id))
+            ]
             if len(next_raw) == len(raw):
                 return False
             self._save_raw(next_raw)
@@ -181,8 +242,11 @@ class WebsiteStore:
             for item in raw:
                 if item.get("id") != website_id:
                     continue
+                if item.get("user_id") and item.get("user_id") != self._user_id:
+                    continue
                 tasks = item.setdefault("tasks", [])
                 tasks.append(new_task.to_dict())
+                item["user_id"] = self._user_id
                 self._save_raw(raw)
                 return new_task
         return None
@@ -197,6 +261,8 @@ class WebsiteStore:
             raw = self._load_raw()
             for item in raw:
                 if item.get("id") != website_id:
+                    continue
+                if item.get("user_id") and item.get("user_id") != self._user_id:
                     continue
                 for task_data in item.get("tasks", []):
                     if task_data.get("id") != task_id:
@@ -225,6 +291,8 @@ class WebsiteStore:
             raw = self._load_raw()
             for item in raw:
                 if item.get("id") != website_id:
+                    continue
+                if item.get("user_id") and item.get("user_id") != self._user_id:
                     continue
                 tasks = item.get("tasks", [])
                 next_tasks = [t for t in tasks if t.get("id") != task_id]

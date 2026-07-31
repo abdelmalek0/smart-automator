@@ -6,15 +6,15 @@ import { listRuns } from '@/api'
 import { Button } from '@/components/ui/button'
 import RunThreadList from '@/components/RunThreadList'
 import { useRunModal } from '@/contexts/RunModalContext'
-import { useWebsites } from '@/hooks/useWebsites'
+import { useProjects } from '@/hooks/useProjects'
 
 export default function HomePage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { openNewRun } = useRunModal()
-  const { websites } = useWebsites()
-  const websiteNames = useMemo(
-    () => Object.fromEntries(websites.map((website) => [website.id, website.name])),
-    [websites],
+  const { projects } = useProjects()
+  const projectNames = useMemo(
+    () => Object.fromEntries(projects.map((project) => [project.id, project.name])),
+    [projects],
   )
   const { data: runs = [] } = useQuery({
     queryKey: ['runs'],
@@ -54,7 +54,7 @@ export default function HomePage() {
             <Sparkles className="h-4 w-4 text-primary" />
             <h2 className="text-sm font-semibold">Recent Runs</h2>
           </div>
-          <RunThreadList runs={runs} variant="home" limit={5} websiteNames={websiteNames} />
+          <RunThreadList runs={runs} variant="home" limit={5} projectNames={projectNames} />
         </div>
       )}
     </div>

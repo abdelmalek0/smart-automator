@@ -101,6 +101,7 @@ class TestReportBuilder(unittest.TestCase):
             headless=True,
             max_steps=10,
             success_criteria="User is logged in",
+            user_id="test-user",
         )
         run.status = "pass"
         run.turn_timing = {"turn_ms": 9999, "snapshot_ms": 1, "llm_navigator_ms": 1}
@@ -123,7 +124,7 @@ class TestReportBuilder(unittest.TestCase):
         self.assertEqual(data["turn_timing"]["llm_navigator_ms"], 600)
 
     def test_render_html_report_shows_typical_turn_timing(self):
-        run = RunState(run_id="abc-123", task="Test task", headless=True, max_steps=5, success_criteria="Done")
+        run = RunState(run_id="abc-123", task="Test task", headless=True, max_steps=5, success_criteria="Done", user_id="test-user")
         run.status = "pass"
         run.finished_at = run.started_at + 3
         run.steps = [
@@ -150,6 +151,7 @@ class TestReportBuilder(unittest.TestCase):
             headless=True,
             max_steps=10,
             success_criteria="User is logged in",
+            user_id="test-user",
         )
         run.status = "pass"
         run.summary = "Logged in successfully"
@@ -184,7 +186,7 @@ class TestReportBuilder(unittest.TestCase):
         self.assertIn("12.5s", data["duration_label"])
 
     def test_render_html_report_contains_sections(self):
-        run = RunState(run_id="abc-123", task="Test task", headless=True, max_steps=5, success_criteria="Done")
+        run = RunState(run_id="abc-123", task="Test task", headless=True, max_steps=5, success_criteria="Done", user_id="test-user")
         run.status = "pass"
         run.summary = "Done"
         run.finished_at = run.started_at + 3
@@ -250,7 +252,7 @@ class TestReportBuilder(unittest.TestCase):
             self.assertIn("data:image/png;base64,", html)
 
     def test_render_html_merged_actions_in_step_details(self):
-        run = RunState(run_id="abc-123", task="Test", headless=True, max_steps=5, success_criteria="Done")
+        run = RunState(run_id="abc-123", task="Test", headless=True, max_steps=5, success_criteria="Done", user_id="test-user")
         run.status = "pass"
         run.summary = "Done"
         run.finished_at = run.started_at + 1
@@ -283,6 +285,7 @@ class TestReportBuilder(unittest.TestCase):
             headless=True,
             max_steps=5,
             success_criteria="Categories page loads",
+            user_id="test-user",
         )
         run.status = "pass"
         run.finished_at = run.started_at + 1
@@ -302,7 +305,7 @@ class TestReportBuilder(unittest.TestCase):
         self.assertEqual(len(grouped[2]), 1)
 
     def test_generate_run_report_writes_file(self):
-        run = RunState(run_id="file-run", task="Write report", headless=True, max_steps=5, success_criteria="Report exists")
+        run = RunState(run_id="file-run", task="Write report", headless=True, max_steps=5, success_criteria="Report exists", user_id="test-user")
         run.status = "pass"
         run.finished_at = run.started_at + 1
         run.steps = [
@@ -454,7 +457,7 @@ class TestReportBuilder(unittest.TestCase):
         self.assertIn('input[aria-label="Email"]', script)
 
     def test_render_html_includes_replay_script_section(self):
-        run = RunState(run_id="abc-123", task="Test", headless=True, max_steps=5, success_criteria="Done")
+        run = RunState(run_id="abc-123", task="Test", headless=True, max_steps=5, success_criteria="Done", user_id="test-user")
         run.status = "pass"
         run.finished_at = run.started_at + 1
         data = build_report_data(run, self._sample_history())

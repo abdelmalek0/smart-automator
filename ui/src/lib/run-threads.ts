@@ -11,7 +11,7 @@ export interface RunThread {
   id: string
   root: RunSummary
   runs: RunSummary[]
-  websiteId?: string | null
+  projectId?: string | null
   testGroups?: RunTestGroup[]
 }
 
@@ -64,11 +64,11 @@ function buildChainThreads(runs: RunSummary[]): RunThread[] {
   })
 }
 
-function taskGroupId(websiteId: string, taskKey: string): string {
-  return `website:${websiteId}:task:${encodeURIComponent(taskKey)}`
+function taskGroupId(projectId: string, taskKey: string): string {
+  return `project:${projectId}:task:${encodeURIComponent(taskKey)}`
 }
 
-function buildTestGroups(websiteId: string, runs: RunSummary[]): RunTestGroup[] {
+function buildTestGroups(projectId: string, runs: RunSummary[]): RunTestGroup[] {
   const grouped = new Map<string, RunSummary[]>()
 
   for (const run of runs) {
@@ -85,7 +85,7 @@ function buildTestGroups(websiteId: string, runs: RunSummary[]): RunTestGroup[] 
       const sorted = sortRunsNewestFirst(testRuns)
       const title = taskKey.length > 36 ? `${taskKey.slice(0, 36)}…` : taskKey
       return {
-        id: taskGroupId(websiteId, taskKey),
+        id: taskGroupId(projectId, taskKey),
         taskKey,
         title,
         runs: sorted,
@@ -94,7 +94,7 @@ function buildTestGroups(websiteId: string, runs: RunSummary[]): RunTestGroup[] 
     .sort((a, b) => latestTestActivity(b) - latestTestActivity(a))
 }
 
-function buildWebsiteThreads(runs: RunSummary[]): RunThread[] {
+function buildProjectThreads(runs: RunSummary[]): RunThread[] {
   const grouped = new Map<string, RunSummary[]>()
 
   for (const run of runs) {
@@ -106,24 +106,24 @@ function buildWebsiteThreads(runs: RunSummary[]): RunThread[] {
     grouped.set(run.website_id, existing)
   }
 
-  return Array.from(grouped.entries()).map(([websiteId, websiteRuns]) => {
-    const sortedRuns = sortRunsNewestFirst(websiteRuns)
+  return Array.from(grouped.entries()).map(([projectId, projectRuns]) => {
+    const sortedRuns = sortRunsNewestFirst(projectRuns)
     const latest = sortedRuns[0]
     return {
-      id: `website:${websiteId}`,
-      websiteId,
+      id: `project:${projectId}`,
+      projectId,
       root: latest,
       runs: sortedRuns,
-      testGroups: buildTestGroups(websiteId, websiteRuns),
+      testGroups: buildTestGroups(projectId, projectRuns),
     }
   })
 }
 
 export function buildRunThreads(runs: RunSummary[]): RunThread[] {
-  const websiteRuns = runs.filter((run) => run.website_id)
+  const projectRuns = runs.filter((run) => run.website_id)
   const standaloneRuns = runs.filter((run) => !run.website_id)
 
-  const threads = [...buildWebsiteThreads(websiteRuns), ...buildChainThreads(standaloneRuns)]
+  const threads = [...buildProjectThreads(projectRuns), ...buildChainThreads(standaloneRuns)]
 
   threads.sort((a, b) => latestThreadActivity(b) - latestThreadActivity(a))
   return threads
@@ -188,10 +188,10 @@ export function testRunLabel(run: RunSummary, test: RunTestGroup): string {
 
 export function threadTitle(
   thread: RunThread,
-  websiteNames: Record<string, string> = {},
+  projectNames: Record<string, string> = {},
 ): string {
-  if (thread.websiteId) {
-    return websiteNames[thread.websiteId] ?? 'Project'
+  if (thread.projectId) {
+    return projectNames[thread.projectId] ?? 'Project'
   }
   return thread.root.name || thread.root.task
 }
@@ -199,7 +199,7 @@ export function threadTitle(
 export function threadRunLabel(run: RunSummary, thread: RunThread): string {
   const mode = run.use_replay_script ? 'Automatic' : 'Training'
 
-  if (thread.websiteId) {
+  if (thread.projectId) {
     const taskKey = run.name || run.task
     const taskShort = taskKey.length > 36 ? `${taskKey.slice(0, 36)}…` : taskKey
     const matches = sortRunsOldestFirst(
@@ -249,7 +249,7 @@ export function threadStatusRun(thread: RunThread, activeRunId: string | null): 
   return threadLatestRun(thread)
 }
 
-/** True when the thread needs a header row (website bucket or multi-run chain). */
+/** True when the thread needs a header row (project bucket or multi-run chain). */
 export function threadIsGrouped(thread: RunThread): boolean {
-  return Boolean(thread.websiteId) || thread.runs.length > 1
+  return Boolean(thread.projectId) || thread.runs.length > 1
 }

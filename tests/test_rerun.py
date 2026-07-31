@@ -8,11 +8,6 @@ from fastapi.testclient import TestClient
 from smart_automator.server.app import app
 
 
-@pytest.fixture
-def client() -> TestClient:
-    return TestClient(app)
-
-
 def test_run_summary_includes_config(client: TestClient) -> None:
     res = client.post(
         "/api/runs",

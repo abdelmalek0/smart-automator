@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import unittest
 
 import pytest
@@ -13,13 +14,8 @@ from smart_automator.reporting.builder import build_report_data
 from smart_automator.reporting.html_report import render_html_report
 from smart_automator.server.app import app
 from smart_automator.server.history_store import load_run_history, save_run_history
-from smart_automator.server.run_state import RunState
+from smart_automator.server.run_state import RunState, add_run
 from smart_automator.server.step_mapper import compose_agent_task, compose_task
-
-
-@pytest.fixture
-def client() -> TestClient:
-    return TestClient(app)
 
 
 def test_start_run_requires_success_criteria(client: TestClient) -> None:
@@ -103,12 +99,27 @@ def test_start_run_rejects_script_replay_without_source(client: TestClient) -> N
 
 
 def test_start_run_rejects_missing_replay_script(client: TestClient) -> None:
+    user_id = client.get("/api/auth/me").json()["user"]["id"]
+    source_run_id = "00000000-0000-0000-0000-000000000000"
+    source = RunState(
+        run_id=source_run_id,
+        user_id=user_id,
+        task="Source",
+        headless=True,
+        max_steps=5,
+        success_criteria="Done",
+    )
+    source.status = "pass"
+    source.finished_at = time.time()
+    add_run(source)
+    source.persist()
+
     res = client.post(
         "/api/runs",
         json={
             "task": "Replay test",
             "success_criteria": "Page loads",
-            "source_run_id": "00000000-0000-0000-0000-000000000000",
+            "source_run_id": source_run_id,
             "use_replay_script": True,
         },
     )
@@ -120,6 +131,19 @@ def test_start_run_script_replay_includes_fields(client: TestClient, tmp_path, m
     from smart_automator.server import replay_store
 
     monkeypatch.setattr(replay_store, "REPLAY_DIR", tmp_path)
+    user_id = client.get("/api/auth/me").json()["user"]["id"]
+    source = RunState(
+        run_id="source-run",
+        user_id=user_id,
+        task="Source",
+        headless=True,
+        max_steps=5,
+        success_criteria="Done",
+    )
+    source.status = "pass"
+    source.finished_at = time.time()
+    add_run(source)
+    source.persist()
     replay_store.save_run_replay(
         "source-run",
         [{"index": 1, "action": "wait", "args": {"seconds": 1}}],
@@ -231,6 +255,7 @@ class TestReportCriteriaFields(unittest.TestCase):
             max_steps=10,
             success_criteria="Confirmation page visible",
             name="Checkout smoke",
+            user_id="test-user",
         )
         run.status = "pass"
         run.criteria_verdict = {

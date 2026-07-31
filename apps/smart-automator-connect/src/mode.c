@@ -16,7 +16,7 @@ sa_mode_t sa_mode_resolve(const sa_config_t *cfg) {
     return SA_MODE_REMOTE;
   }
 
-  snprintf(url, sizeof(url), "http://%s:%d/api/runs", cfg->host, cfg->ui_port);
+  snprintf(url, sizeof(url), "http://%s:%d/api/auth/setup", cfg->host, cfg->ui_port);
   if (sa_http_check_url(url, 2000) == 0) {
     return SA_MODE_LAN;
   }

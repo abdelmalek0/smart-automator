@@ -205,6 +205,10 @@ export default function SettingsPage() {
           </TabsList>
 
           <TabsContent value="llm" className="space-y-5">
+            <p className="text-sm text-muted-foreground">
+              Provider, models, and API keys are shared across all users on this server.
+            </p>
+
             <div className="space-y-2">
               <Label>Provider</Label>
               <Select value={provider} onValueChange={handleProviderChange}>

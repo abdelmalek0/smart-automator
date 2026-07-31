@@ -1,5 +1,11 @@
 // Shared TypeScript types for the QA Agent UI
 
+export interface AuthUser {
+  id: string
+  username: string
+  created_at: number
+}
+
 export type RunStatus =
   | 'pending'
   | 'running'
@@ -123,7 +129,7 @@ export interface RunDetails extends RunSummary {
   turn_timing?: TurnTiming
 }
 
-export interface WebsiteTask {
+export interface ProjectTask {
   id: string
   name?: string | null
   task: string
@@ -134,15 +140,15 @@ export interface WebsiteTask {
   fresh_profile?: boolean
 }
 
-export interface Website {
+export interface Project {
   id: string
   name: string
   url: string
   context_prompt: string
-  tasks: WebsiteTask[]
+  tasks: ProjectTask[]
 }
 
-/** @deprecated Use Website / WebsiteTask — kept for localStorage migration */
+/** @deprecated Use Project / ProjectTask — kept for localStorage migration */
 export interface SuiteTask {
   id: string
   task: string
@@ -152,7 +158,7 @@ export interface SuiteTask {
   fresh_profile?: boolean
 }
 
-/** @deprecated Use Website */
+/** @deprecated Use Project */
 export interface Suite {
   id: string
   name: string
