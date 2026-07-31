@@ -5,7 +5,12 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock, patch
 
-from smart_automator.browser.page import Page, _RELEVANT_RESOURCE_TYPES
+from smart_automator.browser.page import (
+    Page,
+    _RELEVANT_RESOURCE_TYPES,
+    _evaluate_resilient,
+    _is_destroyed_context_error,
+)
 
 
 class TestPageSettle(unittest.TestCase):
@@ -143,6 +148,110 @@ class TestPageSettle(unittest.TestCase):
         mock_build.assert_not_called()
         self.assertEqual(state.selector_map, {})
         self.assertEqual(state.element_tree.tag_name, "body")
+
+    def test_is_destroyed_context_error_matches_playwright_navigation_message(self):
+        exc = RuntimeError(
+            "Page.evaluate: Execution context was destroyed, most likely because of a navigation"
+        )
+        self.assertTrue(_is_destroyed_context_error(exc))
+        self.assertFalse(_is_destroyed_context_error(RuntimeError("element not found")))
+
+    def test_evaluate_resilient_retries_after_destroyed_context(self):
+        destroyed = RuntimeError(
+            "Page.evaluate: Execution context was destroyed, most likely because of a navigation"
+        )
+        evaluate_fn = MagicMock(side_effect=[destroyed, {"ok": True}])
+        settle = MagicMock()
+
+        result = _evaluate_resilient(evaluate_fn, "script", settle=settle)
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(evaluate_fn.call_count, 2)
+        settle.assert_called_once()
+
+    def test_evaluate_resilient_reraises_non_navigation_errors(self):
+        evaluate_fn = MagicMock(side_effect=RuntimeError("element not found"))
+        with self.assertRaisesRegex(RuntimeError, "element not found"):
+            _evaluate_resilient(evaluate_fn, "script")
+
+    def test_evaluate_resilient_swallows_destroyed_context_when_requested(self):
+        destroyed = RuntimeError(
+            "Page.evaluate: Execution context was destroyed, most likely because of a navigation"
+        )
+        evaluate_fn = MagicMock(side_effect=destroyed)
+
+        result = _evaluate_resilient(
+            evaluate_fn,
+            "script",
+            settle=MagicMock(),
+            swallow_destroyed=True,
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(evaluate_fn.call_count, 3)
+
+    def test_get_scroll_info_retries_after_destroyed_context(self):
+        pw_page = MagicMock()
+        page = Page(pw_page, page_id=0)
+        destroyed = RuntimeError(
+            "Page.evaluate: Execution context was destroyed, most likely because of a navigation"
+        )
+        pw_page.evaluate.reset_mock()
+        pw_page.evaluate.side_effect = [
+            destroyed,
+            {"scrollY": 120, "viewportHeight": 800, "scrollHeight": 2400},
+        ]
+
+        with patch.object(page, "_settle_after_navigation_race") as mock_settle:
+            scroll_y, viewport_h, scroll_h = page.get_scroll_info()
+
+        self.assertEqual((scroll_y, viewport_h, scroll_h), (120, 800, 2400))
+        mock_settle.assert_called_once()
+        self.assertEqual(pw_page.evaluate.call_count, 2)
+
+    def test_get_scroll_info_reraises_after_exhausted_retries(self):
+        pw_page = MagicMock()
+        page = Page(pw_page, page_id=0)
+        destroyed = RuntimeError(
+            "Page.evaluate: Execution context was destroyed, most likely because of a navigation"
+        )
+        pw_page.evaluate.reset_mock()
+        pw_page.evaluate.side_effect = destroyed
+
+        with patch.object(page, "_settle_after_navigation_race"):
+            with self.assertRaises(RuntimeError):
+                page.get_scroll_info()
+        self.assertEqual(pw_page.evaluate.call_count, 3)
+
+    def test_click_element_treats_destroyed_context_on_fallback_as_navigation(self):
+        pw_page = MagicMock()
+        page = Page(pw_page, page_id=0)
+        element = MagicMock()
+        element.highlight_index = 1
+        element.xpath = "/body/button[1]"
+        handle = MagicMock()
+        handle.click.side_effect = RuntimeError("click timeout")
+        destroyed = RuntimeError(
+            "Page.evaluate: Execution context was destroyed, most likely because of a navigation"
+        )
+        handle.evaluate.side_effect = destroyed
+
+        with (
+            patch.object(page, "_locate_element_with_retry", return_value=handle),
+            patch.object(page, "_scroll_into_view_if_needed"),
+            patch.object(page, "_evaluate_on_handle", return_value=None) as mock_evaluate,
+            patch.object(page, "_maybe_wait_after_interaction") as mock_wait,
+            patch.object(page, "_check_and_handle_navigation") as mock_nav,
+        ):
+            page.click_element(element)
+
+        mock_evaluate.assert_called_once_with(
+            handle,
+            "el => el.click()",
+            swallow_destroyed=True,
+        )
+        mock_wait.assert_called_once()
+        mock_nav.assert_called_once()
 
 
 if __name__ == "__main__":

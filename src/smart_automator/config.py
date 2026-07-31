@@ -30,7 +30,7 @@ class Config(BaseModel):
     active_provider: str = ""
     active_model: str = ""
     headless: bool = False
-    home_page_url: str = "https://www.google.com"
+    home_page_url: str = "about:blank"
     viewport_width: int = 1280
     viewport_height: int = 1100
     viewport_expansion: int = 0
@@ -116,7 +116,7 @@ def load_config() -> Config:
         google_api_key=os.getenv("GOOGLE_API_KEY", ""),
         google_model=os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"),
         headless=os.getenv("HEADLESS", "false").lower() == "true",
-        home_page_url=os.getenv("HOME_PAGE_URL", "https://www.google.com"),
+        home_page_url=os.getenv("HOME_PAGE_URL", "about:blank"),
         viewport_width=int(os.getenv("VIEWPORT_WIDTH", "1280")),
         viewport_height=int(os.getenv("VIEWPORT_HEIGHT", "1100")),
         viewport_expansion=int(os.getenv("VIEWPORT_EXPANSION", "0")),

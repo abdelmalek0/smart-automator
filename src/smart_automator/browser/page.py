@@ -54,6 +54,58 @@ window.navigator.permissions.query = (parameters) => (
 })();
 """
 
+_EXECUTION_CONTEXT_DESTROYED_MARKERS = (
+    "execution context was destroyed",
+    "frame was detached",
+    "target closed",
+)
+
+_SCROLL_INFO_JS = """() => ({
+    scrollY: window.scrollY,
+    viewportHeight: window.visualViewport?.height || window.innerHeight,
+    scrollHeight: Math.max(
+        document.documentElement?.scrollHeight ?? 0,
+        document.body?.scrollHeight ?? 0,
+    ),
+})"""
+
+
+def _is_destroyed_context_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return any(marker in message for marker in _EXECUTION_CONTEXT_DESTROYED_MARKERS)
+
+
+def _evaluate_resilient(
+    evaluate_fn: Callable[..., object],
+    *args: object,
+    settle: Callable[[], None] | None = None,
+    max_attempts: int = 3,
+    swallow_destroyed: bool = False,
+    **kwargs: object,
+) -> object | None:
+    """Retry evaluate calls that fail because navigation destroyed the JS context."""
+    last_exc: BaseException | None = None
+    for attempt in range(max_attempts):
+        try:
+            return evaluate_fn(*args, **kwargs)
+        except Exception as exc:
+            if not _is_destroyed_context_error(exc):
+                raise
+            last_exc = exc
+            if attempt < max_attempts - 1:
+                if settle is not None:
+                    settle()
+                continue
+            if swallow_destroyed:
+                return None
+            raise
+    if swallow_destroyed:
+        return None
+    if last_exc is not None:
+        raise last_exc
+    return None
+
+
 _DOM_STABILITY_PROBE_JS = """
 () => {
   const interactiveSelector = (
@@ -95,7 +147,7 @@ class Page:
         viewport_expansion: int = 0,
         allowed_urls: list[str] | None = None,
         denied_urls: list[str] | None = None,
-        home_page_url: str = "https://www.google.com",
+        home_page_url: str = "about:blank",
     ):
         self._page = playwright_page
         self.page_id = page_id
@@ -117,9 +169,39 @@ class Page:
         """When True, interaction handlers skip their stable wait; batch settle handles it."""
         self._defer_post_action_stable = defer
 
+    @property
+    def defer_post_action_stable(self) -> bool:
+        return self._defer_post_action_stable
+
     def _maybe_wait_after_interaction(self) -> None:
         if not self._defer_post_action_stable:
             self.wait_for_page_stable()
+
+    def _settle_after_navigation_race(self) -> None:
+        self.wait_for_page_stable(minimum_wait=0.1)
+
+    def _evaluate_on_page(self, script: str, *args: object) -> object:
+        return _evaluate_resilient(
+            self._page.evaluate,
+            script,
+            *args,
+            settle=self._settle_after_navigation_race,
+        )
+
+    def _evaluate_on_handle(
+        self,
+        handle: ElementHandle,
+        script: str,
+        *args: object,
+        swallow_destroyed: bool = False,
+    ) -> object | None:
+        return _evaluate_resilient(
+            handle.evaluate,
+            script,
+            *args,
+            settle=self._settle_after_navigation_race,
+            swallow_destroyed=swallow_destroyed,
+        )
 
     def _ensure_script_injection(self) -> None:
         script_path = str(BUILD_DOM_TREE_SCRIPT_PATH)
@@ -155,7 +237,8 @@ class Page:
 
     def _probe_dom_signature(self) -> str:
         try:
-            return self._page.evaluate(_DOM_STABILITY_PROBE_JS)
+            result = self._evaluate_on_page(_DOM_STABILITY_PROBE_JS)
+            return str(result)
         except Exception:
             return ""
 
@@ -373,15 +456,14 @@ class Page:
         return self._cached_state
 
     def get_scroll_info(self) -> tuple[int, int, int]:
-        info = self._page.evaluate("""() => ({
-            scrollY: window.scrollY,
-            viewportHeight: window.visualViewport?.height || window.innerHeight,
-            scrollHeight: Math.max(
-                document.documentElement?.scrollHeight ?? 0,
-                document.body?.scrollHeight ?? 0,
-            ),
-        })""")
-        return int(info["scrollY"]), int(info["viewportHeight"]), int(info["scrollHeight"])
+        info = self._evaluate_on_page(_SCROLL_INFO_JS)
+        if not isinstance(info, dict):
+            raise TypeError(f"Expected scroll info dict, got {type(info)!r}")
+        return (
+            int(info["scrollY"]),
+            int(info["viewportHeight"]),
+            int(info["scrollHeight"]),
+        )
 
     def probe_element_state(
         self,
@@ -577,7 +659,7 @@ class Page:
         except URLNotAllowedError:
             raise
         except Exception:
-            handle.evaluate("el => el.click()")
+            self._evaluate_on_handle(handle, "el => el.click()", swallow_destroyed=True)
             self._maybe_wait_after_interaction()
             self._check_and_handle_navigation()
         self._cached_state = None

@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 from smart_automator.actions.builder import (
     NavigatorActionRegistry,
     _needs_inter_action_stable_wait,
+    _wait_before_verification_snapshot,
 )
 from smart_automator.actions.schemas import Action
 from smart_automator.agent.context import AgentContext
@@ -75,6 +76,10 @@ class TestExecuteMultiClicks(unittest.TestCase):
         browser_context = context.browser_context
         page = MagicMock()
         page.get_cached_state.return_value = None
+        page.defer_post_action_stable = False
+        page.set_defer_post_action_stable.side_effect = (
+            lambda defer: setattr(page, "defer_post_action_stable", defer)
+        )
         browser_context.get_current_page.return_value = page
 
         digit = _node(0, "0")
@@ -109,12 +114,43 @@ class TestConservativeWaitDeduplication(unittest.TestCase):
         action = Action(name="click_element", args={"index": 0})
         self.assertTrue(_needs_inter_action_stable_wait(action, is_last_in_batch=False))
 
+    def test_verification_snapshot_wait_flushes_deferred_settle_on_last_action(self):
+        page = MagicMock()
+        page.defer_post_action_stable = True
+        action = Action(name="click_element", args={"index": 0})
+
+        _wait_before_verification_snapshot(page, action, is_last_in_batch=True)
+
+        page.wait_for_page_stable.assert_called_once_with(minimum_wait=0.1)
+
+    def test_verification_snapshot_wait_skipped_when_inter_action_wait_ran(self):
+        page = MagicMock()
+        page.defer_post_action_stable = True
+        action = Action(name="click_element", args={"index": 0})
+
+        _wait_before_verification_snapshot(page, action, is_last_in_batch=False)
+
+        page.wait_for_page_stable.assert_called_once_with(minimum_wait=0.1)
+
+    def test_verification_snapshot_wait_skipped_without_deferred_settle(self):
+        page = MagicMock()
+        page.defer_post_action_stable = False
+        action = Action(name="click_element", args={"index": 0})
+
+        _wait_before_verification_snapshot(page, action, is_last_in_batch=True)
+
+        page.wait_for_page_stable.assert_not_called()
+
     def test_single_click_batch_defers_stable_waits(self):
         context = AgentContext("test", MagicMock(), MagicMock())
         context.options.action_delay_seconds = 0
         browser_context = context.browser_context
         page = MagicMock()
         page.get_cached_state.return_value = None
+        page.defer_post_action_stable = False
+        page.set_defer_post_action_stable.side_effect = (
+            lambda defer: setattr(page, "defer_post_action_stable", defer)
+        )
         browser_context.get_current_page.return_value = page
 
         digit = _node(0, "0")
@@ -135,7 +171,7 @@ class TestConservativeWaitDeduplication(unittest.TestCase):
 
         page.set_defer_post_action_stable.assert_any_call(True)
         page.set_defer_post_action_stable.assert_any_call(False)
-        page.wait_for_page_stable.assert_not_called()
+        page.wait_for_page_stable.assert_called_once_with(minimum_wait=0.1)
 
     def test_multi_click_batch_waits_only_between_actions(self):
         context = AgentContext("test", MagicMock(), MagicMock())
@@ -143,6 +179,10 @@ class TestConservativeWaitDeduplication(unittest.TestCase):
         browser_context = context.browser_context
         page = MagicMock()
         page.get_cached_state.return_value = None
+        page.defer_post_action_stable = False
+        page.set_defer_post_action_stable.side_effect = (
+            lambda defer: setattr(page, "defer_post_action_stable", defer)
+        )
         browser_context.get_current_page.return_value = page
 
         digit = _node(0, "0")
@@ -165,7 +205,7 @@ class TestConservativeWaitDeduplication(unittest.TestCase):
         with patch.object(browser_context, "remove_highlight"):
             registry.execute_multi(actions, context, browser_state=state)
 
-        self.assertEqual(page.wait_for_page_stable.call_count, 2)
+        self.assertEqual(page.wait_for_page_stable.call_count, 3)
 
 
 if __name__ == "__main__":

@@ -102,6 +102,15 @@ def _needs_inter_action_stable_wait(action: Action, *, is_last_in_batch: bool) -
     return action.name in _INTERACTION_ACTIONS
 
 
+def _wait_before_verification_snapshot(page, action: Action, *, is_last_in_batch: bool) -> None:
+    """Flush deferred interaction settle before page reads used for verification."""
+    if (
+        _needs_inter_action_stable_wait(action, is_last_in_batch=is_last_in_batch)
+        or page.defer_post_action_stable
+    ):
+        page.wait_for_page_stable(minimum_wait=0.1)
+
+
 def _action_will_navigate(action: Action, page_url: str) -> bool:
     if action.name in ("go_back", "search_google", "open_tab"):
         return True
@@ -246,8 +255,11 @@ class NavigatorActionRegistry:
             result.interacted_element = convert_dom_element_to_history_element(locate_element)
 
         is_last_in_batch = action_index == total_actions - 1
-        if _needs_inter_action_stable_wait(action, is_last_in_batch=is_last_in_batch):
-            page.wait_for_page_stable(minimum_wait=0.1)
+        _wait_before_verification_snapshot(
+            page,
+            action,
+            is_last_in_batch=is_last_in_batch,
+        )
         after_snapshot = capture_page_snapshot(page, browser_context.get_all_tab_ids())
         after_element = probe_element(
             page,
