@@ -12,8 +12,11 @@ export interface RunThread {
   root: RunSummary
   runs: RunSummary[]
   projectId?: string | null
+  uncategorized?: boolean
   testGroups?: RunTestGroup[]
 }
+
+export const UNCATEGORIZED_THREAD_ID = 'uncategorized'
 
 const ACTIVE_STATUSES: RunStatus[] = ['pending', 'running', 'awaiting_human']
 
@@ -119,11 +122,43 @@ function buildProjectThreads(runs: RunSummary[]): RunThread[] {
   })
 }
 
+function buildUncategorizedThread(runs: RunSummary[]): RunThread | null {
+  if (runs.length === 0) return null
+
+  const chains = buildChainThreads(runs)
+  const sortedRuns = sortRunsNewestFirst(runs)
+
+  const testGroups: RunTestGroup[] = chains
+    .map((chain) => {
+      const taskKey = chain.root.name || chain.root.task
+      const title = taskKey.length > 36 ? `${taskKey.slice(0, 36)}…` : taskKey
+      return {
+        id: chain.id,
+        taskKey,
+        title,
+        runs: chain.runs,
+      }
+    })
+    .sort((a, b) => latestTestActivity(b) - latestTestActivity(a))
+
+  return {
+    id: UNCATEGORIZED_THREAD_ID,
+    uncategorized: true,
+    root: sortedRuns[0],
+    runs: sortedRuns,
+    testGroups,
+  }
+}
+
 export function buildRunThreads(runs: RunSummary[]): RunThread[] {
   const projectRuns = runs.filter((run) => run.website_id)
   const standaloneRuns = runs.filter((run) => !run.website_id)
 
-  const threads = [...buildProjectThreads(projectRuns), ...buildChainThreads(standaloneRuns)]
+  const threads = [...buildProjectThreads(projectRuns)]
+  const uncategorized = buildUncategorizedThread(standaloneRuns)
+  if (uncategorized) {
+    threads.push(uncategorized)
+  }
 
   threads.sort((a, b) => latestThreadActivity(b) - latestThreadActivity(a))
   return threads
@@ -175,21 +210,18 @@ export function testHasActiveRun(test: RunTestGroup): boolean {
 }
 
 export function testRunLabel(run: RunSummary, test: RunTestGroup): string {
-  const mode = run.use_replay_script ? 'Automatic' : 'Training'
-  const sameMode = sortRunsOldestFirst(
-    test.runs.filter(
-      (item) => Boolean(item.use_replay_script) === Boolean(run.use_replay_script),
-    ),
-  )
-  if (sameMode.length <= 1) return mode
-  const index = sameMode.findIndex((item) => item.run_id === run.run_id) + 1
-  return `${mode} ${index}`
+  const ordered = sortRunsOldestFirst(test.runs)
+  const index = ordered.findIndex((item) => item.run_id === run.run_id) + 1
+  return `Attempt ${index}`
 }
 
 export function threadTitle(
   thread: RunThread,
   projectNames: Record<string, string> = {},
 ): string {
+  if (thread.uncategorized) {
+    return 'Uncategorized'
+  }
   if (thread.projectId) {
     return projectNames[thread.projectId] ?? 'Project'
   }
@@ -197,31 +229,9 @@ export function threadTitle(
 }
 
 export function threadRunLabel(run: RunSummary, thread: RunThread): string {
-  const mode = run.use_replay_script ? 'Automatic' : 'Training'
-
-  if (thread.projectId) {
-    const taskKey = run.name || run.task
-    const taskShort = taskKey.length > 36 ? `${taskKey.slice(0, 36)}…` : taskKey
-    const matches = sortRunsOldestFirst(
-      thread.runs.filter(
-        (item) =>
-          (item.name || item.task) === taskKey &&
-          Boolean(item.use_replay_script) === Boolean(run.use_replay_script),
-      ),
-    )
-    if (matches.length <= 1) return `${taskShort} · ${mode}`
-    const index = matches.findIndex((item) => item.run_id === run.run_id) + 1
-    return `${taskShort} · ${mode} ${index}`
-  }
-
-  const sameMode = sortRunsOldestFirst(
-    thread.runs.filter(
-      (item) => Boolean(item.use_replay_script) === Boolean(run.use_replay_script),
-    ),
-  )
-  if (sameMode.length <= 1) return mode
-  const index = sameMode.findIndex((item) => item.run_id === run.run_id) + 1
-  return `${mode} ${index}`
+  const ordered = sortRunsOldestFirst(thread.runs)
+  const index = ordered.findIndex((item) => item.run_id === run.run_id) + 1
+  return `Attempt ${index}`
 }
 
 export function threadHasActiveRun(thread: RunThread): boolean {
@@ -249,7 +259,14 @@ export function threadStatusRun(thread: RunThread, activeRunId: string | null): 
   return threadLatestRun(thread)
 }
 
-/** True when the thread needs a header row (project bucket or multi-run chain). */
-export function threadIsGrouped(thread: RunThread): boolean {
-  return Boolean(thread.projectId) || thread.runs.length > 1
+/** Expand every project/section and test group in the sidebar tree. */
+export function allThreadExpandIds(threads: RunThread[]): Set<string> {
+  const ids = new Set<string>()
+  for (const thread of threads) {
+    ids.add(thread.id)
+    for (const test of thread.testGroups ?? []) {
+      ids.add(test.id)
+    }
+  }
+  return ids
 }

@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight, Globe, History, MoreHorizontal, RotateCcw, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, Globe, History, Inbox, MoreHorizontal, RotateCcw, Trash2 } from 'lucide-react'
 import { deleteRun } from '@/api'
 import { Button } from '@/components/ui/button'
 import {
@@ -23,14 +23,13 @@ import {
 import { useRunModal } from '@/contexts/RunModalContext'
 import { runSummaryToDraft } from '@/lib/run-draft'
 import {
+  allThreadExpandIds,
   buildRunThreads,
   sortThreadsForSidebar,
   testGroupShouldExpand,
   testHasActiveRun,
   testRunLabel,
   threadHasActiveRun,
-  threadIsGrouped,
-  threadRunLabel,
   threadShouldExpand,
   threadTitle,
   type RunTestGroup,
@@ -54,6 +53,11 @@ interface Props {
   emptyMessage?: string
   projectNames?: Record<string, string>
   projects?: Project[]
+  /** When true, show only top-level project/section headers. */
+  rootsCollapsed?: boolean
+  onRequestExpandRoots?: () => void
+  /** Incremented when the Recent section is expanded to open all projects/tests. */
+  expandAllToken?: number
 }
 
 function StatusDot({ status }: { status: RunStatus }) {
@@ -145,23 +149,21 @@ function RunActions({ run, projects, onDelete }: RunActionsProps) {
 interface RunRowProps {
   run: RunSummary
   active: boolean
-  indented?: boolean
+  nested?: boolean
   label?: string
   roomy?: boolean
   projects?: Project[]
   onDelete: (run: RunSummary) => void
 }
 
-function RunRow({ run, active, indented = false, label, roomy = false, projects, onDelete }: RunRowProps) {
+function RunRow({ run, active, nested = false, label, roomy = false, projects, onDelete }: RunRowProps) {
   const title = label ?? (run.name || run.task)
-  const showModeChip = !label
 
   return (
     <div
       className={cn(
         'group relative rounded-md transition-colors border-l-2',
         active ? 'bg-accent/40 border-primary' : 'border-transparent hover:bg-accent/30',
-        indented && 'ml-3',
       )}
     >
       <Link
@@ -172,7 +174,7 @@ function RunRow({ run, active, indented = false, label, roomy = false, projects,
         <p
           className={cn(
             'truncate leading-snug mb-1',
-            indented ? 'text-xs font-medium' : 'text-sm font-medium',
+            nested ? 'text-xs font-medium' : 'text-sm font-medium',
             active ? 'text-foreground' : 'text-foreground/90',
           )}
         >
@@ -181,12 +183,8 @@ function RunRow({ run, active, indented = false, label, roomy = false, projects,
         <div className="flex items-center gap-1.5 min-w-0 text-[11px] text-muted-foreground">
           <StatusDot status={run.status} />
           <span className="truncate">{statusLabel(run.status)}</span>
-          {showModeChip && (
-            <>
-              <MetaSep />
-              <ModeChip useReplayScript={run.use_replay_script} compact />
-            </>
-          )}
+          <MetaSep />
+          <ModeChip useReplayScript={run.use_replay_script} compact />
           <MetaSep />
           <span className="mono truncate">
             {formatElapsed(elapsedSeconds(run.started_at, run.finished_at))}
@@ -213,73 +211,69 @@ function CollapsePanel({ expanded, children }: { expanded: boolean; children: Re
   )
 }
 
+const CHILD_RAIL = 'ml-3 border-l border-border/50 pl-1.5'
+
 function LivePulse() {
   return (
     <span className="inline-block w-1.5 h-1.5 rounded-full bg-brand-blue animate-pulse-slow flex-shrink-0" />
   )
 }
 
-interface ProjectHeaderProps {
+interface ThreadHeaderProps {
   title: string
+  level: 'project' | 'group'
+  projectIcon?: 'globe' | 'inbox'
   expanded: boolean
   onToggle: () => void
-  hasActiveRun: boolean
+  hasLiveRun: boolean
+  containsActive: boolean
+  collapseLabel: string
 }
 
-function ProjectHeader({ title, expanded, onToggle, hasActiveRun }: ProjectHeaderProps) {
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      className="w-full flex items-center gap-1.5 min-w-0 px-2 py-1.5 text-left transition-colors hover:text-foreground/90"
-      title={expanded ? 'Collapse project' : 'Expand project'}
-    >
-      {expanded ? (
-        <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground/70" />
-      ) : (
-        <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground/70" />
-      )}
-      <Globe className="h-3 w-3 shrink-0 text-muted-foreground/60" />
-      <span className="truncate flex-1 text-[11px] font-semibold tracking-wide text-muted-foreground">
-        {title}
-      </span>
-      {hasActiveRun && <LivePulse />}
-    </button>
-  )
-}
-
-interface TestHeaderProps {
-  title: string
-  expanded: boolean
-  onToggle: () => void
-  hasActiveRun: boolean
-  indent?: boolean
-}
-
-function TestHeader({
+function ThreadHeader({
   title,
+  level,
+  projectIcon,
   expanded,
   onToggle,
-  hasActiveRun,
-  indent = false,
-}: TestHeaderProps) {
+  hasLiveRun,
+  containsActive,
+  collapseLabel,
+}: ThreadHeaderProps) {
   return (
     <button
       type="button"
       onClick={onToggle}
       className={cn(
-        'w-full flex items-center gap-1.5 min-w-0 px-2 py-1.5 text-left transition-colors hover:text-foreground',
-        indent && 'ml-3',
+        'w-full min-w-0 px-2 py-1.5 text-left transition-colors rounded-md hover:bg-accent/30',
+        containsActive && !expanded && 'bg-accent/25',
       )}
-      title={expanded ? 'Collapse test' : 'Expand test'}
+      title={expanded ? `Collapse ${collapseLabel}` : `Expand ${collapseLabel}`}
     >
-      {expanded ? (
-        <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground/70" />
-      ) : (
-        <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground/70" />
-      )}
-      <span className="truncate flex-1 text-xs font-medium text-foreground/75 text-left">{title}</span>
-      {hasActiveRun && <LivePulse />}
+      <div className="flex items-center gap-1.5 min-w-0 w-full">
+        {expanded ? (
+          <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground/70" />
+        ) : (
+          <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground/70" />
+        )}
+        {level === 'project' && projectIcon === 'globe' ? (
+          <Globe className="h-3 w-3 shrink-0 text-muted-foreground/60" />
+        ) : null}
+        {level === 'project' && projectIcon === 'inbox' ? (
+          <Inbox className="h-3 w-3 shrink-0 text-muted-foreground/60" />
+        ) : null}
+        <span
+          className={cn(
+            'truncate flex-1 text-left',
+            level === 'project'
+              ? 'text-[11px] font-semibold uppercase tracking-wide text-muted-foreground'
+              : 'text-xs font-medium text-foreground/80',
+          )}
+        >
+          {title}
+        </span>
+        {!expanded && hasLiveRun ? <LivePulse /> : null}
+      </div>
     </button>
   )
 }
@@ -303,23 +297,29 @@ function TestGroupBlock({
   roomy = false,
   projects,
 }: TestGroupBlockProps) {
+  const containsActive = Boolean(
+    activeRunId && test.runs.some((run) => run.run_id === activeRunId),
+  )
+
   return (
     <div className="space-y-px">
-      <TestHeader
+      <ThreadHeader
         title={test.title}
+        level="group"
         expanded={expanded}
         onToggle={onToggle}
-        hasActiveRun={testHasActiveRun(test)}
-        indent
+        hasLiveRun={testHasActiveRun(test)}
+        containsActive={containsActive}
+        collapseLabel="test"
       />
       <CollapsePanel expanded={expanded}>
-        <div className="space-y-px border-l border-border/50 ml-6 pl-1">
+        <div className={cn('space-y-px', CHILD_RAIL)}>
           {test.runs.map((run) => (
             <RunRow
               key={run.run_id}
               run={run}
               active={activeRunId === run.run_id}
-              indented
+              nested
               label={testRunLabel(run, test)}
               roomy={roomy}
               projects={projects}
@@ -358,17 +358,25 @@ function ProjectThreadBlock({
   projects,
 }: ProjectThreadBlockProps) {
   const testGroups = thread.testGroups ?? []
+  const containsActive = Boolean(
+    activeRunId && thread.runs.some((run) => run.run_id === activeRunId),
+  )
+  const projectIcon = thread.uncategorized ? 'inbox' : 'globe'
 
   return (
     <div className="space-y-px">
-      <ProjectHeader
+      <ThreadHeader
         title={threadTitle(thread, projectNames)}
+        level="project"
+        projectIcon={projectIcon}
         expanded={expanded}
         onToggle={onToggle}
-        hasActiveRun={threadHasActiveRun(thread)}
+        hasLiveRun={threadHasActiveRun(thread)}
+        containsActive={containsActive}
+        collapseLabel={thread.uncategorized ? 'section' : 'project'}
       />
       <CollapsePanel expanded={expanded}>
-        <div className="space-y-px border-l border-border/50 ml-3 pl-1">
+        <div className={cn('space-y-px', CHILD_RAIL)}>
           {testGroups.map((test) => (
             <TestGroupBlock
               key={test.id}
@@ -387,53 +395,23 @@ function ProjectThreadBlock({
   )
 }
 
-interface ChainThreadBlockProps {
-  thread: RunThread
-  activeRunId: string | null
-  expanded: boolean
-  onToggle: () => void
-  onDelete: (run: RunSummary) => void
-  projectNames: Record<string, string>
-  roomy?: boolean
-  projects?: Project[]
+function testIdsForThread(thread: RunThread): string[] {
+  return (thread.testGroups ?? []).map((test) => test.id)
 }
 
-function ChainThreadBlock({
-  thread,
-  activeRunId,
-  expanded,
-  onToggle,
-  onDelete,
-  projectNames,
-  roomy = false,
-  projects,
-}: ChainThreadBlockProps) {
-  return (
-    <div className="space-y-px">
-      <TestHeader
-        title={threadTitle(thread, projectNames)}
-        expanded={expanded}
-        onToggle={onToggle}
-        hasActiveRun={threadHasActiveRun(thread)}
-      />
-      <CollapsePanel expanded={expanded}>
-        <div className="space-y-px border-l border-border/50 ml-3 pl-1">
-          {thread.runs.map((run) => (
-            <RunRow
-              key={run.run_id}
-              run={run}
-              active={activeRunId === run.run_id}
-              indented
-              label={threadRunLabel(run, thread)}
-              roomy={roomy}
-              projects={projects}
-              onDelete={onDelete}
-            />
-          ))}
-        </div>
-      </CollapsePanel>
-    </div>
-  )
+function applyThreadToggle(prev: Set<string>, thread: RunThread): Set<string> {
+  const next = new Set(prev)
+  const testIds = testIdsForThread(thread)
+
+  if (next.has(thread.id)) {
+    next.delete(thread.id)
+    for (const id of testIds) next.delete(id)
+    return next
+  }
+
+  next.add(thread.id)
+  for (const id of testIds) next.delete(id)
+  return next
 }
 
 export default function RunThreadList({
@@ -444,6 +422,9 @@ export default function RunThreadList({
   emptyMessage = 'No runs yet',
   projectNames = {},
   projects = [],
+  rootsCollapsed = false,
+  onRequestExpandRoots,
+  expandAllToken = 0,
 }: Props) {
   const threads = useMemo(() => buildRunThreads(runs), [runs])
   const visibleThreads = useMemo(() => {
@@ -458,8 +439,28 @@ export default function RunThreadList({
   const [deleteTarget, setDeleteTarget] = useState<RunSummary | null>(null)
   const [deleting, setDeleting] = useState(false)
   const roomy = variant === 'home'
+  const processedExpandAllToken = useRef(0)
+  const skipNextAutoExpand = useRef(false)
 
   useEffect(() => {
+    if (rootsCollapsed) {
+      setExpandedRoots(new Set())
+    }
+  }, [rootsCollapsed])
+
+  useEffect(() => {
+    if (expandAllToken === 0 || expandAllToken === processedExpandAllToken.current) return
+    processedExpandAllToken.current = expandAllToken
+    setExpandedRoots(allThreadExpandIds(threads))
+  }, [expandAllToken, threads])
+
+  useEffect(() => {
+    if (rootsCollapsed) return
+    if (skipNextAutoExpand.current) {
+      skipNextAutoExpand.current = false
+      return
+    }
+
     setExpandedRoots((prev) => {
       const next = new Set(prev)
       for (const thread of threads) {
@@ -475,7 +476,11 @@ export default function RunThreadList({
       }
       return next
     })
-  }, [threads, activeRunId])
+  }, [threads, activeRunId, rootsCollapsed])
+
+  function toggleThreadExpanded(thread: RunThread) {
+    setExpandedRoots((prev) => applyThreadToggle(prev, thread))
+  }
 
   function toggleExpanded(rootId: string) {
     setExpandedRoots((prev) => {
@@ -523,47 +528,25 @@ export default function RunThreadList({
     <>
       <div className={variant === 'sidebar' ? 'space-y-px' : 'space-y-1'}>
         {visibleThreads.map((thread) => {
-          const expanded = expandedRoots.has(thread.id)
-
-          if (!threadIsGrouped(thread)) {
-            const run = thread.runs[0]
-            return (
-              <RunRow
-                key={thread.id}
-                run={run}
-                active={activeRunId === run.run_id}
-                roomy={roomy}
-                projects={projects}
-                onDelete={setDeleteTarget}
-              />
-            )
-          }
-
-          if (thread.projectId && thread.testGroups) {
-            return (
-              <ProjectThreadBlock
-                key={thread.id}
-                thread={thread}
-                activeRunId={activeRunId}
-                expanded={expanded}
-                onToggle={() => toggleExpanded(thread.id)}
-                expandedTests={expandedRoots}
-                onToggleTest={toggleExpanded}
-                onDelete={setDeleteTarget}
-                projectNames={projectNames}
-                roomy={roomy}
-                projects={projects}
-              />
-            )
-          }
+          const expanded = !rootsCollapsed && expandedRoots.has(thread.id)
 
           return (
-            <ChainThreadBlock
+            <ProjectThreadBlock
               key={thread.id}
               thread={thread}
               activeRunId={activeRunId}
               expanded={expanded}
-              onToggle={() => toggleExpanded(thread.id)}
+              onToggle={() => {
+                if (rootsCollapsed) {
+                  skipNextAutoExpand.current = true
+                  onRequestExpandRoots?.()
+                  setExpandedRoots((prev) => applyThreadToggle(prev, thread))
+                  return
+                }
+                toggleThreadExpanded(thread)
+              }}
+              expandedTests={expandedRoots}
+              onToggleTest={toggleExpanded}
               onDelete={setDeleteTarget}
               projectNames={projectNames}
               roomy={roomy}

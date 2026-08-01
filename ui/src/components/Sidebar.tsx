@@ -1,6 +1,6 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { LogOut, Plus } from 'lucide-react'
+import { ChevronDown, ChevronRight, LogOut, Plus } from 'lucide-react'
 import logoUrl from '../../logo.jpeg'
 import type { RunSummary } from '@/types'
 import { Button } from '@/components/ui/button'
@@ -10,6 +10,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import RunThreadList from '@/components/RunThreadList'
 import SidebarNav from '@/components/SidebarNav'
 import { useProjects } from '@/hooks/useProjects'
+import { cn } from '@/lib/utils'
 
 interface Props {
   runs: RunSummary[]
@@ -17,6 +18,8 @@ interface Props {
 }
 
 export default function Sidebar({ runs, activeRunId }: Props) {
+  const [recentExpanded, setRecentExpanded] = useState(true)
+  const [expandAllToken, setExpandAllToken] = useState(0)
   const { openNewRun } = useRunModal()
   const { user, logout } = useAuth()
   const { projects } = useProjects()
@@ -46,11 +49,30 @@ export default function Sidebar({ runs, activeRunId }: Props) {
         </Button>
       </div>
 
-      <div className="px-3 pt-3 pb-1.5">
+      <button
+        type="button"
+        onClick={() => {
+          setRecentExpanded((prev) => {
+            if (!prev) setExpandAllToken((token) => token + 1)
+            return !prev
+          })
+        }}
+        className={cn(
+          'flex w-full items-center justify-between gap-2 px-3 pt-3 pb-1.5 text-left transition-colors rounded-md',
+          'hover:bg-accent/30',
+        )}
+        title={recentExpanded ? 'Collapse to project names' : 'Expand recent runs'}
+        aria-expanded={recentExpanded}
+      >
         <span className="text-[10px] font-semibold tracking-widest text-muted-foreground uppercase">
           Recent
         </span>
-      </div>
+        {recentExpanded ? (
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" />
+        )}
+      </button>
 
       <ScrollArea className="flex-1 px-1.5">
         <div className="pb-2">
@@ -60,6 +82,9 @@ export default function Sidebar({ runs, activeRunId }: Props) {
             variant="sidebar"
             projectNames={projectNames}
             projects={projects}
+            rootsCollapsed={!recentExpanded}
+            expandAllToken={expandAllToken}
+            onRequestExpandRoots={() => setRecentExpanded(true)}
           />
         </div>
       </ScrollArea>
