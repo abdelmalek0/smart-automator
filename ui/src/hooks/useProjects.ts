@@ -6,8 +6,9 @@ import {
   deleteProjectTask,
   listProjects,
   updateProject,
+  updateProjectTask,
 } from '@/api'
-import type { Project, ProjectTask } from '@/types'
+import type { ProjectTask } from '@/types'
 
 const QUERY_KEY = ['projects'] as const
 
@@ -54,6 +55,18 @@ export function useProjects() {
     onSuccess: invalidate,
   })
 
+  const updateTaskMutation = useMutation({
+    mutationFn: ({
+      projectId,
+      taskId,
+      ...payload
+    }: {
+      projectId: string
+      taskId: string
+    } & Partial<Omit<ProjectTask, 'id'>>) => updateProjectTask(projectId, taskId, payload),
+    onSuccess: invalidate,
+  })
+
   const removeTaskMutation = useMutation({
     mutationFn: ({ projectId, taskId }: { projectId: string; taskId: string }) =>
       deleteProjectTask(projectId, taskId),
@@ -68,6 +81,7 @@ export function useProjects() {
     updateProject: updateProjectMutation.mutateAsync,
     deleteProject: deleteProjectMutation.mutateAsync,
     addTaskToProject: addTaskMutation.mutateAsync,
+    updateProjectTask: updateTaskMutation.mutateAsync,
     removeTaskFromProject: removeTaskMutation.mutateAsync,
   }
 }

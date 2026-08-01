@@ -37,6 +37,7 @@ from .config_service import (
 from .models import (
     ConfigUpdate,
     PricingEntryModel,
+    ReplayUpdateRequest,
     StartRunRequest,
     WebsiteCreateRequest,
     WebsiteTaskCreateRequest,
@@ -46,7 +47,8 @@ from .models import (
 from .paths import AUTH_DIR, ENV_FILE, HISTORY_DIR, REPLAY_DIR, REPORT_DIR, RUNS_DIR, SCREENSHOT_DIR, UI_DIST, WEBSITES_DIR
 from .run_store import user_owns_run_prefix
 from .history_store import delete_run_history
-from .replay_store import delete_run_replay, has_replay_script, load_run_replay
+from .replay_store import delete_run_replay, has_replay_script, load_run_replay, save_run_replay
+from ..reporting.replay_script import format_replay_script
 from .run_state import (
     RunState,
     add_run,
@@ -263,6 +265,56 @@ async def download_report(run_id: str, user: User = Depends(get_current_user)):
         media_type="text/html",
         filename=f"run-{run_id[:8]}.html",
     )
+
+
+def _normalize_replay_steps(raw_steps: list) -> list[dict]:
+    normalized: list[dict] = []
+    for item in raw_steps:
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=400, detail="Each replay step must be an object")
+        action = item.get("action")
+        if not isinstance(action, str) or not action.strip():
+            raise HTTPException(status_code=400, detail="Each replay step needs a string action")
+        args = item.get("args")
+        if args is None:
+            args = {}
+        if not isinstance(args, dict):
+            raise HTTPException(status_code=400, detail="Each replay step args must be an object")
+        step = dict(item)
+        step["action"] = action.strip()
+        step["args"] = args
+        step["index"] = len(normalized) + 1
+        normalized.append(step)
+    return normalized
+
+
+@app.get("/api/runs/{run_id}/replay")
+async def get_run_replay(run_id: str, user: User = Depends(get_current_user)):
+    _require_owned_run(user, run_id)
+    data = load_run_replay(run_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Replay not found")
+    return {
+        "replay_steps": data.get("replay_steps") or [],
+        "replay_script": data.get("replay_script") or "",
+    }
+
+
+@app.put("/api/runs/{run_id}/replay")
+async def update_run_replay(
+    run_id: str,
+    req: ReplayUpdateRequest,
+    user: User = Depends(get_current_user),
+):
+    run = _require_owned_run(user, run_id)
+    steps = _normalize_replay_steps(req.replay_steps)
+    script = format_replay_script(
+        steps,
+        run_id=run_id,
+        status=run.status or "pass",
+    )
+    save_run_replay(run_id, steps, script)
+    return {"replay_steps": steps, "replay_script": script}
 
 
 def _cancel_active_run(run: RunState) -> None:

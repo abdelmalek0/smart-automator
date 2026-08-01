@@ -1,4 +1,14 @@
-import type { ChromeProfile, Config, PricingEntry, Project, ProjectTask, RunDetails, RunSummary } from './types'
+import type {
+  ChromeProfile,
+  Config,
+  PricingEntry,
+  Project,
+  ProjectTask,
+  ReplayStep,
+  RunDetails,
+  RunReplay,
+  RunSummary,
+} from './types'
 import { normalizeProvider } from './providers'
 
 const BASE = '/api'
@@ -116,6 +126,20 @@ export async function startRun(payload: {
 
 export async function cancelRun(runId: string): Promise<void> {
   await request(`/runs/${runId}`, { method: 'DELETE' })
+}
+
+export function getRunReplay(runId: string): Promise<RunReplay> {
+  return request(`/runs/${runId}/replay`)
+}
+
+export async function updateRunReplay(
+  runId: string,
+  replay_steps: ReplayStep[],
+): Promise<RunReplay> {
+  return request(`/runs/${runId}/replay`, {
+    method: 'PUT',
+    body: JSON.stringify({ replay_steps }),
+  })
 }
 
 export async function deleteRun(runId: string): Promise<void> {

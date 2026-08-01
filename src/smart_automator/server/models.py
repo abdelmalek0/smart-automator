@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from smart_automator.config import normalize_browser_overrides
 
@@ -126,3 +126,7 @@ class PricingEntryModel(BaseModel):
     input: float
     output: float
     cache_read: float = 0.0
+
+
+class ReplayUpdateRequest(BaseModel):
+    replay_steps: list[dict[str, Any]] = Field(default_factory=list)

@@ -144,6 +144,24 @@ export interface ProjectTask {
   has_trained_replay?: boolean
 }
 
+export interface ReplayStep {
+  index: number
+  action: string
+  args: Record<string, unknown>
+  element?: Record<string, unknown> | null
+  url?: string
+  page_title?: string
+  element_label?: string
+  verification_status?: string | null
+  outcome?: string | null
+  source?: string
+}
+
+export interface RunReplay {
+  replay_steps: ReplayStep[]
+  replay_script: string
+}
+
 export interface Project {
   id: string
   name: string
