@@ -17,8 +17,26 @@ export interface RunThread {
 }
 
 export const UNCATEGORIZED_THREAD_ID = 'uncategorized'
+export const INITIAL_TEST_RUNS_VISIBLE = 3
+export const TEST_RUNS_PAGE_SIZE = 10
 
 const ACTIVE_STATUSES: RunStatus[] = ['pending', 'running', 'awaiting_human']
+
+/** Ensure the active run is included when it falls outside the current window. */
+export function minimumVisibleTestRuns(
+  runs: RunSummary[],
+  visibleCount: number,
+  activeRunId: string | null,
+): number {
+  if (!activeRunId) return visibleCount
+  const index = runs.findIndex((run) => run.run_id === activeRunId)
+  if (index < 0) return visibleCount
+  return Math.max(visibleCount, index + 1)
+}
+
+export function nextVisibleTestRunCount(current: number, total: number): number {
+  return Math.min(current + TEST_RUNS_PAGE_SIZE, total)
+}
 
 function sortRunsNewestFirst(runs: RunSummary[]): RunSummary[] {
   return [...runs].sort((a, b) => b.started_at - a.started_at)
@@ -203,6 +221,26 @@ export function testGroupShouldExpand(test: RunTestGroup, activeRunId: string | 
     return true
   }
   return test.runs.some((run) => isActiveRunStatus(run.status))
+}
+
+/** Project and test-group ids that should be expanded for the active run / live runs. */
+export function collectAutoExpandIds(
+  threads: RunThread[],
+  activeRunId: string | null,
+): Set<string> {
+  const ids = new Set<string>()
+  for (const thread of threads) {
+    if (threadShouldExpand(thread, activeRunId)) {
+      ids.add(thread.id)
+    }
+    for (const test of thread.testGroups ?? []) {
+      if (testGroupShouldExpand(test, activeRunId)) {
+        ids.add(thread.id)
+        ids.add(test.id)
+      }
+    }
+  }
+  return ids
 }
 
 export function testHasActiveRun(test: RunTestGroup): boolean {

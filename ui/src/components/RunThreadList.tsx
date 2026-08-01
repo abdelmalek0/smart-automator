@@ -25,12 +25,15 @@ import { runSummaryToDraft } from '@/lib/run-draft'
 import {
   allThreadExpandIds,
   buildRunThreads,
+  collectAutoExpandIds,
+  INITIAL_TEST_RUNS_VISIBLE,
+  minimumVisibleTestRuns,
+  nextVisibleTestRunCount,
   sortThreadsForSidebar,
-  testGroupShouldExpand,
+  TEST_RUNS_PAGE_SIZE,
   testHasActiveRun,
   testRunLabel,
   threadHasActiveRun,
-  threadShouldExpand,
   threadTitle,
   type RunTestGroup,
   type RunThread,
@@ -297,9 +300,19 @@ function TestGroupBlock({
   roomy = false,
   projects,
 }: TestGroupBlockProps) {
+  const [visibleCount, setVisibleCount] = useState(INITIAL_TEST_RUNS_VISIBLE)
   const containsActive = Boolean(
     activeRunId && test.runs.some((run) => run.run_id === activeRunId),
   )
+  const effectiveVisible = minimumVisibleTestRuns(test.runs, visibleCount, activeRunId)
+  const visibleRuns = test.runs.slice(0, effectiveVisible)
+  const remaining = test.runs.length - effectiveVisible
+
+  useEffect(() => {
+    if (!expanded) {
+      setVisibleCount(INITIAL_TEST_RUNS_VISIBLE)
+    }
+  }, [expanded])
 
   return (
     <div className="space-y-px">
@@ -314,7 +327,7 @@ function TestGroupBlock({
       />
       <CollapsePanel expanded={expanded}>
         <div className={cn('space-y-px', CHILD_RAIL)}>
-          {test.runs.map((run) => (
+          {visibleRuns.map((run) => (
             <RunRow
               key={run.run_id}
               run={run}
@@ -326,6 +339,19 @@ function TestGroupBlock({
               onDelete={onDelete}
             />
           ))}
+          {remaining > 0 ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 w-full justify-start px-2 text-[11px] text-muted-foreground hover:text-foreground"
+              onClick={() =>
+                setVisibleCount(nextVisibleTestRunCount(effectiveVisible, test.runs.length))
+              }
+            >
+              Show {Math.min(remaining, TEST_RUNS_PAGE_SIZE)} more
+            </Button>
+          ) : null}
         </div>
       </CollapsePanel>
     </div>
@@ -441,11 +467,14 @@ export default function RunThreadList({
   const roomy = variant === 'home'
   const processedExpandAllToken = useRef(0)
   const skipNextAutoExpand = useRef(false)
+  const prevRootsCollapsed = useRef(rootsCollapsed)
+  const prevActiveRunId = useRef(activeRunId)
 
   useEffect(() => {
-    if (rootsCollapsed) {
+    if (rootsCollapsed && !prevRootsCollapsed.current) {
       setExpandedRoots(new Set())
     }
+    prevRootsCollapsed.current = rootsCollapsed
   }, [rootsCollapsed])
 
   useEffect(() => {
@@ -455,7 +484,17 @@ export default function RunThreadList({
   }, [expandAllToken, threads])
 
   useEffect(() => {
+    const activeRunChanged = prevActiveRunId.current !== activeRunId
+    prevActiveRunId.current = activeRunId
+
+    const needed = collectAutoExpandIds(threads, activeRunId)
+
+    if (activeRunId && rootsCollapsed && activeRunChanged) {
+      onRequestExpandRoots?.()
+    }
+
     if (rootsCollapsed) return
+
     if (skipNextAutoExpand.current) {
       skipNextAutoExpand.current = false
       return
@@ -463,20 +502,10 @@ export default function RunThreadList({
 
     setExpandedRoots((prev) => {
       const next = new Set(prev)
-      for (const thread of threads) {
-        if (threadShouldExpand(thread, activeRunId)) {
-          next.add(thread.id)
-        }
-        for (const test of thread.testGroups ?? []) {
-          if (testGroupShouldExpand(test, activeRunId)) {
-            next.add(thread.id)
-            next.add(test.id)
-          }
-        }
-      }
+      for (const id of needed) next.add(id)
       return next
     })
-  }, [threads, activeRunId, rootsCollapsed])
+  }, [threads, activeRunId, rootsCollapsed, onRequestExpandRoots])
 
   function toggleThreadExpanded(thread: RunThread) {
     setExpandedRoots((prev) => applyThreadToggle(prev, thread))
