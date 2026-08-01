@@ -55,7 +55,7 @@ function successCount(results: SuiteTaskResult[]): number {
 
 export type ProjectSuiteRunner = {
   state: SuiteState
-  runAll: (project: Project) => Promise<void>
+  runAll: (project: Project, options?: { taskIds?: string[] }) => Promise<void>
   stop: () => Promise<void>
   reset: () => void
   resultFor: (taskId: string) => SuiteTaskResult | undefined
@@ -93,14 +93,18 @@ export function SuiteRunnerProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const runAll = useCallback(
-    async (project: Project) => {
-      if (project.tasks.length === 0) return
+    async (project: Project, options?: { taskIds?: string[] }) => {
+      const tasks =
+        options?.taskIds && options.taskIds.length > 0
+          ? project.tasks.filter((t) => options.taskIds!.includes(t.id))
+          : project.tasks
+      if (tasks.length === 0) return
 
       abortRef.current?.abort()
       const controller = new AbortController()
       abortRef.current = controller
 
-      const results: SuiteTaskResult[] = project.tasks.map((t) => ({
+      const results: SuiteTaskResult[] = tasks.map((t) => ({
         taskId: t.id,
         status: 'queued' as const,
       }))
@@ -114,7 +118,7 @@ export function SuiteRunnerProvider({ children }: { children: ReactNode }) {
 
       let stoppedEarly = false
 
-      for (let i = 0; i < project.tasks.length; i++) {
+      for (let i = 0; i < tasks.length; i++) {
         if (controller.signal.aborted) {
           stoppedEarly = true
           for (let j = i; j < results.length; j++) {
@@ -125,7 +129,7 @@ export function SuiteRunnerProvider({ children }: { children: ReactNode }) {
           break
         }
 
-        const task = project.tasks[i]
+        const task = tasks[i]
         results[i] = { taskId: task.id, status: 'running' }
         setState({
           phase: 'running',

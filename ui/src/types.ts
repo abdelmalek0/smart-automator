@@ -166,6 +166,7 @@ export interface Project {
   id: string
   name: string
   url: string
+  description: string
   context_prompt: string
   tasks: ProjectTask[]
 }

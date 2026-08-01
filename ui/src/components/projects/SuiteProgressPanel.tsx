@@ -13,6 +13,7 @@ import { cn } from '@/lib/utils'
 interface Props {
   project: Project
   suite: ProjectSuiteRunner
+  sticky?: boolean
 }
 
 export function SuiteStatusIcon({
@@ -32,6 +33,7 @@ export function SuiteStatusIcon({
           'inline-flex items-center justify-center rounded-full border border-primary/50 bg-primary/10 text-primary',
           box,
         )}
+        aria-hidden
       >
         <Loader2 className={cn(icon, 'animate-spin')} />
       </span>
@@ -45,6 +47,7 @@ export function SuiteStatusIcon({
           'inline-flex items-center justify-center rounded-full border border-success/40 bg-success/15 text-success',
           box,
         )}
+        aria-hidden
       >
         <Check className={icon} strokeWidth={2.5} />
       </span>
@@ -58,6 +61,7 @@ export function SuiteStatusIcon({
           'inline-flex items-center justify-center rounded-full border border-destructive/40 bg-destructive/15 text-destructive',
           box,
         )}
+        aria-hidden
       >
         <X className={icon} strokeWidth={2.5} />
       </span>
@@ -71,6 +75,7 @@ export function SuiteStatusIcon({
           'inline-flex items-center justify-center rounded-full border border-border bg-muted/50 text-muted-foreground',
           box,
         )}
+        aria-hidden
       >
         <Minus className={icon} />
       </span>
@@ -84,6 +89,7 @@ export function SuiteStatusIcon({
         'inline-flex items-center justify-center rounded-full border border-dashed border-muted-foreground/40 bg-transparent',
         box,
       )}
+      aria-hidden
     />
   )
 }
@@ -106,7 +112,7 @@ export function suiteStatusChipClass(status: SuiteTaskResult['status']): string 
   }
 }
 
-export default function SuiteProgressPanel({ project, suite }: Props) {
+export default function SuiteProgressPanel({ project, suite, sticky = false }: Props) {
   const { state, stop, reset, isRunning, successCount, failedCount, totalsReady } = suite
   if (state.projectId !== project.id || state.phase === 'idle') return null
 
@@ -123,11 +129,36 @@ export default function SuiteProgressPanel({ project, suite }: Props) {
       ? 'Suite stopped'
       : 'Suite complete'
 
+  const statusAnnouncement = isRunning
+    ? currentName
+      ? `Running suite: ${currentName}. ${completed} of ${total} finished.`
+      : `Running suite. ${completed} of ${total} finished.`
+    : `${title}. ${successCount} passed, ${failedCount} failed.`
+
   return (
-    <div className="rounded-xl border border-border/80 bg-card/60 p-4 space-y-4 animate-in fade-in-0 slide-in-from-top-1 duration-300">
+    <div
+      className={cn(
+        'rounded-xl border border-border/80 bg-card/80 backdrop-blur-sm p-4 space-y-4',
+        'animate-in fade-in-0 slide-in-from-top-1 duration-300',
+        'shadow-sm shadow-black/20',
+        sticky && 'sticky top-0 z-10',
+        isRunning && 'border-primary/30',
+      )}
+      role="region"
+      aria-label="Suite progress"
+    >
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {statusAnnouncement}
+      </div>
+
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 space-y-0.5">
-          <p className="text-sm font-semibold tracking-tight">{title}</p>
+          <p className="text-sm font-semibold tracking-tight flex items-center gap-2">
+            {isRunning && (
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-primary shrink-0" aria-hidden />
+            )}
+            {title}
+          </p>
           {isRunning && currentName ? (
             <p className="text-xs text-muted-foreground truncate">
               Now: <span className="text-foreground/90">{currentName}</span>
@@ -140,12 +171,18 @@ export default function SuiteProgressPanel({ project, suite }: Props) {
         </div>
         <div className="shrink-0">
           {isRunning ? (
-            <Button size="sm" variant="outline" className="h-8" onClick={() => void stop()}>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8"
+              onClick={() => void stop()}
+              aria-label="Stop suite"
+            >
               <Square className="h-3 w-3" />
               Stop
             </Button>
           ) : (
-            <Button size="sm" variant="ghost" className="h-8" onClick={reset}>
+            <Button size="sm" variant="ghost" className="h-8" onClick={reset} aria-label="Dismiss suite results">
               Dismiss
             </Button>
           )}
@@ -153,11 +190,20 @@ export default function SuiteProgressPanel({ project, suite }: Props) {
       </div>
 
       <div className="flex items-center gap-3">
-        <div className="relative flex-1 h-2 rounded-full bg-muted overflow-hidden">
+        <div
+          className="relative flex-1 h-2 rounded-full bg-muted overflow-hidden"
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={total}
+          aria-valuenow={completed}
+          aria-label="Suite progress"
+        >
           <div
             className={cn(
               'absolute inset-y-0 left-0 rounded-full bg-primary transition-[width] duration-500 ease-out',
-              isRunning && progressPct < 100 && 'after:absolute after:inset-y-0 after:right-0 after:w-8 after:bg-gradient-to-r after:from-transparent after:to-primary/40 after:animate-pulse',
+              isRunning &&
+                progressPct < 100 &&
+                'after:absolute after:inset-y-0 after:right-0 after:w-8 after:bg-gradient-to-r after:from-transparent after:to-primary/40 after:animate-pulse',
             )}
             style={{ width: `${progressPct}%` }}
           />
@@ -169,7 +215,7 @@ export default function SuiteProgressPanel({ project, suite }: Props) {
       </div>
 
       {totalsReady && (
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-2 gap-2 animate-in fade-in-0 duration-300">
           <div className="rounded-lg border border-success/25 bg-success/10 px-3 py-2.5">
             <p className="text-[10px] uppercase tracking-wide text-success/80 font-medium">
               Successful
@@ -200,8 +246,9 @@ export default function SuiteProgressPanel({ project, suite }: Props) {
             <li
               key={result.taskId}
               className={cn(
-                'flex items-center gap-3 rounded-lg px-2.5 py-2 transition-colors',
-                active && 'bg-primary/5 border-l-2 border-l-primary pl-2 animate-in fade-in-0 slide-in-from-left-1 duration-300',
+                'flex items-center gap-3 rounded-lg px-2.5 py-2 transition-colors duration-200',
+                active &&
+                  'bg-primary/5 border-l-2 border-l-primary pl-2 animate-in fade-in-0 slide-in-from-left-1 duration-300',
                 !active && result.status === 'queued' && 'opacity-60',
                 !active && isTerminalSuiteStatus(result.status) && 'opacity-90',
               )}
@@ -211,12 +258,14 @@ export default function SuiteProgressPanel({ project, suite }: Props) {
                 <p className="text-sm font-medium truncate leading-snug">
                   {task ? taskDisplayName(task) : result.taskId}
                 </p>
-                <p className="text-[11px] text-muted-foreground">{suiteStatusLabel(result.status)}</p>
+                <p className="text-[11px] text-muted-foreground">
+                  {suiteStatusLabel(result.status)}
+                </p>
               </div>
               {result.runId && (
                 <Link
                   to={`/runs/${result.runId}`}
-                  className="text-xs font-medium text-primary hover:underline shrink-0"
+                  className="text-xs font-medium text-primary hover:underline shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
                 >
                   Open
                 </Link>

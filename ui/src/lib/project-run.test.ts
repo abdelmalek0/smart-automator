@@ -6,6 +6,7 @@ const project: Project = {
   id: 'proj-1',
   name: 'Demo',
   url: 'https://example.com',
+  description: '',
   context_prompt: '',
   tasks: [],
 }

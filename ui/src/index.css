@@ -63,4 +63,21 @@
   .mono {
     font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
   }
+
+  .ambient-glow {
+    background:
+      radial-gradient(ellipse 80% 60% at 10% 0%, hsl(var(--primary) / 0.08), transparent 55%),
+      radial-gradient(ellipse 60% 50% at 90% 100%, hsl(var(--primary) / 0.05), transparent 50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

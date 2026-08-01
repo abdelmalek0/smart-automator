@@ -27,6 +27,7 @@ import {
 } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import type { ProjectTask, ReplayStep } from '@/types'
 
@@ -247,6 +248,10 @@ export default function TestEditorDialog({
       setSaveError('Task prompt is required')
       return
     }
+    if (!criteria.trim()) {
+      setSaveError('Success criteria is required')
+      return
+    }
     setSaving(true)
     setSaveError(null)
     try {
@@ -255,7 +260,7 @@ export default function TestEditorDialog({
         taskId: isCreate ? undefined : task?.id,
         name: name.trim() || null,
         task: prompt.trim(),
-        success_criteria: criteria,
+        success_criteria: criteria.trim(),
         headless,
         max_steps: maxSteps,
         cdp_url: cdpUrl.trim() || undefined,
@@ -284,88 +289,126 @@ export default function TestEditorDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4 py-1">
-          <div className="space-y-1.5">
-            <Label htmlFor="test-name">Name</Label>
-            <Input
-              id="test-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Login flow"
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="test-prompt">Task prompt</Label>
-            <Textarea
-              id="test-prompt"
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              rows={3}
-              placeholder="What should the agent do?"
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="test-criteria">Success criteria</Label>
-            <Textarea
-              id="test-criteria"
-              value={criteria}
-              onChange={(e) => setCriteria(e.target.value)}
-              rows={2}
-              placeholder="How do we know it passed?"
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-5 py-1">
+          <section className="space-y-3 rounded-xl border border-border/80 bg-muted/20 p-3.5">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Basics
+              </p>
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                Identity and what the agent should accomplish.
+              </p>
+            </div>
             <div className="space-y-1.5">
-              <Label htmlFor="test-max-steps">Max steps</Label>
+              <Label htmlFor="test-name">Name</Label>
               <Input
-                id="test-max-steps"
-                type="number"
-                min={1}
-                value={maxSteps}
-                onChange={(e) => setMaxSteps(Number(e.target.value) || 1)}
+                id="test-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Login flow"
+                disabled={saving}
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="test-cdp">CDP URL</Label>
-              <Input
-                id="test-cdp"
-                value={cdpUrl}
-                onChange={(e) => setCdpUrl(e.target.value)}
-                placeholder="Optional"
-                className="mono text-sm"
+              <Label htmlFor="test-prompt">Task prompt</Label>
+              <Textarea
+                id="test-prompt"
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                rows={3}
+                placeholder="What should the agent do?"
+                disabled={saving}
               />
             </div>
-          </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="test-criteria">Success criteria</Label>
+              <Textarea
+                id="test-criteria"
+                value={criteria}
+                onChange={(e) => setCriteria(e.target.value)}
+                rows={2}
+                placeholder="How do we know it passed?"
+                disabled={saving}
+              />
+            </div>
+          </section>
 
-          <div className="flex flex-wrap gap-6">
-            <div className="flex items-center gap-2">
-              <Switch id="test-headless" checked={headless} onCheckedChange={setHeadless} />
-              <Label htmlFor="test-headless">Headless</Label>
+          <section className="space-y-3 rounded-xl border border-border/80 bg-muted/20 p-3.5">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Execution
+              </p>
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                Browser and step limits for this test.
+              </p>
             </div>
-            <div className="flex items-center gap-2">
-              <Switch
-                id="test-fresh"
-                checked={freshProfile}
-                onCheckedChange={setFreshProfile}
-              />
-              <Label htmlFor="test-fresh">Fresh profile</Label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="test-max-steps">Max steps</Label>
+                <Input
+                  id="test-max-steps"
+                  type="number"
+                  min={1}
+                  value={maxSteps}
+                  onChange={(e) => setMaxSteps(Number(e.target.value) || 1)}
+                  disabled={saving}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="test-cdp">CDP URL</Label>
+                <Input
+                  id="test-cdp"
+                  value={cdpUrl}
+                  onChange={(e) => setCdpUrl(e.target.value)}
+                  placeholder="Optional"
+                  className="mono text-sm"
+                  disabled={saving}
+                />
+              </div>
             </div>
-          </div>
+            <div className="flex flex-wrap gap-6">
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="test-headless"
+                  checked={headless}
+                  onCheckedChange={setHeadless}
+                  disabled={saving}
+                />
+                <Label htmlFor="test-headless">Headless</Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="test-fresh"
+                  checked={freshProfile}
+                  onCheckedChange={setFreshProfile}
+                  disabled={saving}
+                />
+                <Label htmlFor="test-fresh">Fresh profile</Label>
+              </div>
+            </div>
+          </section>
 
           {!isCreate && (
-            <div className="space-y-2 rounded-lg border border-border p-3">
+            <section className="space-y-3 rounded-xl border border-border/80 bg-muted/20 p-3.5">
               <div className="flex items-center justify-between gap-2">
                 <div>
-                  <p className="text-sm font-medium">Trained execution steps</p>
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Trained steps
+                  </p>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">
                     {trainedRunId
                       ? 'These steps run in Automatic mode. Reorder, edit, or remove as needed.'
                       : 'Complete a successful training run to capture editable steps.'}
                   </p>
                 </div>
                 {trainedRunId && (
-                  <Button type="button" size="sm" variant="outline" onClick={addStep}>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={addStep}
+                    disabled={saving || stepsLoading}
+                  >
                     <Plus className="h-3.5 w-3.5" />
                     Step
                   </Button>
@@ -378,19 +421,24 @@ export default function TestEditorDialog({
                   Loading steps…
                 </p>
               )}
-              {stepsError && <p className="text-xs text-destructive">{stepsError}</p>}
+              {stepsError && (
+                <p className="text-xs text-destructive" role="alert">
+                  {stepsError}
+                </p>
+              )}
 
               {!stepsLoading && trainedRunId && steps.length === 0 && !stepsError && (
                 <p className="text-xs text-muted-foreground italic py-2">No steps yet.</p>
               )}
 
-              <ul className="space-y-1">
+              <ul className="space-y-1.5">
                 {steps.map((step, index) => {
                   const expanded = expandedStep === index
+                  const panelId = `replay-step-${index}`
                   return (
                     <li
                       key={`${step.index}-${step.action}-${index}`}
-                      className="rounded-md border border-border bg-muted/20"
+                      className="rounded-lg border border-border bg-card/50 overflow-hidden transition-colors"
                     >
                       <div className="flex items-center gap-1 px-2 py-1.5">
                         <span className="text-[10px] mono text-muted-foreground w-5 shrink-0">
@@ -398,8 +446,10 @@ export default function TestEditorDialog({
                         </span>
                         <button
                           type="button"
-                          className="flex-1 min-w-0 text-left"
+                          className="flex-1 min-w-0 text-left rounded px-1 py-0.5 hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                           onClick={() => setExpandedStep(expanded ? null : index)}
+                          aria-expanded={expanded}
+                          aria-controls={panelId}
                         >
                           <span className="text-xs font-medium mono">{step.action}</span>
                           {stepSummary(step) && (
@@ -408,43 +458,66 @@ export default function TestEditorDialog({
                             </span>
                           )}
                         </button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7"
-                          onClick={() => moveStep(index, -1)}
-                          disabled={index === 0}
-                        >
-                          <ChevronUp className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7"
-                          onClick={() => moveStep(index, 1)}
-                          disabled={index === steps.length - 1}
-                        >
-                          <ChevronDown className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                          onClick={() => removeStep(index)}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7"
+                              onClick={() => moveStep(index, -1)}
+                              disabled={index === 0 || saving}
+                              aria-label="Move step up"
+                            >
+                              <ChevronUp className="h-3.5 w-3.5" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Move up</TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7"
+                              onClick={() => moveStep(index, 1)}
+                              disabled={index === steps.length - 1 || saving}
+                              aria-label="Move step down"
+                            >
+                              <ChevronDown className="h-3.5 w-3.5" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Move down</TooltipContent>
+                        </Tooltip>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                              onClick={() => removeStep(index)}
+                              disabled={saving}
+                              aria-label="Remove step"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>Remove step</TooltipContent>
+                        </Tooltip>
                       </div>
                       {expanded && (
-                        <div className="border-t border-border px-3 py-2 space-y-2">
+                        <div
+                          id={panelId}
+                          className="border-t border-border px-3 py-2.5 space-y-2 animate-in fade-in-0 slide-in-from-top-1 duration-200"
+                        >
                           <div className="space-y-1">
                             <Label className="text-xs">Action</Label>
                             <Select
                               value={step.action}
                               onValueChange={(value) => updateStep(index, { action: value })}
+                              disabled={saving}
                             >
                               <SelectTrigger className="h-8 text-xs">
                                 <SelectValue />
@@ -465,7 +538,7 @@ export default function TestEditorDialog({
                               </SelectContent>
                             </Select>
                           </div>
-                          <div className="grid grid-cols-2 gap-2">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                             {(
                               [
                                 ['url', 'URL'],
@@ -482,6 +555,7 @@ export default function TestEditorDialog({
                                   className={cn('h-8 text-xs', key !== 'seconds' && 'mono')}
                                   value={argString(step.args, key)}
                                   onChange={(e) => updateStepArg(index, key, e.target.value)}
+                                  disabled={saving}
                                 />
                               </div>
                             ))}
@@ -492,17 +566,24 @@ export default function TestEditorDialog({
                   )
                 })}
               </ul>
-            </div>
+            </section>
           )}
 
-          {saveError && <p className="text-sm text-destructive">{saveError}</p>}
+          {saveError && (
+            <p className="text-sm text-destructive" role="alert">
+              {saveError}
+            </p>
+          )}
         </div>
 
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={saving}>
             Cancel
           </Button>
-          <Button onClick={handleSave} disabled={saving || !prompt.trim()}>
+          <Button
+            onClick={() => void handleSave()}
+            disabled={saving || !prompt.trim() || !criteria.trim()}
+          >
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             {isCreate ? 'Create test' : 'Save'}
           </Button>

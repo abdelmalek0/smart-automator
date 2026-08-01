@@ -14,7 +14,7 @@ const QUERY_KEY = ['projects'] as const
 
 export function useProjects() {
   const queryClient = useQueryClient()
-  const { data: projects = [], isLoading, error } = useQuery({
+  const { data: projects = [], isLoading, error, isFetching } = useQuery({
     queryKey: QUERY_KEY,
     queryFn: listProjects,
   })
@@ -22,8 +22,12 @@ export function useProjects() {
   const invalidate = () => queryClient.invalidateQueries({ queryKey: QUERY_KEY })
 
   const createProjectMutation = useMutation({
-    mutationFn: (payload: { name: string; url?: string; context_prompt?: string }) =>
-      createProject(payload),
+    mutationFn: (payload: {
+      name: string
+      url?: string
+      description?: string
+      context_prompt?: string
+    }) => createProject(payload),
     onSuccess: invalidate,
   })
 
@@ -35,6 +39,7 @@ export function useProjects() {
       projectId: string
       name?: string
       url?: string
+      description?: string
       context_prompt?: string
     }) => updateProject(projectId, payload),
     onSuccess: invalidate,
@@ -76,6 +81,7 @@ export function useProjects() {
   return {
     projects,
     isLoading,
+    isFetching,
     error,
     createProject: createProjectMutation.mutateAsync,
     updateProject: updateProjectMutation.mutateAsync,
@@ -83,5 +89,10 @@ export function useProjects() {
     addTaskToProject: addTaskMutation.mutateAsync,
     updateProjectTask: updateTaskMutation.mutateAsync,
     removeTaskFromProject: removeTaskMutation.mutateAsync,
+    isCreating: createProjectMutation.isPending,
+    isUpdating: updateProjectMutation.isPending,
+    isDeleting: deleteProjectMutation.isPending,
+    isSavingTask: addTaskMutation.isPending || updateTaskMutation.isPending,
+    isRemovingTask: removeTaskMutation.isPending,
   }
 }

@@ -442,7 +442,12 @@ async def api_list_websites(user: User = Depends(get_current_user)):
 async def create_website(req: WebsiteCreateRequest, user: User = Depends(get_current_user)):
     if not req.name.strip():
         raise HTTPException(status_code=400, detail="Name is required")
-    website = _websites(user).create_website(req.name, req.url, req.context_prompt)
+    website = _websites(user).create_website(
+        req.name,
+        req.url,
+        req.context_prompt,
+        description=req.description,
+    )
     return website_to_api_dict(website)
 
 
@@ -464,6 +469,7 @@ async def update_website(
         website_id,
         name=req.name,
         url=req.url,
+        description=req.description,
         context_prompt=req.context_prompt,
     )
     if not website:

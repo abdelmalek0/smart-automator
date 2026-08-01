@@ -1,204 +1,206 @@
-import { useEffect, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useQueryClient } from '@tanstack/react-query'
-import { Globe, Loader2, Plus } from 'lucide-react'
-import ProjectCard from '@/components/projects/ProjectCard'
-import TestEditorDialog from '@/components/TestEditorDialog'
+import { FolderKanban, Loader2, Plus, Search } from 'lucide-react'
+import CreateProjectDialog from '@/components/projects/CreateProjectDialog'
+import ProjectListRow from '@/components/projects/ProjectListRow'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useProjectSuiteRunner } from '@/hooks/useProjectSuiteRunner'
 import { useProjects } from '@/hooks/useProjects'
-import { startProjectTaskRun } from '@/lib/project-run'
-import type { Project, ProjectTask } from '@/types'
+import {
+  filterAndSortProjects,
+  type ProjectFilter,
+} from '@/lib/project-view'
+import { cn } from '@/lib/utils'
+
+const FILTERS: { id: ProjectFilter; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'with-tests', label: 'With tests' },
+  { id: 'trained', label: 'Trained' },
+]
 
 export default function ProjectsPage() {
   const navigate = useNavigate()
-  const queryClient = useQueryClient()
   const {
     projects,
     isLoading,
+    error,
     createProject,
     updateProject,
     deleteProject,
-    addTaskToProject,
-    updateProjectTask,
-    removeTaskFromProject,
+    isCreating,
+    isDeleting,
   } = useProjects()
   const suite = useProjectSuiteRunner()
 
-  const [newName, setNewName] = useState('')
-  const [runningId, setRunningId] = useState<string | null>(null)
-  const [expandedId, setExpandedId] = useState<string | null>(
-    () => (suite.state.phase !== 'idle' ? suite.state.projectId : null),
+  const [query, setQuery] = useState('')
+  const [filter, setFilter] = useState<ProjectFilter>('all')
+  const [createOpen, setCreateOpen] = useState(false)
+
+  const visible = useMemo(
+    () => filterAndSortProjects(projects, query, 'name-asc', filter),
+    [projects, query, filter],
   )
-
-  // Re-expand the suite project when returning to this tab with live/completed progress.
-  useEffect(() => {
-    if (suite.state.phase !== 'idle' && suite.state.projectId) {
-      setExpandedId(suite.state.projectId)
-    }
-  }, [suite.state.phase, suite.state.projectId])
-
-  const [editorOpen, setEditorOpen] = useState(false)
-  const [editorMode, setEditorMode] = useState<'edit' | 'create'>('edit')
-  const [editorProjectId, setEditorProjectId] = useState<string | null>(null)
-  const [editorTask, setEditorTask] = useState<ProjectTask | null>(null)
-
-  async function handleCreate(e: React.FormEvent) {
-    e.preventDefault()
-    if (!newName.trim()) return
-    const project = await createProject({ name: newName.trim() })
-    setNewName('')
-    setExpandedId(project.id)
-  }
-
-  async function handleRunTask(project: Project, task: ProjectTask) {
-    setRunningId(task.id)
-    try {
-      const run = await startProjectTaskRun(project, task)
-      await queryClient.invalidateQueries({ queryKey: ['runs'] })
-      await queryClient.invalidateQueries({ queryKey: ['projects'] })
-      navigate(`/runs/${run.run_id}`)
-    } finally {
-      setRunningId(null)
-    }
-  }
-
-  function openEditTask(project: Project, task: ProjectTask) {
-    setEditorProjectId(project.id)
-    setEditorTask(task)
-    setEditorMode('edit')
-    setEditorOpen(true)
-  }
-
-  function openAddTask(project: Project) {
-    setEditorProjectId(project.id)
-    setEditorTask(null)
-    setEditorMode('create')
-    setEditorOpen(true)
-    setExpandedId(project.id)
-  }
-
-  async function handleSaveTask(payload: {
-    projectId: string
-    taskId?: string
-    name?: string | null
-    task: string
-    success_criteria: string
-    headless: boolean
-    max_steps: number
-    cdp_url?: string
-    fresh_profile?: boolean
-  }) {
-    if (payload.taskId) {
-      await updateProjectTask({
-        projectId: payload.projectId,
-        taskId: payload.taskId,
-        name: payload.name,
-        task: payload.task,
-        success_criteria: payload.success_criteria,
-        headless: payload.headless,
-        max_steps: payload.max_steps,
-        cdp_url: payload.cdp_url,
-        fresh_profile: payload.fresh_profile,
-      })
-    } else {
-      await addTaskToProject({
-        projectId: payload.projectId,
-        name: payload.name,
-        task: payload.task,
-        success_criteria: payload.success_criteria,
-        headless: payload.headless,
-        max_steps: payload.max_steps,
-        cdp_url: payload.cdp_url,
-        fresh_profile: payload.fresh_profile,
-      })
-    }
-  }
-
-  const editorProject = projects.find((p) => p.id === editorProjectId) ?? null
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      <div className="flex-shrink-0 px-6 pt-6 pb-4 border-b border-border">
-        <div className="flex items-center gap-2 mb-1">
-          <Globe className="h-5 w-5 text-primary" />
-          <h2 className="text-lg font-semibold">Projects</h2>
-        </div>
-        <p className="text-sm text-muted-foreground">
-          Group tests by project. Edit prompts and trained steps, then run them one-by-one or as a
-          sequential suite.
-        </p>
-      </div>
-
-      <ScrollArea className="flex-1 px-6 py-5">
-        <form onSubmit={handleCreate} className="flex gap-2 mb-6 max-w-3xl">
-          <Input
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            placeholder="New project name…"
-            className="flex-1"
-          />
-          <Button type="submit" disabled={!newName.trim()}>
-            <Plus className="h-4 w-4" />
-            Project
-          </Button>
-        </form>
-
-        {isLoading && (
-          <p className="text-sm text-muted-foreground flex items-center gap-2">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Loading projects…
-          </p>
-        )}
-
-        {!isLoading && projects.length === 0 && (
-          <div className="text-center py-16 max-w-md mx-auto space-y-3">
-            <p className="text-sm text-muted-foreground">
-              No projects yet. Create one above to start adding editable tests and running suites.
-            </p>
+      <ScrollArea className="flex-1">
+        <div className="mx-auto w-full max-w-3xl px-4 sm:px-8 pt-10 pb-16">
+          {/* Header: title + search + new */}
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-8">
+            <h1 className="text-3xl font-semibold tracking-tight text-foreground">Projects</h1>
+            <div className="flex items-center gap-2 w-full sm:w-auto">
+              <div className="relative flex-1 sm:w-56">
+                <Search
+                  className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground pointer-events-none"
+                  aria-hidden
+                />
+                <Input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search projects"
+                  aria-label="Search projects"
+                  className="h-9 rounded-full border-border/60 bg-muted/40 pl-9 pr-3 text-sm shadow-none focus-visible:ring-1"
+                />
+              </div>
+              <Button
+                onClick={() => setCreateOpen(true)}
+                size="sm"
+                className="h-9 rounded-full px-4 shrink-0"
+              >
+                <Plus className="h-4 w-4" />
+                New
+              </Button>
+            </div>
           </div>
-        )}
 
-        <div className="space-y-4 max-w-3xl">
-          {projects.map((project) => (
-            <ProjectCard
-              key={project.id}
-              project={project}
-              expanded={expandedId === project.id}
-              onToggleExpand={() =>
-                setExpandedId((id) => (id === project.id ? null : project.id))
-              }
-              suite={suite}
-              singleRunningId={runningId}
-              onRunTask={(task) => void handleRunTask(project, task)}
-              onEditTask={(task) => openEditTask(project, task)}
-              onAddTask={() => openAddTask(project)}
-              onDeleteTask={(taskId) =>
-                void removeTaskFromProject({ projectId: project.id, taskId })
-              }
-              onUpdateProject={updateProject}
-              onDeleteProject={() => void deleteProject(project.id)}
-            />
-          ))}
+          {/* Filter pills */}
+          {!isLoading && projects.length > 0 && (
+            <div
+              className="flex flex-wrap items-center gap-1.5 mb-6"
+              role="tablist"
+              aria-label="Filter projects"
+            >
+              {FILTERS.map((tab) => {
+                const active = filter === tab.id
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    onClick={() => setFilter(tab.id)}
+                    className={cn(
+                      'rounded-full px-3.5 py-1.5 text-sm transition-colors',
+                      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                      active
+                        ? 'bg-accent text-foreground font-medium'
+                        : 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
+                    )}
+                  >
+                    {tab.label}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+
+          {isLoading && (
+            <p className="text-sm text-muted-foreground flex items-center gap-2 py-16 justify-center">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading projects…
+            </p>
+          )}
+
+          {error && (
+            <div
+              role="alert"
+              className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive mb-4"
+            >
+              {error instanceof Error ? error.message : 'Failed to load projects'}
+            </div>
+          )}
+
+          {!isLoading && projects.length === 0 && (
+            <div className="py-20 text-center space-y-4 animate-in fade-in-0 duration-300">
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+                <FolderKanban className="h-6 w-6" aria-hidden />
+              </div>
+              <div className="space-y-1.5">
+                <h2 className="text-base font-medium">No projects yet</h2>
+                <p className="text-sm text-muted-foreground max-w-sm mx-auto">
+                  Create a project to group tests and run them as a suite.
+                </p>
+              </div>
+              <Button onClick={() => setCreateOpen(true)} className="rounded-full">
+                <Plus className="h-4 w-4" />
+                New project
+              </Button>
+            </div>
+          )}
+
+          {!isLoading && projects.length > 0 && visible.length === 0 && (
+            <div className="py-16 text-center space-y-2">
+              <p className="text-sm text-muted-foreground">No matching projects</p>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="rounded-full"
+                onClick={() => {
+                  setQuery('')
+                  setFilter('all')
+                }}
+              >
+                Clear filters
+              </Button>
+            </div>
+          )}
+
+          {!isLoading && visible.length > 0 && (
+            <div role="table" aria-label="Projects">
+              <div
+                role="row"
+                className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 px-2 sm:px-3 pb-2 text-xs text-muted-foreground"
+              >
+                <div role="columnheader">Name</div>
+                <div role="columnheader" className="text-right pr-10 hidden sm:block">
+                  Tests
+                </div>
+              </div>
+
+              <div role="rowgroup" className="flex flex-col">
+                {visible.map((project) => (
+                  <ProjectListRow
+                    key={project.id}
+                    project={project}
+                    suiteBusy={suite.isRunning && suite.state.projectId === project.id}
+                    suiteActive={
+                      suite.state.phase !== 'idle' && suite.state.projectId === project.id
+                    }
+                    onUpdateProject={updateProject}
+                    onDeleteProject={async () => {
+                      await deleteProject(project.id)
+                    }}
+                    deleting={isDeleting}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </ScrollArea>
 
-      {editorProjectId && (
-        <TestEditorDialog
-          open={editorOpen}
-          onOpenChange={setEditorOpen}
-          projectId={editorProjectId}
-          task={
-            editorMode === 'edit'
-              ? (editorProject?.tasks.find((t) => t.id === editorTask?.id) ?? editorTask)
-              : null
-          }
-          mode={editorMode}
-          onSaveTask={handleSaveTask}
-        />
-      )}
+      <CreateProjectDialog
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        creating={isCreating}
+        onCreate={async (payload) => {
+          const project = await createProject(payload)
+          navigate(`/projects/${project.id}`)
+          return project
+        }}
+      />
     </div>
   )
 }

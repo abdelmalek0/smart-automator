@@ -217,6 +217,7 @@ export function getProject(projectId: string): Promise<Project> {
 export async function createProject(payload: {
   name: string
   url?: string
+  description?: string
   context_prompt?: string
 }): Promise<Project> {
   return request('/websites', {
@@ -227,7 +228,7 @@ export async function createProject(payload: {
 
 export async function updateProject(
   projectId: string,
-  payload: { name?: string; url?: string; context_prompt?: string },
+  payload: { name?: string; url?: string; description?: string; context_prompt?: string },
 ): Promise<Project> {
   return request(`/websites/${projectId}`, {
     method: 'PUT',

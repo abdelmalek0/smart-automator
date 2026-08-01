@@ -44,12 +44,14 @@ class StartRunRequest(BaseModel):
 class WebsiteCreateRequest(BaseModel):
     name: str
     url: str = ""
+    description: str = ""
     context_prompt: str = ""
 
 
 class WebsiteUpdateRequest(BaseModel):
     name: Optional[str] = None
     url: Optional[str] = None
+    description: Optional[str] = None
     context_prompt: Optional[str] = None
 
 

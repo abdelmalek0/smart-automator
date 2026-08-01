@@ -6,6 +6,7 @@ import LoginPage from '@/pages/LoginPage'
 import SignupPage from '@/pages/SignupPage'
 import RunPage from '@/pages/RunPage'
 import ProjectsPage from '@/pages/ProjectsPage'
+import ProjectDetailPage from '@/pages/ProjectDetailPage'
 import SettingsPage from '@/components/SettingsPage'
 import { AuthProvider } from '@/contexts/AuthContext'
 
@@ -21,6 +22,7 @@ export default function App() {
               <Route index element={<HomePage />} />
               <Route path="runs/:runId" element={<RunPage />} />
               <Route path="projects" element={<ProjectsPage />} />
+              <Route path="projects/:projectId" element={<ProjectDetailPage />} />
               <Route path="websites" element={<Navigate to="/projects" replace />} />
               <Route path="suites" element={<Navigate to="/projects" replace />} />
               <Route path="settings" element={<SettingsPage />} />

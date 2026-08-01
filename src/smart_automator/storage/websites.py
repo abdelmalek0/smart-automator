@@ -66,6 +66,7 @@ class Website:
     id: str
     name: str
     url: str = ""
+    description: str = ""
     context_prompt: str = ""
     tasks: list[WebsiteTask] = field(default_factory=list)
     user_id: str = ""
@@ -75,6 +76,7 @@ class Website:
             "id": self.id,
             "name": self.name,
             "url": self.url,
+            "description": self.description,
             "context_prompt": self.context_prompt,
             "tasks": [t.to_dict() for t in self.tasks],
             "user_id": self.user_id,
@@ -86,6 +88,7 @@ class Website:
             id=str(data["id"]),
             name=str(data["name"]),
             url=str(data.get("url") or ""),
+            description=str(data.get("description") or ""),
             context_prompt=str(data.get("context_prompt") or ""),
             tasks=[WebsiteTask.from_dict(t) for t in data.get("tasks", [])],
             user_id=str(data.get("user_id") or user_id),
@@ -166,11 +169,18 @@ class WebsiteStore:
                 return website
         return None
 
-    def create_website(self, name: str, url: str = "", context_prompt: str = "") -> Website:
+    def create_website(
+        self,
+        name: str,
+        url: str = "",
+        context_prompt: str = "",
+        description: str = "",
+    ) -> Website:
         website = Website(
             id=str(uuid.uuid4()),
             name=name.strip(),
             url=(url or "").strip(),
+            description=(description or "").strip(),
             context_prompt=(context_prompt or "").strip(),
             tasks=[],
             user_id=self._user_id,
@@ -187,6 +197,7 @@ class WebsiteStore:
         *,
         name: str | None = None,
         url: str | None = None,
+        description: str | None = None,
         context_prompt: str | None = None,
     ) -> Website | None:
         with self._lock:
@@ -200,6 +211,8 @@ class WebsiteStore:
                     item["name"] = name.strip()
                 if url is not None:
                     item["url"] = url.strip()
+                if description is not None:
+                    item["description"] = description.strip()
                 if context_prompt is not None:
                     item["context_prompt"] = context_prompt.strip()
                 item["user_id"] = self._user_id
@@ -354,6 +367,7 @@ def website_to_api_dict(website: Website) -> dict[str, Any]:
         "id": website.id,
         "name": website.name,
         "url": website.url,
+        "description": website.description,
         "context_prompt": website.context_prompt,
         "tasks": [task_to_api_dict(t, user_id=website.user_id) for t in website.tasks],
         "user_id": website.user_id,
