@@ -3,9 +3,18 @@ import type { Project, ProjectTask, RunSummary } from '@/types'
 
 export type StartRunPayload = Parameters<typeof startRun>[0]
 
+export type BuildStartRunPayloadOptions = {
+  forceTraining?: boolean
+}
+
 /** Build POST /api/runs payload for a project test (automatic when trained). */
-export function buildStartRunPayload(project: Project, task: ProjectTask): StartRunPayload {
-  const canAutomatic = Boolean(task.has_trained_replay && task.last_trained_run_id)
+export function buildStartRunPayload(
+  project: Project,
+  task: ProjectTask,
+  options: BuildStartRunPayloadOptions = {},
+): StartRunPayload {
+  const canAutomatic =
+    !options.forceTraining && Boolean(task.has_trained_replay && task.last_trained_run_id)
   return {
     name: task.name ?? undefined,
     task: task.task,
@@ -73,6 +82,7 @@ export async function waitForRunTerminal(
 export async function startProjectTaskRun(
   project: Project,
   task: ProjectTask,
+  options: BuildStartRunPayloadOptions = {},
 ): Promise<RunSummary> {
-  return startRun(buildStartRunPayload(project, task))
+  return startRun(buildStartRunPayload(project, task, options))
 }

@@ -1,4 +1,4 @@
-import { Loader2, Pencil, Play, Trash2 } from 'lucide-react'
+import { Loader2, Pencil, Play, RefreshCw, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   AlertDialog,
@@ -25,6 +25,7 @@ interface Props {
   includedInSuite?: boolean
   onIncludedInSuiteChange?: (included: boolean) => void
   onRun: () => void
+  onRetrain?: () => void
   onEdit: () => void
   onDelete: () => void
 }
@@ -37,6 +38,7 @@ export default function TestRow({
   includedInSuite = true,
   onIncludedInSuiteChange,
   onRun,
+  onRetrain,
   onEdit,
   onDelete,
 }: Props) {
@@ -126,6 +128,30 @@ export default function TestRow({
           )}
           Run
         </Button>
+
+        {task.has_trained_replay && onRetrain && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onRetrain}
+                disabled={disabled || running}
+                aria-label="Retrain test"
+              >
+                {running ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-3.5 w-3.5" />
+                )}
+                Retrain
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              Start a new training run. On pass, replaces the saved replay.
+            </TooltipContent>
+          </Tooltip>
+        )}
 
         <Tooltip>
           <TooltipTrigger asChild>

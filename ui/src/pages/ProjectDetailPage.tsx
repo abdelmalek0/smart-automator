@@ -160,6 +160,18 @@ export default function ProjectDetailPage() {
     }
   }
 
+  async function handleRetrainTask(proj: Project, task: ProjectTask) {
+    setRunningId(task.id)
+    try {
+      const run = await startProjectTaskRun(proj, task, { forceTraining: true })
+      await queryClient.invalidateQueries({ queryKey: ['runs'] })
+      await queryClient.invalidateQueries({ queryKey: ['projects'] })
+      navigate(`/runs/${run.run_id}`)
+    } finally {
+      setRunningId(null)
+    }
+  }
+
   function openEditTask(task: ProjectTask) {
     setEditorTask(task)
     setEditorMode('edit')
@@ -702,6 +714,7 @@ export default function ProjectDetailPage() {
                             setTaskIncluded(task.id, included)
                           }
                           onRun={() => void handleRunTask(project, task)}
+                          onRetrain={() => void handleRetrainTask(project, task)}
                           onEdit={() => openEditTask(task)}
                           onDelete={() =>
                             void removeTaskFromProject({ projectId: project.id, taskId: task.id })

@@ -46,6 +46,21 @@ describe('buildStartRunPayload', () => {
     expect(payload.use_replay_script).toBe(true)
     expect(payload.source_run_id).toBe('trained-1')
   })
+
+  it('forces training when forceTraining is set', () => {
+    const payload = buildStartRunPayload(
+      project,
+      task({
+        id: 't3',
+        task: 'Checkout',
+        has_trained_replay: true,
+        last_trained_run_id: 'trained-1',
+      }),
+      { forceTraining: true },
+    )
+    expect(payload.use_replay_script).toBe(false)
+    expect(payload.source_run_id).toBeUndefined()
+  })
 })
 
 describe('isTerminalRunStatus', () => {
