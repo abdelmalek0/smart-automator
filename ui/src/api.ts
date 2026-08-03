@@ -166,6 +166,10 @@ export function listChromeProfiles(): Promise<ChromeProfile[]> {
   return request('/chrome-profiles')
 }
 
+export function getWorkerStatus(): Promise<import('./types').WorkerStatus> {
+  return request('/workers/status')
+}
+
 export function checkConfig(payload?: {
   provider?: string
   base_url?: string

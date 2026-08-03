@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Check, Loader2, Plus, Trash2, X } from 'lucide-react'
-import { checkConfig, getConfig, getPricing, isProviderApiKeySet, listChromeProfiles, savePricing, updateConfig } from '@/api'
+import { checkConfig, getConfig, getPricing, getWorkerStatus, isProviderApiKeySet, listChromeProfiles, savePricing, updateConfig } from '@/api'
 import { defaultBaseUrl, defaultModel, isValidBaseUrlForProvider, normalizeProvider, providerUsesApiKey } from '@/providers'
 import type { BrowserSessionMode, ChromeProfile, Config, PricingEntry } from '@/types'
 import { Button } from '@/components/ui/button'
@@ -57,6 +57,13 @@ export default function SettingsPage() {
     queryKey: ['chrome-profiles'],
     queryFn: listChromeProfiles,
     refetchOnWindowFocus: false,
+    refetchInterval: 10_000,
+  })
+
+  const { data: workerStatus } = useQuery({
+    queryKey: ['worker-status'],
+    queryFn: getWorkerStatus,
+    refetchInterval: 5_000,
   })
 
   const [provider, setProvider] = useState('')
@@ -67,7 +74,6 @@ export default function SettingsPage() {
   const [chromeUserData, setChromeUserData] = useState('')
   const [chromeProfileDirectory, setChromeProfileDirectory] = useState('')
   const [profileSelection, setProfileSelection] = useState(PROFILE_APP_DEFAULT)
-  const [cdpUrl, setCdpUrl] = useState('')
   const [dirty, setDirty] = useState(false)
   const [checking, setChecking] = useState(false)
   const [checkResult, setCheckResult] = useState<{ ok: boolean; error?: string } | null>(null)
@@ -88,7 +94,6 @@ export default function SettingsPage() {
         chromeProfiles,
       ),
     )
-    setCdpUrl(next.cdp_url ?? '')
   }
 
   useEffect(() => {
@@ -118,14 +123,7 @@ export default function SettingsPage() {
     if (pricingData) setPricing(pricingData)
   }, [pricingData])
 
-  const cdpActive = Boolean(cdpUrl.trim())
-
-  useEffect(() => {
-    if (cdpActive && freshProfile) {
-      setFreshProfile(false)
-      setDirty(true)
-    }
-  }, [cdpActive, freshProfile])
+  const connectOnline = Boolean(workerStatus?.online ?? config?.connect_online)
 
   const saveMutation = useMutation({
     mutationFn: () =>
@@ -134,16 +132,18 @@ export default function SettingsPage() {
         base_url: baseUrl,
         model,
         api_key: apiKey || undefined,
-        fresh_profile: cdpActive ? false : freshProfile,
+        fresh_profile: freshProfile,
         chrome_user_data: chromeUserData,
         chrome_profile_directory: chromeProfileDirectory,
-        cdp_url: cdpUrl,
+        cdp_url: '',
       }),
     onSuccess: (saved) => {
       queryClient.setQueryData(['config'], saved)
       applyConfig(saved)
       setApiKey('')
       setDirty(false)
+      queryClient.invalidateQueries({ queryKey: ['chrome-profiles'] })
+      queryClient.invalidateQueries({ queryKey: ['worker-status'] })
     },
   })
 
@@ -298,55 +298,46 @@ export default function SettingsPage() {
 
           <TabsContent value="browser" className="space-y-5">
             <p className="text-sm text-muted-foreground">
-              Control how browser state (logins, cookies, history) is kept between runs.
-              Use a persistent on-disk profile by default, attach to Chrome via CDP, or enable
-              isolated profile for a clean throwaway browser each run.
+              Choose how Chrome runs on the Connect machine. Profiles are listed from the
+              connected Connect app — the server never launches Chrome itself.
             </p>
 
-            {config && (
-              <Card>
-                <CardContent className="p-0 divide-y divide-border text-sm">
-                  <InfoRow
-                    label="Session mode"
-                    value={sessionModeLabel(config.browser_session_mode)}
-                  />
-                  <InfoRow
-                    label="Active profile"
-                    value={
-                      config.browser_session_mode === 'persistent'
-                        ? (config.effective_chrome_profile || config.effective_chrome_user_data)
-                        : config.browser_session_mode === 'cdp'
-                          ? 'Attached via CDP'
-                          : 'Ephemeral (discarded after each run)'
-                    }
-                  />
-                  {config.chrome_profile_mirror_path && (
+            <Card>
+              <CardContent className="p-0 divide-y divide-border text-sm">
+                <InfoRow
+                  label="Connect"
+                  value={
+                    connectOnline
+                      ? `Online${workerStatus?.browser_state && workerStatus.browser_state !== 'idle' ? ` · ${workerStatus.browser_state}` : ''}`
+                      : 'Offline — start the Connect app to run browser tasks'
+                  }
+                />
+                {config && (
+                  <>
                     <InfoRow
-                      label="Mirror directory"
-                      value={config.chrome_profile_mirror_path}
+                      label="Session mode"
+                      value={sessionModeLabel(config.browser_session_mode)}
                     />
-                  )}
-                </CardContent>
-              </Card>
-            )}
+                    <InfoRow
+                      label="Active profile"
+                      value={
+                        config.effective_chrome_profile
+                        || (config.browser_session_mode === 'ephemeral'
+                          ? 'Ephemeral (discarded after each run)'
+                          : config.effective_chrome_user_data
+                            || '—')
+                      }
+                    />
+                  </>
+                )}
+              </CardContent>
+            </Card>
 
-            <div className="space-y-2">
-              <Label htmlFor="cdp-url">CDP URL</Label>
-              <Input
-                id="cdp-url"
-                value={cdpUrl}
-                onChange={(e) => {
-                  setDirty(true)
-                  setCdpUrl(e.target.value)
-                }}
-                placeholder={`ws://127.0.0.1:${config?.cdp_port ?? 9222}`}
-                className="mono text-sm"
-              />
-              <p className="text-xs text-muted-foreground">
-                Optional. Connect to an existing Chrome with remote debugging — uses that
-                browser&apos;s profile and overrides the profile directory below.
+            {!connectOnline && (
+              <p className="text-sm text-amber-700 dark:text-amber-400">
+                Connect is offline. Runs will fail until the Connect app is logged in and connected.
               </p>
-            </div>
+            )}
 
             <div className="space-y-2">
               <Label htmlFor="chrome-profile-select">Chrome profile</Label>
@@ -368,7 +359,7 @@ export default function SettingsPage() {
                     }
                   }
                 }}
-                disabled={freshProfile || Boolean(cdpUrl.trim())}
+                disabled={freshProfile}
               >
                 <SelectTrigger id="chrome-profile-select" className="text-sm">
                   <SelectValue placeholder="Select a profile" />
@@ -382,32 +373,18 @@ export default function SettingsPage() {
                       {profile.name} — {profile.browser}
                     </SelectItem>
                   ))}
-                  <SelectItem value={PROFILE_CUSTOM}>Custom path…</SelectItem>
                 </SelectContent>
               </Select>
-              {profileSelection === PROFILE_CUSTOM && (
-                <Input
-                  id="chrome-profile"
-                  value={chromeUserData}
-                  onChange={(e) => {
-                    setDirty(true)
-                    setChromeUserData(e.target.value)
-                  }}
-                  placeholder={config?.default_chrome_user_data ?? '~/.local/share/smart-automator-chrome'}
-                  className="mono text-sm"
-                  disabled={freshProfile || Boolean(cdpUrl.trim())}
-                />
-              )}
               <p className="text-xs text-muted-foreground">
                 {freshProfile
-                  ? 'Disabled while isolated profile is on — each run starts with a blank browser.'
-                  : cdpUrl.trim()
-                    ? 'Not used while CDP URL is set.'
-                    : profileSelection === PROFILE_APP_DEFAULT
-                      ? 'Uses the default smart-automator profile directory. Cookies and history persist between runs.'
-                      : profileSelection === PROFILE_CUSTOM
-                        ? 'Enter a custom user-data directory. System Chrome directories require selecting a named profile from the list.'
-                        : 'Profiles are copied into smart-automator storage because Chrome blocks automation on live system profile directories. Close Chrome before the first sync. Logins may need a one-time re-auth in the mirrored profile.'}
+                  ? 'Disabled while isolated profile is on — each run starts with a blank browser on the Connect machine.'
+                  : !connectOnline
+                    ? 'Profiles appear when Connect is online.'
+                    : chromeProfiles.length === 0
+                      ? 'No system profiles advertised yet — Connect will use the app default profile.'
+                      : profileSelection === PROFILE_APP_DEFAULT
+                        ? 'Uses the Connect app default profile directory. Cookies and history persist between runs.'
+                        : 'System profiles are mirrored on the Connect machine before launch.'}
               </p>
             </div>
 
@@ -415,7 +392,6 @@ export default function SettingsPage() {
               <Switch
                 id="fresh-profile"
                 checked={freshProfile}
-                disabled={cdpActive}
                 onCheckedChange={(value) => {
                   setDirty(true)
                   setFreshProfile(value)
@@ -424,9 +400,7 @@ export default function SettingsPage() {
               <div>
                 <Label htmlFor="fresh-profile" className="font-normal">Isolated Chrome profile</Label>
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  {cdpActive
-                    ? "Not used while CDP URL is set — the attached browser's profile is controlled by Smart Automator Connect."
-                    : 'Throw away all browser state after each run — on by default'}
+                  Throw away all browser state after each run on the Connect machine — on by default
                 </p>
               </div>
             </div>
@@ -532,20 +506,15 @@ export default function SettingsPage() {
                   <InfoRow label="Provider" value={config.provider} />
                   <InfoRow label="Model" value={config.model} />
                   <InfoRow label="Base URL" value={config.base_url} />
-                  <InfoRow label="CDP Port" value={String(config.cdp_port)} />
-                  <InfoRow label="CDP URL" value={config.cdp_url || '(not set)'} />
+                  <InfoRow label="Connect" value={config.connect_online ? 'Online' : 'Offline'} />
                   <InfoRow label="Fresh Profile" value={config.fresh_profile ? 'Yes' : 'No'} />
                   <InfoRow
                     label="Session Mode"
                     value={sessionModeLabel(config.browser_session_mode)}
                   />
                   <InfoRow
-                    label="Profile Dir"
-                    value={
-                      config.browser_session_mode === 'persistent'
-                        ? (config.effective_chrome_profile || config.effective_chrome_user_data)
-                        : '(not used)'
-                    }
+                    label="Profile"
+                    value={config.effective_chrome_profile || config.effective_chrome_user_data || '(default)'}
                   />
                   <InfoRow label="API Key Set" value={config.api_key_set ? 'Yes' : 'No'} />
                 </CardContent>
@@ -648,7 +617,7 @@ function ModelField({
 function sessionModeLabel(mode: BrowserSessionMode): string {
   switch (mode) {
     case 'cdp':
-      return 'CDP (attached Chrome)'
+      return 'Connect (remote Chrome)'
     case 'persistent':
       return 'Persistent (on-disk profile)'
     case 'ephemeral':

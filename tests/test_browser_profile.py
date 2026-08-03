@@ -52,13 +52,13 @@ def test_browser_session_mode_priority() -> None:
     assert browser_session_mode(cdp_url="", fresh_profile=False) == "persistent"
 
 
-def test_normalize_browser_overrides_clears_fresh_profile_when_cdp_set() -> None:
+def test_normalize_browser_overrides_keeps_fresh_profile_with_cdp() -> None:
     cdp, fresh = normalize_browser_overrides(
         cdp_url=" ws://127.0.0.1:9222 ",
         fresh_profile=True,
     )
     assert cdp == "ws://127.0.0.1:9222"
-    assert fresh is False
+    assert fresh is True
 
 
 def test_normalize_browser_overrides_preserves_fresh_profile_without_cdp() -> None:
@@ -394,7 +394,7 @@ def test_config_update_round_trips_chrome_profile_directory(
     )
 
 
-def test_config_update_clears_fresh_profile_when_cdp_url_set(
+def test_config_update_keeps_fresh_profile_when_cdp_url_set(
     client: TestClient,
     monkeypatch,
     tmp_path,
@@ -416,32 +416,16 @@ def test_config_update_clears_fresh_profile_when_cdp_url_set(
     assert res.status_code == 200
     body = res.json()
     assert body["cdp_url"] == "ws://127.0.0.1:9222"
-    assert body["fresh_profile"] is False
+    assert body["fresh_profile"] is True
     assert body["browser_session_mode"] == "cdp"
 
     get_res = client.get("/api/config")
     assert get_res.status_code == 200
-    assert get_res.json()["fresh_profile"] is False
+    assert get_res.json()["fresh_profile"] is True
 
 
 def test_list_chrome_profiles_endpoint(client: TestClient, monkeypatch) -> None:
     sample = [
-        ChromeProfile(
-            id="/tmp/chrome|Default",
-            browser="Chrome",
-            name="Person 1",
-            user_data_dir="/tmp/chrome",
-            profile_directory="Default",
-        )
-    ]
-    monkeypatch.setattr(
-        "smart_automator.server.app.discover_chrome_profiles",
-        lambda: sample,
-    )
-
-    res = client.get("/api/chrome-profiles")
-    assert res.status_code == 200
-    assert res.json() == [
         {
             "id": "/tmp/chrome|Default",
             "browser": "Chrome",
@@ -450,3 +434,23 @@ def test_list_chrome_profiles_endpoint(client: TestClient, monkeypatch) -> None:
             "profile_directory": "Default",
         }
     ]
+
+    class FakeRegistry:
+        def get(self, _user_id):
+            return object()
+
+        def profiles_for_user(self, _user_id):
+            return sample
+
+    monkeypatch.setattr(
+        "smart_automator.server.app.worker_registry",
+        lambda: FakeRegistry(),
+    )
+    monkeypatch.setattr(
+        "smart_automator.server.app.local_browser_mode_enabled",
+        lambda: False,
+    )
+
+    res = client.get("/api/chrome-profiles")
+    assert res.status_code == 200
+    assert res.json() == sample

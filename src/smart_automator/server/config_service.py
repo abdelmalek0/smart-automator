@@ -142,7 +142,7 @@ def _active_base_url(config: Config, ui_provider: str, *, catalog_base_url: str)
     return default_base_url(canonical)
 
 
-def build_config_response() -> dict:
+def build_config_response(user_id: str | None = None) -> dict:
     reload_runtime_env()
     config = load_config()
     settings = LlmSettingsStore().ensure_loaded()
@@ -158,25 +158,49 @@ def build_config_response() -> dict:
     cdp_url = os.getenv("CDP_URL", "")
     chrome_user_data = os.getenv("CHROME_USER_DATA", "")
     chrome_profile_directory = os.getenv("CHROME_PROFILE_DIRECTORY", "")
-    session_mode = browser_session_mode(cdp_url=cdp_url, fresh_profile=fresh_profile)
-    effective_chrome_user_data = resolve_chrome_user_data(
-        chrome_user_data,
-        fresh_profile=fresh_profile,
-    )
-    mirror_path = chrome_profile_mirror_path(chrome_user_data, chrome_profile_directory)
-    if mirror_path:
-        effective_chrome_profile = format_mirrored_chrome_profile(
-            profile_directory=chrome_profile_directory,
-            mirror_path=mirror_path,
-            profile_name=_chrome_profile_display_name(chrome_user_data, chrome_profile_directory),
-        )
-    elif effective_chrome_user_data:
-        effective_chrome_profile = format_effective_chrome_profile(
-            effective_chrome_user_data,
-            profile_directory=chrome_profile_directory,
-        )
+
+    worker_online = False
+    if user_id:
+        from .workers import worker_registry
+
+        worker_online = worker_registry().get(user_id) is not None
+
+    if worker_online:
+        session_mode = "cdp"
+        effective_chrome_user_data = ""
+        mirror_path = None
+        if fresh_profile:
+            effective_chrome_profile = "Connect: isolated (fresh) profile"
+        elif chrome_user_data:
+            profile_name = _chrome_profile_display_name_from_worker(
+                user_id, chrome_user_data, chrome_profile_directory
+            )
+            effective_chrome_profile = (
+                f"Connect: {profile_name}" if profile_name else "Connect: named profile"
+            )
+        else:
+            effective_chrome_profile = "Connect: app default profile"
     else:
-        effective_chrome_profile = ""
+        session_mode = browser_session_mode(cdp_url=cdp_url, fresh_profile=fresh_profile)
+        effective_chrome_user_data = resolve_chrome_user_data(
+            chrome_user_data,
+            fresh_profile=fresh_profile,
+        )
+        mirror_path = chrome_profile_mirror_path(chrome_user_data, chrome_profile_directory)
+        if mirror_path:
+            effective_chrome_profile = format_mirrored_chrome_profile(
+                profile_directory=chrome_profile_directory,
+                mirror_path=mirror_path,
+                profile_name=_chrome_profile_display_name(chrome_user_data, chrome_profile_directory),
+            )
+        elif effective_chrome_user_data:
+            effective_chrome_profile = format_effective_chrome_profile(
+                effective_chrome_user_data,
+                profile_directory=chrome_profile_directory,
+            )
+        else:
+            effective_chrome_profile = ""
+
     return {
         "provider": provider,
         "model": model,
@@ -185,7 +209,7 @@ def build_config_response() -> dict:
         "provider_keys_set": provider_keys_set,
         "provider_settings": provider_settings,
         "cdp_port": int(os.getenv("CDP_PORT", "9222")),
-        "cdp_url": cdp_url,
+        "cdp_url": "" if worker_online else cdp_url,
         "fresh_profile": fresh_profile,
         "chrome_user_data": chrome_user_data,
         "chrome_profile_directory": chrome_profile_directory,
@@ -194,10 +218,29 @@ def build_config_response() -> dict:
         "effective_chrome_profile": effective_chrome_profile,
         "default_chrome_user_data": default_chrome_user_data(),
         "browser_session_mode": session_mode,
+        "connect_online": worker_online,
     }
 
 
-def apply_config_update(update) -> dict:
+def _chrome_profile_display_name_from_worker(
+    user_id: str | None,
+    user_data_dir: str,
+    profile_directory: str,
+) -> str:
+    if not user_id:
+        return ""
+    from .workers import worker_registry
+
+    for profile in worker_registry().profiles_for_user(user_id):
+        if str(profile.get("user_data_dir") or "") == user_data_dir and (
+            not profile_directory
+            or str(profile.get("profile_directory") or "") == profile_directory
+        ):
+            return str(profile.get("name") or profile_directory or "")
+    return profile_directory
+
+
+def apply_config_update(update, user_id: str | None = None) -> dict:
     reload_runtime_env()
     config = load_config()
     settings_store = LlmSettingsStore()
@@ -245,13 +288,7 @@ def apply_config_update(update) -> dict:
         set_key(str(ENV_FILE), "CDP_URL", update.cdp_url.strip())
 
     reload_runtime_env()
-    effective_cdp = os.getenv("CDP_URL", "").strip()
-    if effective_cdp:
-        set_key(str(ENV_FILE), "QA_FRESH_PROFILE", "false")
-
-    reload_runtime_env()
-    return build_config_response()
-
+    return build_config_response(user_id=user_id)
 
 def load_pricing() -> list[dict]:
     if PRICING_FILE.exists():

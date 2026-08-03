@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -184,7 +185,20 @@ int sa_tcp_connect(const char *host, int port, int timeout_ms) {
   }
 #endif
 
+  sa_tcp_set_nodelay(fd);
   return (int)fd;
+}
+
+int sa_tcp_set_nodelay(sa_socket_t fd) {
+  int one = 1;
+  if (fd == SA_INVALID_SOCKET) {
+    return -1;
+  }
+#ifdef _WIN32
+  return setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof(one));
+#else
+  return setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+#endif
 }
 
 int sa_tcp_send_all(sa_socket_t fd, const void *buf, size_t len) {
@@ -206,6 +220,7 @@ ssize_t sa_tcp_recv_some(sa_socket_t fd, void *buf, size_t len, int timeout_ms) 
   fd_set rfds;
   struct timeval tv;
   int ready;
+  int n;
 
   FD_ZERO(&rfds);
   FD_SET(fd, &rfds);
@@ -217,11 +232,18 @@ ssize_t sa_tcp_recv_some(sa_socket_t fd, void *buf, size_t len, int timeout_ms) 
 #else
   ready = select((int)fd + 1, &rfds, NULL, NULL, &tv);
 #endif
-  if (ready <= 0) {
+  if (ready == 0) {
+    return 0; /* timeout — not an error */
+  }
+  if (ready < 0) {
     return -1;
   }
 
-  return recv(fd, buf, (int)len, 0);
+  n = recv(fd, buf, (int)len, 0);
+  if (n == 0) {
+    return -1; /* peer closed */
+  }
+  return n;
 }
 
 void sa_tcp_close(sa_socket_t fd) {

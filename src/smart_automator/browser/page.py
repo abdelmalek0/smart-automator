@@ -148,6 +148,7 @@ class Page:
         allowed_urls: list[str] | None = None,
         denied_urls: list[str] | None = None,
         home_page_url: str = "about:blank",
+        remote_cdp: bool = False,
     ):
         self._page = playwright_page
         self.page_id = page_id
@@ -161,6 +162,7 @@ class Page:
         self._allowed_urls = allowed_urls or []
         self._denied_urls = denied_urls or []
         self._home_page_url = home_page_url
+        self._remote_cdp = remote_cdp
         self._last_highlight_signature: tuple[str, str, frozenset[str]] | None = None
         self._defer_post_action_stable = False
         self._ensure_script_injection()
@@ -415,6 +417,38 @@ class Page:
             self.wait_for_page_stable(should_abort=should_abort)
             if should_abort and should_abort():
                 return self._minimal_dom_state()
+
+        # Over Connect/WSS CDP, avoid a second full build_dom_tree round-trip when
+        # highlights are required — one payload is already expensive.
+        if show_highlights and self._remote_cdp:
+            if (
+                self._highlights_visible()
+                and self._last_highlight_signature is not None
+            ):
+                state_probe = build_dom_tree(
+                    self._page,
+                    show_highlights=True,
+                    focus_element=focus_element,
+                    viewport_expansion=self._viewport_expansion,
+                    do_highlight_elements=False,
+                )
+                signature = self._page_signature(state_probe)
+                if self._can_skip_highlight_redraw(self._last_highlight_signature, signature):
+                    self._selector_map = state_probe.selector_map
+                    self._cached_state = state_probe
+                    return state_probe
+                remove_highlights(self._page)
+            state = build_dom_tree(
+                self._page,
+                show_highlights=True,
+                focus_element=focus_element,
+                viewport_expansion=self._viewport_expansion,
+                do_highlight_elements=True,
+            )
+            self._last_highlight_signature = self._page_signature(state)
+            self._selector_map = state.selector_map
+            self._cached_state = state
+            return state
 
         state_probe = build_dom_tree(
             self._page,
@@ -697,7 +731,7 @@ class Page:
                     el.dispatchEvent(new Event('change', { bubbles: true }));
                 }"""
             )
-            handle.type(text, delay=50)
+            handle.type(text, delay=0 if self._remote_cdp else 50)
         else:
             handle.evaluate(
                 """(el, value) => {

@@ -20,5 +20,7 @@ int sa_chrome_reset_profile(
 void sa_chrome_kill_debug_port(int port, const char *user_data_dir, int fresh_profile);
 int sa_chrome_ready_on_port(int port, int timeout_ms);
 int sa_chrome_ready(int port);
+/* Actual CDP port from DevToolsActivePort after a successful sa_chrome_start. */
+int sa_chrome_debug_port(void);
 
 #endif

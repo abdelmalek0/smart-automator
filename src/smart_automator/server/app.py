@@ -8,6 +8,7 @@ Run from the project root:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import logging.config
 import os
@@ -25,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from ..storage.websites import WebsiteStore, task_to_api_dict, website_to_api_dict
 from ..browser.chrome_profiles import discover_chrome_profiles
 from .auth import auth_router, get_current_user
-from .auth.dependencies import SESSION_COOKIE_NAME, resolve_user_from_session
+from .auth.dependencies import SESSION_COOKIE_NAME, resolve_user_from_session, user_store
 from .auth.stores import User
 from .config_service import (
     apply_config_update,
@@ -36,6 +37,7 @@ from .config_service import (
 )
 from .models import (
     ConfigUpdate,
+    LoginRequest,
     PricingEntryModel,
     ReplayUpdateRequest,
     StartRunRequest,
@@ -43,6 +45,13 @@ from .models import (
     WebsiteTaskCreateRequest,
     WebsiteTaskUpdateRequest,
     WebsiteUpdateRequest,
+)
+from .workers import (
+    WorkerConnection,
+    local_browser_mode_enabled,
+    resolve_user_from_worker_token,
+    worker_registry,
+    worker_token_store,
 )
 from .paths import AUTH_DIR, ENV_FILE, HISTORY_DIR, REPLAY_DIR, REPORT_DIR, RUNS_DIR, SCREENSHOT_DIR, UI_DIST, WEBSITES_DIR
 from .run_store import user_owns_run_prefix
@@ -546,17 +555,53 @@ async def api_list_tools(user: User = Depends(get_current_user)):
 
 @app.get("/api/config")
 async def api_get_config(user: User = Depends(get_current_user)):
-    return build_config_response()
+    return build_config_response(user_id=user.id)
 
 
 @app.get("/api/chrome-profiles")
 async def api_list_chrome_profiles(user: User = Depends(get_current_user)):
-    return [profile.to_dict() for profile in discover_chrome_profiles()]
+    if local_browser_mode_enabled() and worker_registry().get(user.id) is None:
+        return [profile.to_dict() for profile in discover_chrome_profiles()]
+    return worker_registry().profiles_for_user(user.id)
+
+
+@app.post("/api/workers/login")
+async def api_workers_login(req: LoginRequest):
+    try:
+        user = user_store().verify_credentials(req.username, req.password)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if user is None:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    token = worker_token_store().create_token(user.id)
+    return {
+        "worker_token": token.token,
+        "user_id": user.id,
+        "username": user.username,
+    }
+
+
+@app.post("/api/workers/logout")
+async def api_workers_logout(user: User = Depends(get_current_user)):
+    worker_token_store().delete_for_user(user.id)
+    worker = worker_registry().get(user.id)
+    if worker is not None:
+        worker.online = False
+        try:
+            await worker.websocket.close(code=1000)
+        except Exception:
+            pass
+    return {"ok": True}
+
+
+@app.get("/api/workers/status")
+async def api_workers_status(user: User = Depends(get_current_user)):
+    return worker_registry().status_for_user(user.id)
 
 
 @app.put("/api/config")
 async def api_update_config(update: ConfigUpdate, user: User = Depends(get_current_user)):
-    return apply_config_update(update)
+    return apply_config_update(update, user_id=user.id)
 
 
 @app.post("/api/config/check")
@@ -631,6 +676,51 @@ async def ws_run_stream(websocket: WebSocket, run_id: str):
         log.debug("WS disconnect run=%s", run_id[:8])
     finally:
         run.unsubscribe(queue)
+
+
+@app.websocket("/ws/workers")
+async def ws_workers(websocket: WebSocket):
+    token = websocket.query_params.get("token") or ""
+    user = resolve_user_from_worker_token(token)
+    await websocket.accept()
+    if user is None:
+        await websocket.close(code=1008)
+        return
+
+    loop = asyncio.get_running_loop()
+    worker = WorkerConnection(user_id=user.id, websocket=websocket, loop=loop)
+    registry = worker_registry()
+    registry.register(worker)
+    log.info("worker connected user=%s", user.id[:8])
+
+    outbox_task = asyncio.create_task(worker.drain_outbox())
+    try:
+        await worker.send_json({"type": "hello", "user_id": user.id})
+        while True:
+            message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
+            if "text" in message and message["text"] is not None:
+                try:
+                    payload = json.loads(message["text"])
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict):
+                    registry.handle_control_message(worker, payload)
+            elif "bytes" in message and message["bytes"] is not None:
+                registry.handle_binary(worker, message["bytes"])
+    except WebSocketDisconnect:
+        log.debug("worker WS disconnect user=%s", user.id[:8])
+    except Exception as exc:
+        log.warning("worker WS error user=%s: %s", user.id[:8], exc)
+    finally:
+        outbox_task.cancel()
+        try:
+            await outbox_task
+        except asyncio.CancelledError:
+            pass
+        registry.unregister(worker)
+        log.info("worker disconnected user=%s", user.id[:8])
 
 
 if UI_DIST.exists():

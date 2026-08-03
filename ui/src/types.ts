@@ -228,6 +228,14 @@ export interface Config {
   effective_chrome_profile: string
   default_chrome_user_data: string
   browser_session_mode: BrowserSessionMode
+  connect_online?: boolean
+}
+
+export interface WorkerStatus {
+  online: boolean
+  last_seen: number | null
+  profile_count: number
+  browser_state: string
 }
 
 // WebSocket event types

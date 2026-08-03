@@ -2,6 +2,7 @@
 
 #include "chrome_mirror.h"
 #include "http.h"
+#include "net.h"
 #include "util.h"
 
 #include <stdio.h>
@@ -28,6 +29,8 @@ static DWORD g_chrome_pid = 0;
 #else
 static pid_t g_chrome_pid = -1;
 #endif
+static int g_chrome_debug_port = 0;
+static char g_chrome_user_data[512];
 
 static void chrome_store_pid(pid_t pid) {
 #ifndef _WIN32
@@ -111,7 +114,7 @@ static int prepare_launch_profile(
     size_t profile_len,
     char *launch_profile_dir,
     size_t launch_profile_dir_len,
-    int *max_attempts,
+    int *max_wait_ms,
     char *err,
     size_t err_len) {
   const char *profile_dir = profile_directory != NULL ? profile_directory : "";
@@ -128,7 +131,7 @@ static int prepare_launch_profile(
       snprintf(err, err_len, "Could not create Chrome profile directory.");
       return -1;
     }
-    *max_attempts = 80;
+    *max_wait_ms = 90000;
     return 0;
   }
 
@@ -141,7 +144,7 @@ static int prepare_launch_profile(
       snprintf(err, err_len, "Could not create Chrome profile directory.");
       return -1;
     }
-    *max_attempts = 80;
+    *max_wait_ms = 90000;
     return 0;
   }
 
@@ -149,13 +152,13 @@ static int prepare_launch_profile(
     if (sa_chrome_mirror_prepare(user_data_dir, profile_dir, wipe, profile, profile_len, err, err_len) != 0) {
       return -1;
     }
-    *max_attempts = 240;
+    *max_wait_ms = 120000;
     return 0;
   }
 
   snprintf(profile, profile_len, "%s", user_data_dir);
   snprintf(launch_profile_dir, launch_profile_dir_len, "%s", profile_dir);
-  *max_attempts = 240;
+  *max_wait_ms = 120000;
   return 0;
 }
 
@@ -316,34 +319,115 @@ static int launch_chrome_process(
 #endif
 }
 
+static void clear_devtools_active_port(const char *user_data_dir) {
+  char path[768];
+  if (user_data_dir == NULL || user_data_dir[0] == '\0') {
+    return;
+  }
+  sa_path_join(path, sizeof(path), user_data_dir, "DevToolsActivePort");
+#ifdef _WIN32
+  DeleteFileA(path);
+#else
+  unlink(path);
+#endif
+}
+
+static int read_devtools_active_port(const char *user_data_dir, int *out_port) {
+  char path[768];
+  FILE *fp;
+  char line[64];
+  int port = 0;
+
+  if (out_port == NULL || user_data_dir == NULL || user_data_dir[0] == '\0') {
+    return -1;
+  }
+  sa_path_join(path, sizeof(path), user_data_dir, "DevToolsActivePort");
+  fp = fopen(path, "r");
+  if (fp == NULL) {
+    return -1;
+  }
+  if (fgets(line, sizeof(line), fp) == NULL) {
+    fclose(fp);
+    return -1;
+  }
+  fclose(fp);
+  port = atoi(line);
+  if (port <= 0 || port > 65535) {
+    return -1;
+  }
+  *out_port = port;
+  return 0;
+}
+
+static int chrome_port_listening(int port, int timeout_ms) {
+  sa_socket_t fd;
+  if (port <= 0) {
+    return 0;
+  }
+  fd = (sa_socket_t)sa_tcp_connect("127.0.0.1", port, timeout_ms > 0 ? timeout_ms : 200);
+  if (fd == SA_INVALID_SOCKET) {
+    return 0;
+  }
+  sa_tcp_close(fd);
+  return 1;
+}
+
 static int wait_for_chrome_ready(
-    int port,
-    int max_attempts,
+    int preferred_port,
+    const char *user_data_dir,
+    int max_wait_ms,
     int use_app_profile,
     char *err,
     size_t err_len) {
-  int attempt;
-  int poll_ms = 100;
-  int timeout_ms = 150;
+  int poll_ms = 250;
+  int check_ms = 400;
+  int elapsed = 0;
+  int detected_port = 0;
+  int last_seen_port = 0;
 
-  for (attempt = 0; attempt < max_attempts; attempt++) {
-    if (sa_chrome_ready_on_port(port, timeout_ms)) {
-      return 0;
+  (void)preferred_port;
+  if (max_wait_ms < 1000) {
+    max_wait_ms = 1000;
+  }
+  g_chrome_debug_port = 0;
+
+  /* Chrome writes DevToolsActivePort once the debug server is bound. Prefer that
+   * over a fixed port: --remote-debugging-port=0 picks a free port, and a busy
+   * fixed port can leave the UI up with no CDP. */
+  while (elapsed < max_wait_ms) {
+    detected_port = 0;
+    if (read_devtools_active_port(user_data_dir, &detected_port) == 0) {
+      last_seen_port = detected_port;
+      if (sa_chrome_ready_on_port(detected_port, check_ms) ||
+          chrome_port_listening(detected_port, check_ms)) {
+        g_chrome_debug_port = detected_port;
+        return 0;
+      }
     }
 #ifdef _WIN32
     Sleep(poll_ms);
 #else
-    usleep((useconds_t)poll_ms * 1000);
+    usleep((unsigned)poll_ms * 1000U);
 #endif
+    elapsed += poll_ms;
   }
 
-  snprintf(
-      err,
-      err_len,
-      use_app_profile
-          ? "Chrome did not open debug port %d. Close other Chrome windows and retry."
-          : "Chrome did not open debug port %d. Close Chrome using this profile, or use App profile.",
-      port);
+  if (last_seen_port > 0) {
+    snprintf(
+        err,
+        err_len,
+        "Chrome wrote DevToolsActivePort (%d) but CDP did not answer within %ds.",
+        last_seen_port,
+        (max_wait_ms + 999) / 1000);
+  } else {
+    snprintf(
+        err,
+        err_len,
+        use_app_profile
+            ? "Chrome did not write DevToolsActivePort within %ds. Close other Chrome windows and retry."
+            : "Chrome did not write DevToolsActivePort within %ds. Close Chrome using this profile, or use App profile.",
+        (max_wait_ms + 999) / 1000);
+  }
   return -1;
 }
 
@@ -360,12 +444,11 @@ static int chrome_start_internal(
   char profile[512];
   char launch_profile_dir[128];
   const char *profile_dir_ptr;
-  int max_attempts = 60;
+  int max_wait_ms = 90000;
   int use_app_profile;
 
-  if (!force_relaunch && sa_chrome_ready(port)) {
-    return 0;
-  }
+  (void)port;
+  (void)force_relaunch;
 
   if (find_chrome(chrome_bin, sizeof(chrome_bin)) != 0) {
     snprintf(
@@ -385,7 +468,7 @@ static int chrome_start_internal(
           sizeof(profile),
           launch_profile_dir,
           sizeof(launch_profile_dir),
-          &max_attempts,
+          &max_wait_ms,
           err,
           err_len) != 0) {
     return -1;
@@ -393,18 +476,26 @@ static int chrome_start_internal(
 
   profile_dir_ptr = launch_profile_dir[0] != '\0' ? launch_profile_dir : "";
 
+  /* Always kill our previous tracked Chrome so remote debugging is not skipped. */
+  chrome_kill_tracked();
 #ifndef _WIN32
   if (use_app_profile || fresh_profile) {
     kill_stale_app_profile_chrome(profile);
   }
 #endif
   sa_chrome_clear_profile_locks(profile);
+  clear_devtools_active_port(profile);
+  snprintf(g_chrome_user_data, sizeof(g_chrome_user_data), "%s", profile);
+  g_chrome_debug_port = 0;
 
-  if (launch_chrome_process(chrome_bin, port, profile, profile_dir_ptr, err, err_len) != 0) {
+  /* Port 0 = let Chrome pick a free ephemeral port and write it to DevToolsActivePort.
+   * Avoids binding failures when 9222 is already taken (UI up, no CDP). */
+  if (launch_chrome_process(chrome_bin, 0, profile, profile_dir_ptr, err, err_len) != 0) {
     return -1;
   }
 
-  return wait_for_chrome_ready(port, max_attempts, use_app_profile || fresh_profile, err, err_len);
+  return wait_for_chrome_ready(
+      0, profile, max_wait_ms, use_app_profile || fresh_profile, err, err_len);
 }
 
 int sa_chrome_ready_on_port(int port, int timeout_ms) {
@@ -415,6 +506,10 @@ int sa_chrome_ready_on_port(int port, int timeout_ms) {
 
 int sa_chrome_ready(int port) {
   return sa_chrome_ready_on_port(port, 500);
+}
+
+int sa_chrome_debug_port(void) {
+  return g_chrome_debug_port > 0 ? g_chrome_debug_port : 0;
 }
 
 int sa_chrome_start(
@@ -439,7 +534,7 @@ static int wait_for_port_closed(int port, int max_ms) {
 #ifdef _WIN32
     Sleep(step_ms);
 #else
-    usleep((useconds_t)step_ms * 1000);
+    usleep((unsigned)step_ms * 1000U);
 #endif
     elapsed += step_ms;
   }

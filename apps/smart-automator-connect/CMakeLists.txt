@@ -13,68 +13,44 @@ endif()
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
 find_package(Threads REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 set(SA_CONNECT_SOURCES
   src/main.c
   src/app.c
   src/runtime.c
   src/chrome.c
-  src/mode.c
-  src/lan_proxy.c
   src/net.c
   src/http.c
-  src/config.c
-  src/connections.c
+  src/util.c
   src/chrome_profiles.c
   src/chrome_mirror.c
-  src/util.c
+  src/worker_session.c
+  src/tls_http.c
+  src/worker_ws.c
 )
 
-if(WIN32)
-  include(FetchContent)
-  set(WITH_EXAMPLES OFF CACHE BOOL "" FORCE)
-  set(UNIT_TESTING OFF CACHE BOOL "" FORCE)
-  set(CLIENT_TESTING OFF CACHE BOOL "" FORCE)
-  set(SERVER_TESTING OFF CACHE BOOL "" FORCE)
-  set(WITH_GSSAPI OFF CACHE BOOL "" FORCE)
-  set(WITH_ZLIB OFF CACHE BOOL "" FORCE)
-  FetchContent_Declare(
-    libssh
-    URL https://www.libssh.org/files/0.11/libssh-0.11.2.tar.xz
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-  )
-  FetchContent_MakeAvailable(libssh)
-  list(APPEND SA_CONNECT_SOURCES src/ssh_tunnel.c)
-else()
-  list(APPEND SA_CONNECT_SOURCES src/ssh_cli.c src/ssh_keys.c)
-endif()
-
-add_executable(sa-askpass src/askpass.c)
 add_executable(smart-automator-connect ${SA_CONNECT_SOURCES})
 
-set_target_properties(sa-askpass smart-automator-connect PROPERTIES
+set_target_properties(smart-automator-connect PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
 
-add_dependencies(smart-automator-connect sa-askpass)
-
 target_include_directories(smart-automator-connect PRIVATE src ${GTK3_INCLUDE_DIRS})
-
-if(WIN32)
-  target_include_directories(smart-automator-connect PRIVATE ${libssh_SOURCE_DIR}/include)
-endif()
 
 target_link_libraries(
   smart-automator-connect
   PRIVATE
   ${GTK3_LIBRARIES}
   Threads::Threads
+  OpenSSL::SSL
+  OpenSSL::Crypto
 )
 
 if(WIN32)
-  target_link_libraries(smart-automator-connect PRIVATE ssh ws2_32 iphlpapi shell32)
+  target_link_libraries(smart-automator-connect PRIVATE ws2_32 iphlpapi shell32)
 endif()
 
 target_compile_options(smart-automator-connect PRIVATE ${GTK3_CFLAGS_OTHER})
 
-install(TARGETS smart-automator-connect sa-askpass RUNTIME DESTINATION bin)
+install(TARGETS smart-automator-connect RUNTIME DESTINATION bin)

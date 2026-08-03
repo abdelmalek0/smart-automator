@@ -117,7 +117,6 @@ export default function TestEditorDialog({
   const [maxSteps, setMaxSteps] = useState(100)
   const [headless, setHeadless] = useState(false)
   const [freshProfile, setFreshProfile] = useState(true)
-  const [cdpUrl, setCdpUrl] = useState('')
   const [steps, setSteps] = useState<ReplayStep[]>([])
   const [stepsLoading, setStepsLoading] = useState(false)
   const [stepsError, setStepsError] = useState<string | null>(null)
@@ -140,7 +139,6 @@ export default function TestEditorDialog({
       setMaxSteps(task.max_steps)
       setHeadless(task.headless)
       setFreshProfile(task.fresh_profile ?? true)
-      setCdpUrl(task.cdp_url ?? '')
     } else {
       setName('')
       setPrompt('')
@@ -148,7 +146,6 @@ export default function TestEditorDialog({
       setMaxSteps(100)
       setHeadless(false)
       setFreshProfile(true)
-      setCdpUrl('')
       setSteps([])
       setStepsError(null)
     }
@@ -263,7 +260,7 @@ export default function TestEditorDialog({
         success_criteria: criteria.trim(),
         headless,
         max_steps: maxSteps,
-        cdp_url: cdpUrl.trim() || undefined,
+        cdp_url: undefined,
         fresh_profile: freshProfile,
       })
       if (!isCreate && trainedRunId && stepsDirty) {
@@ -351,17 +348,6 @@ export default function TestEditorDialog({
                   min={1}
                   value={maxSteps}
                   onChange={(e) => setMaxSteps(Number(e.target.value) || 1)}
-                  disabled={saving}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="test-cdp">CDP URL</Label>
-                <Input
-                  id="test-cdp"
-                  value={cdpUrl}
-                  onChange={(e) => setCdpUrl(e.target.value)}
-                  placeholder="Optional"
-                  className="mono text-sm"
                   disabled={saving}
                 />
               </div>

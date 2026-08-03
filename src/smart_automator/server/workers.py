@@ -1,0 +1,765 @@
+"""Authenticated Connect workers: token store, registry, CDP proxy over WSS."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import queue
+import re
+import secrets
+import socket
+import struct
+import threading
+import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from fastapi import WebSocket
+
+from . import paths
+from .auth.stores import User, _atomic_write_json
+
+log = logging.getLogger(__name__)
+
+WORKER_BROWSER_TIMEOUT_SECONDS = 120.0
+_MUX_HEADER = struct.Struct("!IBI")  # conn_id u32, flags u8, length u32
+FLAG_DATA = 0
+FLAG_OPEN = 1
+FLAG_CLOSE = 2
+_LOCAL_WS_URL_RE = re.compile(r"ws://(?:127\.0\.0\.1|localhost):\d+")
+_LOCAL_HTTP_URL_RE = re.compile(r"http://(?:127\.0\.0\.1|localhost):\d+")
+# Coalesce consecutive DATA mux frames under this payload size before one WS send.
+_OUTBOX_COALESCE_MAX = 56 * 1024
+
+LOCAL_BROWSER_ENV = "SMART_AUTOMATOR_LOCAL_BROWSER"
+
+
+def local_browser_mode_enabled() -> bool:
+    return os.getenv(LOCAL_BROWSER_ENV, "").lower() in {"1", "true", "yes"}
+
+
+@dataclass
+class WorkerToken:
+    token: str
+    user_id: str
+    created_at: float
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> WorkerToken:
+        return cls(
+            token=str(data["token"]),
+            user_id=str(data["user_id"]),
+            created_at=float(data.get("created_at", 0)),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "token": self.token,
+            "user_id": self.user_id,
+            "created_at": self.created_at,
+        }
+
+
+class WorkerTokenStore:
+    def __init__(self, path: Path | None = None) -> None:
+        self._path = path or (paths.AUTH_DIR / "worker_tokens.json")
+        self._lock = threading.Lock()
+
+    def _load_raw(self) -> list[dict[str, Any]]:
+        if not self._path.exists():
+            return []
+        try:
+            with open(self._path, encoding="utf-8") as handle:
+                data = json.load(handle)
+        except (json.JSONDecodeError, OSError):
+            return []
+        tokens = data.get("tokens", []) if isinstance(data, dict) else []
+        return tokens if isinstance(tokens, list) else []
+
+    def _save_raw(self, tokens: list[dict[str, Any]]) -> None:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write_json(self._path, {"tokens": tokens})
+        try:
+            os.chmod(self._path, 0o600)
+        except OSError:
+            pass
+
+    def create_token(self, user_id: str) -> WorkerToken:
+        token = WorkerToken(
+            token=secrets.token_urlsafe(32),
+            user_id=user_id,
+            created_at=time.time(),
+        )
+        with self._lock:
+            raw = [item for item in self._load_raw() if item.get("user_id") != user_id]
+            raw.append(token.to_dict())
+            self._save_raw(raw)
+        return token
+
+    def get_by_token(self, token: str) -> WorkerToken | None:
+        if not token:
+            return None
+        with self._lock:
+            for item in self._load_raw():
+                if item.get("token") == token:
+                    try:
+                        return WorkerToken.from_dict(item)
+                    except (KeyError, TypeError, ValueError):
+                        return None
+        return None
+
+    def delete_for_user(self, user_id: str) -> None:
+        with self._lock:
+            raw = self._load_raw()
+            next_raw = [item for item in raw if item.get("user_id") != user_id]
+            if len(next_raw) != len(raw):
+                self._save_raw(next_raw)
+
+    def delete_token(self, token: str) -> None:
+        with self._lock:
+            raw = self._load_raw()
+            next_raw = [item for item in raw if item.get("token") != token]
+            if len(next_raw) != len(raw):
+                self._save_raw(next_raw)
+
+
+def pack_mux_frame(conn_id: int, flags: int, payload: bytes = b"") -> bytes:
+    return _MUX_HEADER.pack(conn_id & 0xFFFFFFFF, flags & 0xFF, len(payload)) + payload
+
+
+def unpack_mux_frames(buffer: bytearray) -> list[tuple[int, int, bytes]]:
+    frames: list[tuple[int, int, bytes]] = []
+    while len(buffer) >= _MUX_HEADER.size:
+        conn_id, flags, length = _MUX_HEADER.unpack_from(buffer, 0)
+        total = _MUX_HEADER.size + length
+        if len(buffer) < total:
+            break
+        payload = bytes(buffer[_MUX_HEADER.size : total])
+        del buffer[:total]
+        frames.append((conn_id, flags, payload))
+    return frames
+
+
+def _parse_single_mux_frame(frame: bytes) -> tuple[int, int, bytes] | None:
+    if len(frame) < _MUX_HEADER.size:
+        return None
+    conn_id, flags, length = _MUX_HEADER.unpack_from(frame, 0)
+    if len(frame) != _MUX_HEADER.size + length:
+        return None
+    return conn_id, flags, frame[_MUX_HEADER.size :]
+
+
+class _ProxyClientWriter:
+    """Background writer so WSS receive never blocks on Playwright TCP sendall."""
+
+    def __init__(self, sock: socket.socket) -> None:
+        self._sock = sock
+        self._queue: queue.SimpleQueue[bytes | None] = queue.SimpleQueue()
+        self._thread = threading.Thread(target=self._run, daemon=True, name="cdp-proxy-writer")
+        self._closed = False
+        self._thread.start()
+
+    def write(self, data: bytes) -> None:
+        if self._closed or not data:
+            return
+        self._queue.put(data)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._queue.put(None)
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+        self._thread.join(timeout=2.0)
+
+    def _run(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is None:
+                return
+            try:
+                self._sock.sendall(item)
+            except OSError:
+                return
+
+
+class CdpProxy:
+    """Localhost TCP listener that muxes CDP sockets over the worker WSS."""
+
+    def __init__(self, worker: WorkerConnection) -> None:
+        self._worker = worker
+        self._sock: socket.socket | None = None
+        self._port = 0
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._clients: dict[int, _ProxyClientWriter] = {}
+        self._next_conn_id = 1
+
+    @property
+    def port(self) -> int:
+        return self._port
+
+    @property
+    def cdp_url(self) -> str:
+        return f"http://127.0.0.1:{self._port}"
+
+    def start(self) -> str:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(32)
+        sock.settimeout(0.5)
+        self._sock = sock
+        self._port = sock.getsockname()[1]
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._accept_loop, daemon=True, name="cdp-proxy")
+        self._thread.start()
+        return self.cdp_url
+
+    def stop(self) -> None:
+        self._stop.set()
+        with self._lock:
+            clients = list(self._clients.items())
+            self._clients.clear()
+        for conn_id, client in clients:
+            client.close()
+            self._worker.enqueue_binary(pack_mux_frame(conn_id, FLAG_CLOSE))
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = None
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+
+    def handle_mux_frame(self, conn_id: int, flags: int, payload: bytes) -> None:
+        with self._lock:
+            client = self._clients.get(conn_id)
+        if flags == FLAG_CLOSE:
+            if client is not None:
+                client.close()
+                with self._lock:
+                    self._clients.pop(conn_id, None)
+            return
+        if client is None:
+            return
+        if flags == FLAG_DATA and payload:
+            try:
+                client.write(self._rewrite_cdp_payload(payload))
+            except OSError:
+                self._close_client(conn_id)
+
+    def _rewrite_cdp_payload(self, payload: bytes) -> bytes:
+        """Rewrite Chrome debugger URLs so Playwright dials this proxy (any local port)."""
+        if self._port <= 0:
+            return payload
+        if b"webSocketDebuggerUrl" not in payload and b"devtools" not in payload:
+            return payload
+        try:
+            text = payload.decode("utf-8")
+        except UnicodeDecodeError:
+            return payload
+        proxy_ws = f"ws://127.0.0.1:{self._port}"
+        proxy_http = f"http://127.0.0.1:{self._port}"
+        rewritten = _LOCAL_WS_URL_RE.sub(proxy_ws, text)
+        rewritten = _LOCAL_HTTP_URL_RE.sub(proxy_http, rewritten)
+        if rewritten == text:
+            return payload
+        return rewritten.encode("utf-8")
+
+    def _accept_loop(self) -> None:
+        assert self._sock is not None
+        while not self._stop.is_set():
+            try:
+                client, _addr = self._sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            try:
+                client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass
+            writer = _ProxyClientWriter(client)
+            with self._lock:
+                conn_id = self._next_conn_id
+                self._next_conn_id += 1
+                self._clients[conn_id] = writer
+            self._worker.enqueue_binary(pack_mux_frame(conn_id, FLAG_OPEN))
+            threading.Thread(
+                target=self._client_read_loop,
+                args=(conn_id, client),
+                daemon=True,
+                name=f"cdp-proxy-{conn_id}",
+            ).start()
+
+    def _client_read_loop(self, conn_id: int, client: socket.socket) -> None:
+        chunk_size = 48 * 1024
+        try:
+            while not self._stop.is_set():
+                try:
+                    data = client.recv(chunk_size)
+                except OSError:
+                    break
+                if not data:
+                    break
+                self._worker.enqueue_binary(pack_mux_frame(conn_id, FLAG_DATA, data))
+        finally:
+            self._close_client(conn_id)
+
+    def _close_client(self, conn_id: int) -> None:
+        with self._lock:
+            client = self._clients.pop(conn_id, None)
+        if client is not None:
+            client.close()
+            self._worker.enqueue_binary(pack_mux_frame(conn_id, FLAG_CLOSE))
+
+
+@dataclass
+class WorkerConnection:
+    user_id: str
+    websocket: WebSocket
+    loop: asyncio.AbstractEventLoop
+    online: bool = True
+    last_seen: float = field(default_factory=time.time)
+    profiles: list[dict[str, Any]] = field(default_factory=list)
+    browser_state: str = "idle"  # idle | starting | ready | stopping
+    active_run_id: str | None = None
+    cdp_proxy: CdpProxy | None = None
+    cdp_url: str | None = None
+    ready_event: threading.Event = field(default_factory=threading.Event)
+    stopped_event: threading.Event = field(default_factory=threading.Event)
+    error_message: str = ""
+    # Thread-safe outbox: proxy threads enqueue here; drain_outbox sends on the event loop.
+    _sync_outbox: queue.SimpleQueue = field(default_factory=queue.SimpleQueue)
+    _outbox_wake: asyncio.Event | None = field(default=None, init=False, repr=False)
+    _binary_buffer: bytearray = field(default_factory=bytearray)
+
+    def touch(self) -> None:
+        self.last_seen = time.time()
+
+    def _signal_outbox(self) -> None:
+        def _wake() -> None:
+            if self._outbox_wake is not None:
+                self._outbox_wake.set()
+
+        try:
+            self.loop.call_soon_threadsafe(_wake)
+        except RuntimeError:
+            log.warning("worker outbox wake failed user=%s", self.user_id[:8])
+
+    def enqueue_json(self, payload: dict[str, Any]) -> None:
+        try:
+            self._sync_outbox.put(("json", payload))
+            self._signal_outbox()
+        except Exception:
+            log.warning("worker outbox enqueue failed user=%s", self.user_id[:8])
+
+    def enqueue_binary(self, payload: bytes) -> None:
+        try:
+            self._sync_outbox.put(("bin", payload))
+            self._signal_outbox()
+        except Exception:
+            log.warning("worker binary enqueue failed user=%s", self.user_id[:8])
+
+    async def send_json(self, payload: dict[str, Any]) -> None:
+        await self.websocket.send_json(payload)
+
+    async def send_bytes(self, payload: bytes) -> None:
+        await self.websocket.send_bytes(payload)
+
+    @staticmethod
+    def _coalesce_outbox_items(
+        items: list[tuple[str, Any]],
+    ) -> list[tuple[str, Any]]:
+        """Merge consecutive FLAG_DATA mux frames for the same conn_id."""
+        if not items:
+            return items
+        out: list[tuple[str, Any]] = []
+        pending_conn: int | None = None
+        pending_parts: list[bytes] = []
+        pending_size = 0
+
+        def flush_pending() -> None:
+            nonlocal pending_conn, pending_parts, pending_size
+            if pending_conn is None or not pending_parts:
+                pending_conn = None
+                pending_parts = []
+                pending_size = 0
+                return
+            if len(pending_parts) == 1:
+                out.append(("bin", pack_mux_frame(pending_conn, FLAG_DATA, pending_parts[0])))
+            else:
+                out.append(
+                    ("bin", pack_mux_frame(pending_conn, FLAG_DATA, b"".join(pending_parts)))
+                )
+            pending_conn = None
+            pending_parts = []
+            pending_size = 0
+
+        for kind, payload in items:
+            if kind != "bin" or not isinstance(payload, (bytes, bytearray)):
+                flush_pending()
+                out.append((kind, payload))
+                continue
+            parsed = _parse_single_mux_frame(bytes(payload))
+            if parsed is None or parsed[1] != FLAG_DATA or not parsed[2]:
+                flush_pending()
+                out.append((kind, payload))
+                continue
+            conn_id, _flags, data = parsed
+            if pending_conn is not None and (
+                conn_id != pending_conn or pending_size + len(data) > _OUTBOX_COALESCE_MAX
+            ):
+                flush_pending()
+            pending_conn = conn_id
+            pending_parts.append(data)
+            pending_size += len(data)
+        flush_pending()
+        return out
+
+    async def _flush_sync_outbox(self) -> int:
+        batch: list[tuple[str, Any]] = []
+        while True:
+            try:
+                batch.append(self._sync_outbox.get_nowait())
+            except queue.Empty:
+                break
+        if not batch:
+            return 0
+        coalesced = self._coalesce_outbox_items(batch)
+        for kind, payload in coalesced:
+            if kind == "json":
+                await self.send_json(payload)
+            else:
+                await self.send_bytes(payload)
+        return len(coalesced)
+
+    async def drain_outbox(self) -> None:
+        self._outbox_wake = asyncio.Event()
+        wake = self._outbox_wake
+        while self.online:
+            flushed = await self._flush_sync_outbox()
+            if flushed:
+                continue
+            wake.clear()
+            # Re-check after clear — avoid missing a wake that raced with flush.
+            if await self._flush_sync_outbox():
+                continue
+            try:
+                await asyncio.wait_for(wake.wait(), timeout=30.0)
+            except asyncio.TimeoutError:
+                await self.send_json({"type": "ping"})
+                continue
+            wake.clear()
+            await self._flush_sync_outbox()
+
+
+class WorkerRegistry:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._workers: dict[str, WorkerConnection] = {}
+
+    def register(self, worker: WorkerConnection) -> None:
+        with self._lock:
+            previous = self._workers.get(worker.user_id)
+            self._workers[worker.user_id] = worker
+        if previous is not None and previous is not worker:
+            previous.online = False
+            self._teardown_proxy(previous)
+            try:
+                asyncio.run_coroutine_threadsafe(previous.websocket.close(code=1000), previous.loop)
+            except RuntimeError:
+                pass
+
+    def unregister(self, worker: WorkerConnection) -> None:
+        with self._lock:
+            current = self._workers.get(worker.user_id)
+            if current is worker:
+                del self._workers[worker.user_id]
+        worker.online = False
+        self._teardown_proxy(worker)
+        worker.browser_state = "idle"
+        worker.active_run_id = None
+        worker.ready_event.set()
+        worker.stopped_event.set()
+
+    def get(self, user_id: str) -> WorkerConnection | None:
+        with self._lock:
+            worker = self._workers.get(user_id)
+            if worker is None or not worker.online:
+                return None
+            return worker
+
+    def status_for_user(self, user_id: str) -> dict[str, Any]:
+        worker = self.get(user_id)
+        if worker is None:
+            return {
+                "online": False,
+                "last_seen": None,
+                "profile_count": 0,
+                "browser_state": "offline",
+            }
+        return {
+            "online": True,
+            "last_seen": worker.last_seen,
+            "profile_count": len(worker.profiles),
+            "browser_state": worker.browser_state,
+        }
+
+    def profiles_for_user(self, user_id: str) -> list[dict[str, Any]]:
+        worker = self.get(user_id)
+        if worker is None:
+            return []
+        return list(worker.profiles)
+
+    def resolve_profile_for_start(
+        self,
+        user_id: str,
+        *,
+        chrome_user_data: str,
+        chrome_profile_directory: str,
+    ) -> tuple[str, str]:
+        """Return dirs only if they match an advertised worker profile; else app-default."""
+        worker = self.get(user_id)
+        if worker is None:
+            return "", ""
+        user_data = (chrome_user_data or "").strip()
+        profile_dir = (chrome_profile_directory or "").strip()
+        if not user_data and not profile_dir:
+            return "", ""
+        for profile in worker.profiles:
+            pud = str(profile.get("user_data_dir") or "").strip()
+            pdir = str(profile.get("profile_directory") or "").strip()
+            if user_data and pud == user_data and (not profile_dir or pdir == profile_dir):
+                return pud, pdir
+            if user_data and pud == user_data and profile_dir == pdir:
+                return pud, pdir
+        return "", ""
+
+    def request_browser_start(
+        self,
+        user_id: str,
+        *,
+        run_id: str,
+        fresh_profile: bool,
+        chrome_user_data: str = "",
+        chrome_profile_directory: str = "",
+        timeout: float = WORKER_BROWSER_TIMEOUT_SECONDS,
+    ) -> str:
+        worker = self.get(user_id)
+        if worker is None:
+            raise RuntimeError("Connect app offline")
+        if worker.browser_state not in ("idle",) and worker.active_run_id not in (None, run_id):
+            raise RuntimeError("Connect browser is busy with another run")
+
+        self._teardown_proxy(worker)
+        worker.error_message = ""
+        worker.ready_event.clear()
+        worker.stopped_event.clear()
+        worker.browser_state = "starting"
+        worker.active_run_id = run_id
+        worker.cdp_url = None
+
+        proxy = CdpProxy(worker)
+        cdp_url = proxy.start()
+        worker.cdp_proxy = proxy
+        worker.cdp_url = cdp_url
+
+        worker.enqueue_json(
+            {
+                "type": "browser.start",
+                "run_id": run_id,
+                "fresh_profile": bool(fresh_profile),
+                "chrome_user_data": chrome_user_data or "",
+                "chrome_profile_directory": chrome_profile_directory or "",
+            }
+        )
+
+        deadline = time.time() + timeout
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                self.request_browser_stop(user_id, run_id=run_id, wait=False)
+                raise TimeoutError("Timed out waiting for Connect browser to become ready")
+            if worker.ready_event.wait(timeout=min(1.0, remaining)):
+                worker.ready_event.clear()
+                if worker.error_message:
+                    message = worker.error_message
+                    self.request_browser_stop(user_id, run_id=run_id, wait=False)
+                    raise RuntimeError(message)
+                if worker.online and worker.browser_state == "ready" and worker.cdp_url:
+                    break
+                if not worker.online:
+                    self.request_browser_stop(user_id, run_id=run_id, wait=False)
+                    raise RuntimeError("Connect app offline")
+                # Spurious wake (e.g. browser.stopped during relaunch) — keep waiting.
+
+        self._wait_json_version(worker.cdp_url, timeout=timeout)
+        self._probe_cdp_http_rtt(worker.cdp_url, user_id=user_id)
+        return worker.cdp_url
+
+    def request_browser_stop(
+        self,
+        user_id: str,
+        *,
+        run_id: str | None = None,
+        wait: bool = True,
+        timeout: float = 30.0,
+    ) -> None:
+        worker = self.get(user_id)
+        if worker is None:
+            return
+        if run_id is not None and worker.active_run_id not in (None, run_id):
+            return
+        if worker.browser_state in ("idle",) and worker.cdp_proxy is None:
+            return
+
+        worker.browser_state = "stopping"
+        worker.stopped_event.clear()
+        worker.enqueue_json({"type": "browser.stop", "run_id": run_id or worker.active_run_id or ""})
+        if wait:
+            worker.stopped_event.wait(timeout=timeout)
+        self._teardown_proxy(worker)
+        worker.browser_state = "idle"
+        worker.active_run_id = None
+        worker.cdp_url = None
+        worker.stopped_event.set()
+
+    def handle_control_message(self, worker: WorkerConnection, message: dict[str, Any]) -> None:
+        worker.touch()
+        msg_type = str(message.get("type") or "")
+        if msg_type == "hello":
+            return
+        if msg_type == "profiles":
+            profiles = message.get("profiles")
+            if isinstance(profiles, list):
+                worker.profiles = [p for p in profiles if isinstance(p, dict)]
+            return
+        if msg_type == "browser.starting":
+            worker.browser_state = "starting"
+            return
+        if msg_type == "browser.ready":
+            worker.browser_state = "ready"
+            worker.error_message = ""
+            worker.ready_event.set()
+            return
+        if msg_type == "browser.stopped":
+            # During an in-flight start, Connect may tear down a previous Chrome
+            # before launching a new one. Do not wake the ready waiter as failure.
+            if worker.browser_state == "starting":
+                worker.stopped_event.set()
+                return
+            worker.browser_state = "idle"
+            worker.active_run_id = None
+            self._teardown_proxy(worker)
+            worker.stopped_event.set()
+            worker.ready_event.set()
+            return
+        if msg_type == "error":
+            worker.error_message = str(message.get("message") or "Connect worker error")
+            worker.ready_event.set()
+            worker.stopped_event.set()
+            return
+        if msg_type in ("ping", "pong"):
+            if msg_type == "ping":
+                worker.enqueue_json({"type": "pong"})
+            return
+
+    def handle_binary(self, worker: WorkerConnection, data: bytes) -> None:
+        worker.touch()
+        worker._binary_buffer.extend(data)
+        frames = unpack_mux_frames(worker._binary_buffer)
+        proxy = worker.cdp_proxy
+        if proxy is None:
+            return
+        for conn_id, flags, payload in frames:
+            proxy.handle_mux_frame(conn_id, flags, payload)
+
+    @staticmethod
+    def _teardown_proxy(worker: WorkerConnection) -> None:
+        proxy = worker.cdp_proxy
+        worker.cdp_proxy = None
+        if proxy is not None:
+            proxy.stop()
+
+    @staticmethod
+    def _wait_json_version(cdp_url: str, *, timeout: float) -> None:
+        deadline = time.time() + timeout
+        url = cdp_url.rstrip("/") + "/json/version"
+        last_error = "CDP proxy not ready"
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(url, timeout=2.0) as response:
+                    if 200 <= response.status < 300:
+                        return
+                    last_error = f"CDP /json/version HTTP {response.status}"
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                last_error = str(exc)
+            time.sleep(0.25)
+        raise TimeoutError(f"Timed out waiting for CDP /json/version: {last_error}")
+
+    @staticmethod
+    def _probe_cdp_http_rtt(cdp_url: str, *, user_id: str) -> None:
+        """Log /json/version RTT through the Connect CDP proxy right after browser.ready."""
+        url = cdp_url.rstrip("/") + "/json/version"
+        try:
+            started = time.perf_counter()
+            with urllib.request.urlopen(url, timeout=5.0) as response:
+                _ = response.read()
+                ok = 200 <= response.status < 300
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            if ok:
+                log.info(
+                    "Connect CDP RTT user=%s http_json_version=%.1fms",
+                    user_id[:8],
+                    elapsed_ms,
+                )
+            else:
+                log.warning(
+                    "Connect CDP RTT probe HTTP non-2xx user=%s in %.1fms",
+                    user_id[:8],
+                    elapsed_ms,
+                )
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            log.warning("Connect CDP RTT probe HTTP failed user=%s: %s", user_id[:8], exc)
+
+
+_token_store: WorkerTokenStore | None = None
+_registry: WorkerRegistry | None = None
+
+
+def worker_token_store() -> WorkerTokenStore:
+    global _token_store
+    if _token_store is None:
+        _token_store = WorkerTokenStore()
+    return _token_store
+
+
+def worker_registry() -> WorkerRegistry:
+    global _registry
+    if _registry is None:
+        _registry = WorkerRegistry()
+    return _registry
+
+
+def resolve_user_from_worker_token(token: str | None) -> User | None:
+    if not token:
+        return None
+    record = worker_token_store().get_by_token(token)
+    if record is None:
+        return None
+    from .auth.dependencies import user_store
+
+    return user_store().get_by_id(record.user_id)

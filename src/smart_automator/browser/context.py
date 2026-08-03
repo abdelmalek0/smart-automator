@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Callable
 
 from playwright.sync_api import sync_playwright, Browser, BrowserContext as PlaywrightContext
@@ -10,6 +12,8 @@ from .dom import DOMState, calc_branch_path_hash_set, mark_new_elements, remove_
 from .page import Page
 from .util import is_url_allowed
 from .views import BrowserState, TabInfo, URLNotAllowedError
+
+log = logging.getLogger(__name__)
 
 
 class BrowserContext:
@@ -22,6 +26,7 @@ class BrowserContext:
         self._current_page_id: int | None = None
         self._next_page_id = 0
         self._previous_branch_hashes: set[str] | None = None
+        self._remote_cdp = False
 
     def launch(self, *, cdp_url: str | None = None, fresh_profile: bool | None = None):
         effective_cdp = (cdp_url or self._config.cdp_url or "").strip()
@@ -31,6 +36,7 @@ class BrowserContext:
 
         self._playwright = sync_playwright().start()
         if effective_cdp:
+            self._remote_cdp = True
             self._browser = self._playwright.chromium.connect_over_cdp(effective_cdp)
             if self._browser.contexts:
                 self._context = self._browser.contexts[0]
@@ -42,8 +48,10 @@ class BrowserContext:
                     },
                     color_scheme="light",
                 )
+            self._probe_evaluate_rtt()
             return
 
+        self._remote_cdp = False
         launch_kwargs: dict = {"headless": self._config.headless}
         launch_args: list[str] = []
         if self._config.headless:
@@ -89,6 +97,35 @@ class BrowserContext:
             color_scheme="light",
         )
 
+    def _probe_evaluate_rtt(self) -> None:
+        if not self._context:
+            return
+        try:
+            page = self._context.pages[0] if self._context.pages else self._context.new_page()
+            samples_ms: list[float] = []
+            for _ in range(20):
+                started = time.perf_counter()
+                result = page.evaluate("1+1")
+                samples_ms.append((time.perf_counter() - started) * 1000)
+                if result != 2:
+                    log.warning("Connect CDP RTT probe unexpected result=%r", result)
+                    break
+            if not samples_ms:
+                return
+            ordered = sorted(samples_ms)
+            p50 = ordered[len(ordered) // 2]
+            p95 = ordered[max(0, int(len(ordered) * 0.95) - 1)]
+            log.info(
+                "Connect CDP RTT evaluate_1plus1 n=%d first=%.1fms p50=%.1fms p95=%.1fms max=%.1fms",
+                len(ordered),
+                samples_ms[0],
+                p50,
+                p95,
+                ordered[-1],
+            )
+        except Exception as exc:
+            log.warning("Connect CDP RTT evaluate probe failed: %s", exc)
+
     def _check_url(self, url: str):
         if not is_url_allowed(url, self._config.allowed_urls, self._config.denied_urls):
             raise URLNotAllowedError(f"URL not allowed: {url}")
@@ -110,6 +147,7 @@ class BrowserContext:
             allowed_urls=self._config.allowed_urls,
             denied_urls=self._config.denied_urls,
             home_page_url=self._config.home_page_url,
+            remote_cdp=self._remote_cdp,
         )
         self._pages[page_id] = page
         self._current_page_id = page_id

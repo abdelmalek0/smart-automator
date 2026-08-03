@@ -20,6 +20,7 @@ from .history_store import save_run_history
 from .paths import REPORT_DIR, SCREENSHOT_DIR
 from .replay_store import has_replay_script, load_run_replay, save_run_replay, delete_run_replay
 from ..storage.websites import WebsiteStore
+from .workers import local_browser_mode_enabled, worker_registry
 from .step_mapper import (
     build_step_start,
     history_item_to_step,
@@ -329,6 +330,7 @@ def run_automation(run: RunState) -> None:
     executor: Executor | None = None
     config = None
     replay_script_data: dict[str, Any] | None = None
+    worker_browser_started = False
 
     try:
         run.status = "running"
@@ -345,16 +347,54 @@ def run_automation(run: RunState) -> None:
         config = config_for_run()
         config.headless = run.headless
         config.max_steps = run.max_steps
-        effective_cdp = run.cdp_url or config.cdp_url
-        effective_fresh = run.fresh_profile or config.fresh_profile
-        normalized_cdp, normalized_fresh = normalize_browser_overrides(
-            cdp_url=effective_cdp,
-            fresh_profile=effective_fresh,
-        )
-        config.cdp_url = normalized_cdp
-        config.fresh_profile = normalized_fresh
-        run.cdp_url = normalized_cdp or None
-        run.fresh_profile = normalized_fresh
+        if run.fresh_profile is not None:
+            effective_fresh = bool(run.fresh_profile)
+        else:
+            effective_fresh = bool(config.fresh_profile)
+
+        registry = worker_registry()
+        worker = registry.get(run.user_id)
+        if worker is not None:
+            chrome_user_data, chrome_profile_directory = registry.resolve_profile_for_start(
+                run.user_id,
+                chrome_user_data=config.chrome_user_data,
+                chrome_profile_directory=config.chrome_profile_directory,
+            )
+            log.info(
+                "[run:%s] starting Connect browser fresh=%s profile=%s/%s",
+                run.run_id[:8],
+                effective_fresh,
+                chrome_user_data or "(app-default)",
+                chrome_profile_directory or "-",
+            )
+            proxy_url = registry.request_browser_start(
+                run.user_id,
+                run_id=run.run_id,
+                fresh_profile=effective_fresh,
+                chrome_user_data=chrome_user_data,
+                chrome_profile_directory=chrome_profile_directory,
+            )
+            worker_browser_started = True
+            normalized_cdp = proxy_url
+            normalized_fresh = effective_fresh
+            config.cdp_url = normalized_cdp
+            config.fresh_profile = normalized_fresh
+            config.chrome_user_data = chrome_user_data
+            config.chrome_profile_directory = chrome_profile_directory
+            run.cdp_url = normalized_cdp
+            run.fresh_profile = normalized_fresh
+        elif local_browser_mode_enabled():
+            effective_cdp = run.cdp_url or config.cdp_url
+            normalized_cdp, normalized_fresh = normalize_browser_overrides(
+                cdp_url=effective_cdp,
+                fresh_profile=effective_fresh,
+            )
+            config.cdp_url = normalized_cdp
+            config.fresh_profile = normalized_fresh
+            run.cdp_url = normalized_cdp or None
+            run.fresh_profile = normalized_fresh
+        else:
+            raise RuntimeError("Connect app offline")
 
         llm = create_llm(config)
         planner_provider = config.planner_llm_provider or config.llm_provider
@@ -450,6 +490,11 @@ def run_automation(run: RunState) -> None:
             run.broadcast({"type": "error", "message": str(exc)})
             log.error("[run:%s] error: %s", run.run_id[:8], exc, exc_info=True)
     finally:
+        if worker_browser_started:
+            try:
+                worker_registry().request_browser_stop(run.user_id, run_id=run.run_id)
+            except Exception as exc:
+                log.warning("[run:%s] worker browser stop failed: %s", run.run_id[:8], exc)
         if run.finished_at is None:
             run.finished_at = time.time()
         if executor is not None:

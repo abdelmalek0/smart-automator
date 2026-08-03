@@ -76,10 +76,13 @@ def normalize_browser_overrides(
     cdp_url: str | None,
     fresh_profile: bool,
 ) -> tuple[str, bool]:
+    """Normalize CDP URL without forcing fresh_profile off.
+
+    Worker CDP + isolated (fresh) profiles are compatible: Connect launches a
+    fresh Chrome, then the server attaches over the CDP tunnel.
+    """
     cdp = (cdp_url or "").strip()
-    if cdp:
-        return cdp, False
-    return cdp, fresh_profile
+    return cdp, bool(fresh_profile)
 
 
 def browser_session_mode(

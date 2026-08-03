@@ -50,7 +50,6 @@ export default function NewRunModal({
   const [headless, setHeadless] = useState(initialValues?.headless ?? false)
   const [freshProfile, setFreshProfile] = useState(initialValues?.fresh_profile ?? true)
   const [maxSteps, setMaxSteps] = useState(initialValues?.max_steps ?? 100)
-  const [cdpUrl, setCdpUrl] = useState(initialValues?.cdp_url ?? '')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saveToProject, setSaveToProject] = useState(false)
@@ -80,9 +79,6 @@ export default function NewRunModal({
   useEffect(() => {
     if (!config || initialValues) return
     setFreshProfile(config.fresh_profile ?? true)
-    const globalCdp = config.cdp_url ?? ''
-    setCdpUrl(globalCdp)
-    if (globalCdp.trim()) setAdvancedOpen(true)
   }, [config, initialValues])
 
   useEffect(() => {
@@ -94,7 +90,6 @@ export default function NewRunModal({
     setHeadless(initialValues.headless ?? false)
     setFreshProfile(initialValues.fresh_profile ?? true)
     setMaxSteps(initialValues.max_steps ?? 100)
-    setCdpUrl(initialValues.cdp_url ?? '')
     const wantsAutomatic = initialValues.use_replay_script ?? false
     if (initialValues.source_run_id && sourceRun === undefined) return
     setUseReplayScript(
@@ -108,13 +103,6 @@ export default function NewRunModal({
     }
   }, [canUseAutomatic, useReplayScript])
 
-  const cdpActive = Boolean(cdpUrl.trim())
-
-  useEffect(() => {
-    if (cdpActive && freshProfile) {
-      setFreshProfile(false)
-    }
-  }, [cdpActive, freshProfile])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -133,8 +121,8 @@ export default function NewRunModal({
         success_criteria: successCriteria.trim(),
         headless,
         max_steps: maxSteps,
-        cdp_url: cdpUrl.trim() || undefined,
-        fresh_profile: cdpActive ? false : freshProfile,
+        cdp_url: undefined,
+        fresh_profile: freshProfile,
         website_id: runProjectId,
         ...(websiteTaskId ? { website_task_id: websiteTaskId } : {}),
         ...(sourceRunId
@@ -354,19 +342,12 @@ export default function NewRunModal({
                       <Switch
                         id="fresh"
                         checked={freshProfile}
-                        disabled={cdpActive}
                         onCheckedChange={setFreshProfile}
                       />
                       <Label htmlFor="fresh" className="font-normal">
                         Isolated profile
                       </Label>
                     </div>
-                    {cdpActive && (
-                      <p className="text-xs text-muted-foreground w-full -mt-2">
-                        Not used while CDP URL is set — profile is controlled by Smart Automator
-                        Connect.
-                      </p>
-                    )}
                   </div>
 
                   <div className="space-y-1.5">
@@ -382,23 +363,6 @@ export default function NewRunModal({
                       onChange={(e) => setMaxSteps(Number(e.target.value))}
                       className="w-full accent-primary"
                     />
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="cdp">
-                      CDP URL{' '}
-                      <span className="text-muted-foreground font-normal">(optional)</span>
-                    </Label>
-                    <Input
-                      id="cdp"
-                      value={cdpUrl}
-                      onChange={(e) => setCdpUrl(e.target.value)}
-                      placeholder="ws://localhost:9222/devtools/browser/..."
-                      className="mono text-sm"
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Uses the connected browser&apos;s profile (set in Connect).
-                    </p>
                   </div>
 
                   <div className="space-y-3 pt-1 border-t border-border">
