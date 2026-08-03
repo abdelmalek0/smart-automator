@@ -10,9 +10,12 @@ from smart_automator.reporting.replay_executor import (
     execute_replay_steps,
 )
 from smart_automator.reporting.replay_script import (
+    ReplayLocatorError,
     _format_element_label,
     _playwright_locator,
     _sanitize_css_for_flutter,
+    assert_locator_matches_identity,
+    resolve_replay_locator,
 )
 
 
@@ -21,6 +24,15 @@ class TestReplayExecutor(unittest.TestCase):
     def _unique_locator() -> MagicMock:
         locator = MagicMock()
         locator.count.return_value = 1
+        return locator
+
+    @staticmethod
+    def _ambiguous_locator_with_unique_leaf() -> MagicMock:
+        locator = MagicMock()
+        locator.count.return_value = 2
+        leaf = MagicMock()
+        leaf.count.return_value = 1
+        locator.locator.return_value = leaf
         return locator
 
     def test_resolve_locator_prefers_aria_label(self):
@@ -34,7 +46,7 @@ class TestReplayExecutor(unittest.TestCase):
             },
         }
 
-        _resolve_locator(page, step)
+        _resolve_locator(page, step, poll_timeout_seconds=0)
 
         page.get_by_label.assert_called_once_with("Abdul Bassit", exact=True)
 
@@ -47,7 +59,7 @@ class TestReplayExecutor(unittest.TestCase):
             "element": {"attributes": {"id": "submit-btn"}},
         }
 
-        _resolve_locator(page, step)
+        _resolve_locator(page, step, poll_timeout_seconds=0)
 
         page.locator.assert_called_once_with("#submit-btn")
 
@@ -64,7 +76,7 @@ class TestReplayExecutor(unittest.TestCase):
             "element": {"attributes": {"id": "flt-semantic-node-18", "role": "button"}},
         }
 
-        _resolve_locator(page, step)
+        _resolve_locator(page, step, poll_timeout_seconds=0)
 
         page.locator.assert_called_once_with(_sanitize_css_for_flutter(css))
         self.assertNotIn("flt-semantic-node-18", page.locator.call_args[0][0])
@@ -86,19 +98,45 @@ class TestReplayExecutor(unittest.TestCase):
             },
         }
 
-        resolved = _resolve_locator(page, step)
+        resolved = _resolve_locator(page, step, poll_timeout_seconds=0)
 
         page.get_by_role.assert_called_once_with("button", name="Continue", exact=True)
         page.locator.assert_not_called()
         self.assertIs(resolved, page.get_by_role.return_value)
 
-    def test_resolve_locator_falls_back_when_role_is_ambiguous(self):
+    def test_resolve_locator_narrows_ambiguous_label_to_editable_leaf(self):
         page = MagicMock()
-        role_locator = MagicMock()
-        role_locator.count.return_value = 2
-        css_locator = self._unique_locator()
-        page.get_by_role.return_value = role_locator
-        page.locator.return_value = css_locator
+        page.get_by_label.return_value = self._ambiguous_locator_with_unique_leaf()
+        step = {
+            "action": "input_text",
+            "args": {
+                "text": "user@example.com",
+                "xpath": "html/body/flt-semantics[2]/input",
+                "css_selector": (
+                    'flt-semantics:nth-of-type(2) > input[aria-label="Email"]'
+                ),
+            },
+            "element": {
+                "attributes": {"aria-label": "Email", "type": "text"},
+            },
+        }
+
+        resolved = resolve_replay_locator(page, step, poll_timeout_seconds=0)
+
+        page.get_by_label.assert_called_once_with("Email", exact=True)
+        page.get_by_label.return_value.locator.assert_called_once()
+        self.assertIs(resolved, page.get_by_label.return_value.locator.return_value)
+        page.locator.assert_not_called()
+
+    def test_resolve_locator_refuses_positional_fallback_when_identity_recorded(self):
+        page = MagicMock()
+        ambiguous = MagicMock()
+        ambiguous.count.return_value = 2
+        leaf = MagicMock()
+        leaf.count.return_value = 0
+        ambiguous.locator.return_value = leaf
+        page.get_by_role.return_value = ambiguous
+        page.locator.return_value = self._unique_locator()
         css = (
             'html > body > flt-semantics:nth-of-type(4)[role="button"]'
             '[id="flt-semantic-node-8"]'
@@ -112,11 +150,37 @@ class TestReplayExecutor(unittest.TestCase):
             },
         }
 
-        resolved = _resolve_locator(page, step)
+        with self.assertRaises(ReplayLocatorError) as ctx:
+            resolve_replay_locator(page, step, poll_timeout_seconds=0)
+
+        self.assertIn("recorded identity", str(ctx.exception))
+        page.locator.assert_not_called()
+
+    def test_resolve_locator_falls_back_when_role_is_ambiguous(self):
+        # Kept name for compatibility: accessible-name identity must not use positional CSS.
+        page = MagicMock()
+        role_locator = MagicMock()
+        role_locator.count.return_value = 2
+        role_locator.locator.return_value.count.return_value = 0
+        page.get_by_role.return_value = role_locator
+        css = (
+            'html > body > flt-semantics:nth-of-type(4)[role="button"]'
+            '[id="flt-semantic-node-8"]'
+        )
+        step = {
+            "action": "click_element",
+            "args": {"css_selector": css},
+            "element": {
+                "attributes": {"id": "flt-semantic-node-8", "role": "button"},
+                "accessibleName": "Meals",
+            },
+        }
+
+        with self.assertRaises(ReplayLocatorError):
+            _resolve_locator(page, step, poll_timeout_seconds=0)
 
         page.get_by_role.assert_called_once_with("button", name="Meals", exact=True)
-        page.locator.assert_called_once_with(_sanitize_css_for_flutter(css))
-        self.assertIs(resolved, css_locator)
+        page.locator.assert_not_called()
 
     def test_playwright_locator_uses_role_and_accessible_name_for_flutter(self):
         step = {
@@ -178,6 +242,40 @@ class TestReplayExecutor(unittest.TestCase):
         self.assertIn("flt-semantics:nth-of-type(1)", locator_expr)
         self.assertNotIn("flt-semantic-node-18", locator_expr)
 
+    def test_identity_gate_accepts_matching_aria_label(self):
+        locator = MagicMock()
+        locator.evaluate.return_value = {
+            "aria": "Email",
+            "placeholder": "",
+            "name": "",
+            "title": "",
+            "text": "",
+        }
+        step = {
+            "element": {"attributes": {"aria-label": "Email"}},
+        }
+
+        assert_locator_matches_identity(locator, step)
+
+    def test_identity_gate_rejects_neighbor_aria_label(self):
+        locator = MagicMock()
+        locator.evaluate.return_value = {
+            "aria": "Password",
+            "placeholder": "",
+            "name": "",
+            "title": "",
+            "text": "",
+        }
+        step = {
+            "element": {"attributes": {"aria-label": "Email"}},
+        }
+
+        with self.assertRaises(ReplayLocatorError) as ctx:
+            assert_locator_matches_identity(locator, step)
+
+        self.assertIn("Password", str(ctx.exception))
+        self.assertIn("Email", str(ctx.exception))
+
     def test_settle_wait_after_successful_click(self):
         browser_context = MagicMock()
         page_wrapper = MagicMock()
@@ -224,6 +322,35 @@ class TestReplayExecutor(unittest.TestCase):
         locator.click.assert_called_once()
         self.assertEqual(len(results), 1)
         self.assertIsNone(results[0].error)
+
+    def test_execute_input_errors_on_identity_mismatch(self):
+        browser_context = MagicMock()
+        page = MagicMock()
+        locator = self._unique_locator()
+        locator.evaluate.return_value = {
+            "aria": "Password",
+            "placeholder": "",
+            "name": "",
+            "title": "",
+            "text": "",
+        }
+        page.get_by_label.return_value = locator
+        browser_context.get_current_page.return_value.playwright_page = page
+
+        steps = [
+            {
+                "action": "input_text",
+                "args": {"text": "user@example.com"},
+                "element": {"attributes": {"aria-label": "Email"}},
+            }
+        ]
+
+        results = execute_replay_steps(browser_context, steps)
+
+        locator.fill.assert_not_called()
+        self.assertEqual(len(results), 1)
+        self.assertIsNotNone(results[0].error)
+        self.assertIn("Password", results[0].error or "")
 
     @patch("smart_automator.reporting.replay_executor.time.sleep")
     def test_retries_failed_step_after_wait(self, mock_sleep):

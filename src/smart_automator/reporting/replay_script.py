@@ -1,11 +1,22 @@
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 
 from playwright.sync_api import Locator, Page as PlaywrightPage
 
 _FLUTTER_ID_IN_CSS = re.compile(r'\[id="flt-semantic-node-\d+"\]')
+_IDENTITY_ATTR_IN_CSS = re.compile(
+    r'\[(?:aria-label|placeholder|name|title)\s*=',
+    re.IGNORECASE,
+)
+_EDITABLE_LEAF_SELECTOR = (
+    'input, textarea, [contenteditable="true"], [role="textbox"]'
+)
+_IDENTITY_LOCATOR_KINDS = frozenset({"label", "placeholder", "role"})
+_DEFAULT_RESOLVE_POLL_SECONDS = 2.0
+_DEFAULT_RESOLVE_POLL_INTERVAL = 0.2
 
 DOM_ACTIONS = frozenset({
     "click_element",
@@ -21,6 +32,10 @@ DOM_ACTIONS = frozenset({
 })
 
 NON_REPLAYABLE = frozenset({"done", "cache_content"})
+
+
+class ReplayLocatorError(LookupError):
+    """Raised when a replay step cannot uniquely resolve its target element."""
 
 
 def _element_accessible_name(element: dict[str, Any] | None) -> str | None:
@@ -137,44 +152,90 @@ def _normalize_xpath(xpath: str) -> str:
     return xpath_target
 
 
+def _css_has_identity_attrs(selector: str) -> bool:
+    return bool(_IDENTITY_ATTR_IN_CSS.search(selector))
+
+
+def recorded_element_identity(step: dict[str, Any]) -> dict[str, str]:
+    """Return distinguishing attributes recorded for a replay step's target."""
+    attrs = _element_attrs(step)
+    identity: dict[str, str] = {}
+    for key in ("aria-label", "placeholder", "name", "title"):
+        value = (attrs.get(key) or "").strip()
+        if value:
+            identity[key] = value
+    accessible = _element_accessible_name(step.get("element"))
+    if accessible:
+        identity.setdefault("accessibleName", accessible)
+    return identity
+
+
+def _step_has_recorded_identity(step: dict[str, Any]) -> bool:
+    if recorded_element_identity(step):
+        return True
+    args = step.get("args") or {}
+    css = args.get("css_selector")
+    if css and _css_has_identity_attrs(str(css)):
+        return True
+    if css and _css_has_identity_attrs(_sanitize_css_for_flutter(str(css))):
+        return True
+    return False
+
+
 def _replay_locator_candidates(step: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    identity, positional = _split_replay_locator_candidates(step)
+    return identity + positional
+
+
+def _split_replay_locator_candidates(
+    step: dict[str, Any],
+) -> tuple[list[tuple[str, dict[str, Any]]], list[tuple[str, dict[str, Any]]]]:
     args = step.get("args") or {}
     attrs = _element_attrs(step)
     element = step.get("element") or {}
-    candidates: list[tuple[str, dict[str, Any]]] = []
+    identity: list[tuple[str, dict[str, Any]]] = []
+    positional: list[tuple[str, dict[str, Any]]] = []
 
     if label := attrs.get("aria-label"):
-        candidates.append(("label", {"label": label}))
+        identity.append(("label", {"label": label}))
     if placeholder := attrs.get("placeholder"):
-        candidates.append(("placeholder", {"placeholder": placeholder}))
+        identity.append(("placeholder", {"placeholder": placeholder}))
 
     role = attrs.get("role")
     accessible_name = _element_accessible_name(element)
     if role and accessible_name:
-        candidates.append(("role", {"role": role, "name": accessible_name}))
+        identity.append(("role", {"role": role, "name": accessible_name}))
 
     element_id = attrs.get("id")
     css = args.get("css_selector")
     xpath = args.get("xpath")
 
+    def _add_css(selector: str) -> None:
+        entry = ("css", {"selector": selector})
+        if _css_has_identity_attrs(selector):
+            identity.append(entry)
+        else:
+            positional.append(entry)
+
     if element_id and _is_unstable_flutter_id(element_id):
         if css:
-            candidates.append(("css", {"selector": _sanitize_css_for_flutter(css)}))
+            _add_css(_sanitize_css_for_flutter(str(css)))
         if xpath:
-            candidates.append(("xpath", {"xpath": _normalize_xpath(xpath)}))
+            positional.append(("xpath", {"xpath": _normalize_xpath(str(xpath))}))
     elif element_id:
-        candidates.append(("css", {"selector": f"#{element_id}"}))
+        # Stable DOM ids are identity-like; keep them ahead of positional paths.
+        identity.append(("css", {"selector": f"#{element_id}"}))
 
-    if css and not any(kind == "css" for kind, _ in candidates):
-        candidates.append(("css", {"selector": css}))
-    if xpath and not any(kind == "xpath" for kind, _ in candidates):
-        candidates.append(("xpath", {"xpath": _normalize_xpath(xpath)}))
+    if css and not any(kind == "css" for kind, _ in identity + positional):
+        _add_css(str(css))
+    if xpath and not any(kind == "xpath" for kind, _ in positional):
+        positional.append(("xpath", {"xpath": _normalize_xpath(str(xpath))}))
     if (text := args.get("text")) and step.get("action") == "scroll_to_text":
-        candidates.append(("text", {"text": text}))
+        identity.append(("text", {"text": text}))
     if index := args.get("index"):
-        candidates.append(("index", {"index": index}))
+        positional.append(("index", {"index": index}))
 
-    return candidates
+    return identity, positional
 
 
 def _apply_replay_locator(page: PlaywrightPage, kind: str, params: dict[str, Any]) -> Locator:
@@ -195,22 +256,131 @@ def _apply_replay_locator(page: PlaywrightPage, kind: str, params: dict[str, Any
     return page.locator("body")
 
 
-def resolve_replay_locator(page: PlaywrightPage, step: dict[str, Any]) -> Locator:
-    candidates = _replay_locator_candidates(step)
-    if not candidates:
-        return page.locator("body")
+def _unique_locator_or_none(locator: Locator, *, allow_editable_leaf: bool) -> Locator | None:
+    try:
+        count = locator.count()
+    except Exception:
+        return None
+    if count == 1:
+        return locator
+    if count > 1 and allow_editable_leaf:
+        leaf = locator.locator(_EDITABLE_LEAF_SELECTOR)
+        try:
+            if leaf.count() == 1:
+                return leaf
+        except Exception:
+            return None
+    return None
 
-    last_locator: Locator | None = None
+
+def _try_resolve_from_candidates(
+    page: PlaywrightPage,
+    candidates: list[tuple[str, dict[str, Any]]],
+    *,
+    allow_editable_leaf: bool,
+) -> Locator | None:
     for kind, params in candidates:
         locator = _apply_replay_locator(page, kind, params)
-        last_locator = locator
-        try:
-            if locator.count() == 1:
-                return locator
-        except Exception:
-            continue
+        narrow = allow_editable_leaf and (
+            kind in _IDENTITY_LOCATOR_KINDS or kind == "css"
+        )
+        unique = _unique_locator_or_none(locator, allow_editable_leaf=narrow)
+        if unique is not None:
+            return unique
+    return None
 
-    return last_locator if last_locator is not None else page.locator("body")
+
+def resolve_replay_locator(
+    page: PlaywrightPage,
+    step: dict[str, Any],
+    *,
+    poll_timeout_seconds: float = _DEFAULT_RESOLVE_POLL_SECONDS,
+    poll_interval_seconds: float = _DEFAULT_RESOLVE_POLL_INTERVAL,
+) -> Locator:
+    identity_candidates, positional_candidates = _split_replay_locator_candidates(step)
+    has_identity = bool(identity_candidates) or _step_has_recorded_identity(step)
+
+    if not identity_candidates and not positional_candidates:
+        raise ReplayLocatorError("No locator candidates captured for replay step")
+
+    deadline = time.monotonic() + max(0.0, poll_timeout_seconds)
+    while True:
+        if identity_candidates:
+            resolved = _try_resolve_from_candidates(
+                page,
+                identity_candidates,
+                allow_editable_leaf=True,
+            )
+            if resolved is not None:
+                return resolved
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(max(0.01, poll_interval_seconds))
+
+    if has_identity:
+        raise ReplayLocatorError(
+            "Could not uniquely resolve element by recorded identity "
+            "(refusing positional xpath/css fallback)"
+        )
+
+    resolved = _try_resolve_from_candidates(
+        page,
+        positional_candidates,
+        allow_editable_leaf=False,
+    )
+    if resolved is not None:
+        return resolved
+
+    raise ReplayLocatorError("Could not uniquely resolve replay element locator")
+
+
+def assert_locator_matches_identity(locator: Locator, step: dict[str, Any]) -> None:
+    """Fail if the resolved node no longer matches recorded distinguishing attrs."""
+    expected = recorded_element_identity(step)
+    if not expected:
+        return
+
+    try:
+        actual = locator.evaluate(
+            """el => {
+                const aria = (el.getAttribute('aria-label') || '').trim();
+                const placeholder = (el.getAttribute('placeholder') || '').trim();
+                const name = (el.getAttribute('name') || '').trim();
+                const title = (el.getAttribute('title') || '').trim();
+                const text = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+                return { aria, placeholder, name, title, text };
+            }"""
+        )
+    except Exception as exc:
+        raise ReplayLocatorError(
+            f"Could not verify resolved element identity: {exc}"
+        ) from exc
+
+    attr_map = {
+        "aria-label": "aria",
+        "placeholder": "placeholder",
+        "name": "name",
+        "title": "title",
+    }
+    for key, expected_value in expected.items():
+        if key == "accessibleName":
+            aria = (actual.get("aria") or "").strip()
+            title = (actual.get("title") or "").strip()
+            text = (actual.get("text") or "").strip()
+            if expected_value in {aria, title} or expected_value in text:
+                continue
+            raise ReplayLocatorError(
+                f"Resolved element accessible name does not match recorded "
+                f"{expected_value!r} (aria={aria!r}, text={text!r})"
+            )
+        actual_key = attr_map.get(key)
+        if not actual_key:
+            continue
+        got = (actual.get(actual_key) or "").strip()
+        if got != expected_value:
+            raise ReplayLocatorError(
+                f"Resolved element {key}={got!r} does not match recorded {expected_value!r}"
+            )
 
 
 def _format_replay_locator_expr(kind: str, params: dict[str, Any]) -> str:

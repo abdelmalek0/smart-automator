@@ -7,9 +7,19 @@ from playwright.sync_api import Locator, Page as PlaywrightPage
 
 from ..agent.context import ActionResult
 from ..browser.context import BrowserContext
-from .replay_script import _playwright_keyboard_key, resolve_replay_locator
+from .replay_script import (
+    _playwright_keyboard_key,
+    assert_locator_matches_identity,
+    resolve_replay_locator,
+)
 
 _INTERACTIVE_ACTIONS = frozenset({
+    "click_element",
+    "input_text",
+    "select_dropdown_option",
+})
+
+_IDENTITY_GATE_ACTIONS = frozenset({
     "click_element",
     "input_text",
     "select_dropdown_option",
@@ -20,8 +30,17 @@ def _needs_settle_wait(step: dict[str, Any]) -> bool:
     return step.get("action") in _INTERACTIVE_ACTIONS
 
 
-def _resolve_locator(page: PlaywrightPage, step: dict[str, Any]) -> Locator:
-    return resolve_replay_locator(page, step)
+def _resolve_locator(
+    page: PlaywrightPage,
+    step: dict[str, Any],
+    *,
+    poll_timeout_seconds: float = 2.0,
+) -> Locator:
+    return resolve_replay_locator(
+        page,
+        step,
+        poll_timeout_seconds=poll_timeout_seconds,
+    )
 
 
 def _uses_element_locator(step: dict[str, Any]) -> bool:
@@ -103,6 +122,8 @@ def _execute_replay_step(page: PlaywrightPage, browser_context: BrowserContext, 
             return ActionResult(extracted_content="Closed tab", include_in_memory=True, action_name=action_name)
 
         locator = _resolve_locator(page, step) if _uses_element_locator(step) else None
+        if locator is not None and action in _IDENTITY_GATE_ACTIONS:
+            assert_locator_matches_identity(locator, step)
 
         if action == "click_element":
             assert locator is not None
