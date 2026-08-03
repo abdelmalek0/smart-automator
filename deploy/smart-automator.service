@@ -1,0 +1,17 @@
+[Unit]
+Description=Smart Automator API (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+User=ml
+Group=ml
+WorkingDirectory=/home/ml/smart-automator
+EnvironmentFile=-/home/ml/smart-automator/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ml/.local/bin/uv run uvicorn smart_automator.server.app:app --host 127.0.0.1 --port 6501
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
