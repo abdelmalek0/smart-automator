@@ -563,7 +563,7 @@ static int setup_tray(app_ctx_t *app) {
   app->nid.uID = 1;
   app->nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
   app->nid.uCallbackMessage = app->tray_msg_id;
-  icon = LoadIconW(NULL, IDI_APPLICATION);
+  icon = LoadIcon(NULL, IDI_APPLICATION);
   app->nid.hIcon = icon;
   wcsncpy(app->nid.szTip, L"Smart Automator Connect", sizeof(app->nid.szTip) / sizeof(wchar_t) - 1);
   if (!Shell_NotifyIconW(NIM_ADD, &app->nid)) {
