@@ -140,22 +140,95 @@ int sa_mkdir_p(const char *path) {
 }
 
 void sa_config_path(char *out, size_t out_len) {
-#ifdef _WIN32
-  char base[MAX_PATH];
+  char exe[1024];
+  char *slash;
 
-  if (SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, base) != S_OK) {
+  if (out == NULL || out_len == 0) {
+    return;
+  }
+  out[0] = '\0';
+
+#ifdef _WIN32
+  if (GetModuleFileNameA(NULL, exe, (DWORD)sizeof(exe)) == 0) {
     snprintf(out, out_len, "connect.conf");
     return;
   }
-  snprintf(out, out_len, "%s\\smart-automator\\connect.conf", base);
 #else
-  const char *home = getenv("HOME");
-  if (home == NULL || *home == '\0') {
-    snprintf(out, out_len, "connect.conf");
-    return;
+  {
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n < 0) {
+      snprintf(out, out_len, "connect.conf");
+      return;
+    }
+    exe[n] = '\0';
   }
-  snprintf(out, out_len, "%s/.config/smart-automator/connect.conf", home);
 #endif
+
+  slash = strrchr(exe, '/');
+#ifdef _WIN32
+  {
+    char *bslash = strrchr(exe, '\\');
+    if (bslash != NULL && (slash == NULL || bslash > slash)) {
+      slash = bslash;
+    }
+  }
+#endif
+  if (slash != NULL) {
+    *slash = '\0';
+    snprintf(out, out_len, "%s%cconnect.conf", exe,
+#ifdef _WIN32
+             '\\'
+#else
+             '/'
+#endif
+    );
+  } else {
+    snprintf(out, out_len, "connect.conf");
+  }
+}
+
+#ifndef SA_DEFAULT_SERVER_URL
+#define SA_DEFAULT_SERVER_URL "http://156.67.83.177:6500/"
+#endif
+
+int sa_connect_config_load(char *server_url, size_t server_url_len) {
+  char path[1024];
+  FILE *fp;
+  char line[768];
+  int found = 0;
+
+  if (server_url == NULL || server_url_len == 0) {
+    return -1;
+  }
+  server_url[0] = '\0';
+  sa_config_path(path, sizeof(path));
+  fp = fopen(path, "r");
+  if (fp != NULL) {
+    while (fgets(line, sizeof(line), fp) != NULL) {
+      char *eq;
+      sa_trim(line);
+      if (line[0] == '\0' || line[0] == '#') {
+        continue;
+      }
+      eq = strchr(line, '=');
+      if (eq == NULL) {
+        continue;
+      }
+      *eq = '\0';
+      sa_trim(line);
+      sa_trim(eq + 1);
+      if (strcmp(line, "server_url") == 0) {
+        snprintf(server_url, server_url_len, "%s", eq + 1);
+        found = 1;
+        break;
+      }
+    }
+    fclose(fp);
+  }
+  if (!found || server_url[0] == '\0') {
+    snprintf(server_url, server_url_len, "%s", SA_DEFAULT_SERVER_URL);
+  }
+  return 0;
 }
 
 void sa_chrome_profile_path(char *out, size_t out_len) {

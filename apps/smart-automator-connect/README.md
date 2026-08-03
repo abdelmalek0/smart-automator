@@ -34,12 +34,27 @@ cmake --build build -j
 ./build/smart-automator-connect.exe
 ```
 
+## Configuration
+
+Optional `connect.conf` next to the executable:
+
+```
+server_url=https://your-server.example.com
+```
+
+If the file is missing (or `server_url` is empty), Connect defaults to `http://156.67.83.177:6500/`.
+
+A sample is written to the build directory as `connect.conf.example`.
+
 ## Usage
 
-1. Enter the Smart Automator **server URL** (e.g. `https://qa.example.com`), username, and password
-2. Click **Connect** — the app signs in and stays online
-3. Start a run from the dashboard; Connect launches Chrome when the server sends `browser.start`
-4. When reconnecting fails after several attempts, click **Reconnect** (or **Log out** and sign in again)
+1. (Optional) Place `connect.conf` beside the binary to override the default server URL
+2. Enter username and password, then click **Connect**
+3. When the WebSocket is up, the window hides to the system tray (worker keeps running)
+4. Restore via the tray icon (click / “Show window”); **Quit** only from the tray menu
+5. Closing the window (X) also hides to the tray — it does not exit the app
+6. Start a run from the dashboard; Connect launches Chrome when the server sends `browser.start`
+7. When reconnecting fails after several attempts, click **Reconnect** (or **Log out** and sign in again)
 
 Session file (mode `0600` on Linux):
 

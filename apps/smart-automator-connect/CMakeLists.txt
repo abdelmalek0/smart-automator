@@ -54,3 +54,10 @@ endif()
 target_compile_options(smart-automator-connect PRIVATE ${GTK3_CFLAGS_OTHER})
 
 install(TARGETS smart-automator-connect RUNTIME DESTINATION bin)
+
+# Example config for operators (rename/copy to connect.conf beside the binary).
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/connect.conf.example"
+  "${CMAKE_BINARY_DIR}/connect.conf.example"
+  COPYONLY
+)

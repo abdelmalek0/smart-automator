@@ -1,0 +1,3 @@
+# Optional. Place next to the executable as connect.conf to override the default server URL.
+# Default when missing: http://156.67.83.177:6500/
+server_url=http://156.67.83.177:6500/
