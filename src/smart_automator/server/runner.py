@@ -532,8 +532,13 @@ def run_automation(run: RunState) -> None:
                     )
             _generate_report(run, executor, config)
         run.executor = None
-        # Detach Playwright before asking Connect to kill Chrome so cleanup is not
-        # racing a dead remote browser and so report/closed are not gated on stop.
+        # Drop the CDP mux before Playwright closes sockets so cleanup cannot
+        # flood/kill the worker control WSS. Then stop Chrome only (WSS stays).
+        if worker_browser_started:
+            try:
+                worker_registry().detach_cdp_proxy(run.user_id, run_id=run.run_id)
+            except Exception as exc:
+                log.warning("[run:%s] CDP proxy detach failed: %s", run.run_id[:8], exc)
         if executor is not None:
             try:
                 executor.cleanup()

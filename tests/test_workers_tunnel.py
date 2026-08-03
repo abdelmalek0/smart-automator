@@ -140,6 +140,54 @@ def test_browser_stopped_uses_lease_lock() -> None:
     assert worker.active_run_id is None
 
 
+def test_detach_cdp_proxy_keeps_browser_lease() -> None:
+    """Proxy mux stops before Playwright cleanup; Chrome stop is a separate step."""
+    registry = WorkerRegistry()
+    loop = MagicMock()
+    worker = WorkerConnection(user_id="user-1", websocket=MagicMock(), loop=loop)
+    registry.register(worker)
+    worker.browser_state = "ready"
+    worker.active_run_id = "run-1"
+    worker.cdp_url = "http://127.0.0.1:9999"
+    with patch.object(WorkerRegistry, "_teardown_proxy") as teardown:
+        registry.detach_cdp_proxy("user-1", run_id="run-1")
+        teardown.assert_called_once()
+    assert worker.browser_state == "ready"
+    assert worker.active_run_id == "run-1"
+    assert worker.cdp_url is None
+
+
+def test_runner_detaches_proxy_before_playwright_cleanup() -> None:
+    from pathlib import Path
+
+    runner_src = (
+        Path(__file__).resolve().parents[1] / "src/smart_automator/server/runner.py"
+    ).read_text(encoding="utf-8")
+    detach = runner_src.index("detach_cdp_proxy")
+    cleanup = runner_src.index("executor.cleanup()")
+    stop = runner_src.index("request_browser_stop(")
+    assert detach < cleanup < stop
+
+
+def test_connect_cdp_eof_does_not_kill_control_wss() -> None:
+    """Regression: CDP peer close must drop the channel only, not the control WSS."""
+    from pathlib import Path
+
+    worker_ws = (
+        Path(__file__).resolve().parents[1]
+        / "apps/smart-automator-connect/src/worker_ws.c"
+    ).read_text(encoding="utf-8")
+    pump = worker_ws.split("static int pump_cdp_channel(", 1)[1].split(
+        "static int pump_cdp_reads(", 1
+    )[0]
+    assert "close_channel(ws, ch);" in pump
+    assert "CDP peer closed" in pump or "keep control WSS" in pump
+    # After closing the channel on recv failure, do not propagate -1 as WSS death.
+    eof_branch = pump.split("if (n < 0)", 1)[1].split("if (n == 0)", 1)[0]
+    assert "return 0;" in eof_branch
+    assert "return -1;" not in eof_branch
+
+
 def test_probe_helpers_removed_from_production_path() -> None:
     assert not hasattr(WorkerRegistry, "_probe_cdp_http_rtt")
     from smart_automator.browser.context import BrowserContext

@@ -744,8 +744,9 @@ static int pump_cdp_channel(sa_worker_ws_t *ws, sa_cdp_channel_t *ch) {
     ssize_t n = sa_tcp_recv_some(ch->fd, buf, want, 0);
     int packed;
     if (n < 0) {
+      /* CDP peer closed/errored — drop this channel only; keep control WSS up. */
       close_channel(ws, ch);
-      return -1;
+      return 0;
     }
     if (n == 0) {
       break;

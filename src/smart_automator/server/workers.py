@@ -707,6 +707,26 @@ class WorkerRegistry:
             self.request_browser_stop(user_id, run_id=run_id, wait=False)
             raise
 
+    def detach_cdp_proxy(
+        self,
+        user_id: str,
+        *,
+        run_id: str | None = None,
+    ) -> None:
+        """Stop muxing CDP without asking Connect to kill Chrome.
+
+        Call before Playwright cleanup so local proxy sockets die first and
+        cleanup does not flood the worker control WSS.
+        """
+        worker = self.get(user_id)
+        if worker is None:
+            return
+        with worker.lease_lock:
+            if run_id is not None and worker.active_run_id not in (None, run_id):
+                return
+            self._teardown_proxy(worker, blocking=True)
+            worker.cdp_url = None
+
     def request_browser_stop(
         self,
         user_id: str,
