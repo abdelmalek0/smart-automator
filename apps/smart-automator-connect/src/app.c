@@ -15,9 +15,9 @@
 #include <glib-unix.h>
 #include <signal.h>
 #else
+#include <windows.h>
 #include <shellapi.h>
 #include <wchar.h>
-#include <windows.h>
 #endif
 
 typedef struct {
