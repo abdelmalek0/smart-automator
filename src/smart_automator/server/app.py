@@ -17,9 +17,9 @@ import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from ..storage.websites import WebsiteStore, task_to_api_dict, website_to_api_dict
@@ -644,14 +644,20 @@ if UI_DIST.exists():
     async def serve_root():
         return (UI_DIST / "index.html").read_text(encoding="utf-8")
 
-    @app.get("/{path:path}", response_class=HTMLResponse)
-    async def serve_spa(path: str):
-        if path.startswith(("api/", "ws/", "screenshots/")):
-            raise HTTPException(status_code=404)
+    # Middleware instead of GET /{path}: a catch-all route makes unknown POST /api/*
+    # return 405 instead of 404.
+    @app.middleware("http")
+    async def spa_fallback(request: Request, call_next) -> Response:
+        response = await call_next(request)
+        if response.status_code != 404 or request.method != "GET":
+            return response
+        path = request.url.path
+        if path.startswith(("/api/", "/ws/", "/screenshots/", "/assets/", "/docs", "/openapi", "/redoc")):
+            return response
         index = UI_DIST / "index.html"
-        if index.exists():
-            return index.read_text(encoding="utf-8")
-        raise HTTPException(status_code=404)
+        if not index.exists():
+            return response
+        return HTMLResponse(index.read_text(encoding="utf-8"))
 
 
 def main() -> None:
