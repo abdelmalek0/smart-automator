@@ -22,5 +22,8 @@ int sa_chrome_ready_on_port(int port, int timeout_ms);
 int sa_chrome_ready(int port);
 /* Actual CDP port from DevToolsActivePort after a successful sa_chrome_start. */
 int sa_chrome_debug_port(void);
+/* Cooperative cancel for in-flight sa_chrome_start readiness waits. */
+void sa_chrome_request_cancel(void);
+void sa_chrome_clear_cancel(void);
 
 #endif

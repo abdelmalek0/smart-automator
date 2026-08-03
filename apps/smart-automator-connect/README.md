@@ -1,21 +1,21 @@
 # Smart Automator Connect (C)
 
-Small cross-platform GUI that replaces `scripts/smart-automator-connect.sh`.
-
-Run it on the machine where **Chrome should appear**. Smart Automator stays on the gaming/server PC.
+Desktop worker that runs on the machine where **Chrome should appear**. It stays online over an authenticated WebSocket; the Smart Automator server starts Chrome on this PC only when a run begins, and tunnels CDP over the same connection.
 
 ## What it does
 
-1. Starts Chrome with remote debugging enabled
-2. Picks **LAN** or **remote** mode (or auto-detects)
-3. **LAN**: exposes Chrome CDP on your LAN IP (no SSH)
-4. **Remote**: opens an SSH reverse tunnel with key auth (password once on first connect)
-5. Shows the CDP URL and UI URL to use on the gaming PC
+1. Signs in once (`POST /api/workers/login`) and stores a worker token locally
+2. Keeps a WebSocket to `/ws/workers?token=…` (WSS when the server URL is HTTPS)
+3. Advertises local Chrome profiles to the dashboard
+4. On `browser.start`, launches Chrome with remote debugging and reports `browser.ready`
+5. Relays CDP through a binary mux so Playwright on the server talks to localhost while Chrome runs here
+
+Legacy SSH reverse-tunnel / LAN CDP-proxy sources are **not** part of this build.
 
 ## Build (Linux)
 
 ```bash
-sudo apt install build-essential cmake pkg-config libgtk-3-dev openssh-client
+sudo apt install build-essential cmake pkg-config libgtk-3-dev libssl-dev
 
 cd apps/smart-automator-connect
 cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -23,12 +23,10 @@ cmake --build build -j
 ./build/smart-automator-connect
 ```
 
-Both `build/smart-automator-connect` and `build/sa-askpass` must be in the same directory.
-
 ## Build (Windows, MSYS2 MinGW64)
 
 ```bash
-pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-pkg-config mingw-w64-x86_64-gtk3
+pacman -S --needed mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-pkg-config mingw-w64-x86_64-gtk3 mingw-w64-x86_64-openssl
 
 cd apps/smart-automator-connect
 cmake -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
@@ -38,63 +36,39 @@ cmake --build build -j
 
 ## Usage
 
-1. Click **+ Add connection** and enter name, server PC IP, SSH user, and mode
-2. Click **Connect** on a saved connection
-3. On the **first remote connect**, enter the SSH password once — the app installs an SSH key on the gaming PC
-4. Later connects use the key automatically (no password prompt)
-5. Copy the **CDP URL** into Smart Automator on the gaming PC
-6. Open the **UI URL** in your browser
+1. Enter the Smart Automator **server URL** (e.g. `https://qa.example.com`), username, and password
+2. Click **Connect** — the app signs in and stays online
+3. Start a run from the dashboard; Connect launches Chrome when the server sends `browser.start`
+4. When reconnecting fails after several attempts, click **Reconnect** (or **Log out** and sign in again)
 
-## Saved connections
+Session file (mode `0600` on Linux):
 
-Connections are stored in:
+- Linux: `~/.config/smart-automator/worker.conf`
+- Windows: `%APPDATA%\smart-automator\worker.conf`
 
-- Linux: `~/.config/smart-automator/connections.conf` (mode `0600`)
-- Windows: `%APPDATA%\smart-automator\connections.conf`
+## TLS
 
-Each entry has a name, host, user, mode, optional local IP, Chrome profile choice, and whether the SSH key is installed.
+HTTPS/WSS connections verify the server certificate against the system CA store (and check the hostname).
 
-If you have an old single-profile `connect.conf`, it is migrated automatically into one saved connection named **Gaming PC** on first launch.
+For lab / self-signed servers only:
 
-## Chrome profiles (this PC)
+```bash
+SMART_AUTOMATOR_INSECURE_TLS=1 ./build/smart-automator-connect
+```
 
-Each saved connection can use a **local** Chrome profile on the machine where Connect runs:
+Do not use that bypass in production.
 
-- **Fresh isolated profile** (default for new connections): blank browser each connect at `…/smart-automator-chrome/fresh` (Linux: `~/.local/share/…`, Windows: `%LOCALAPPDATA%\…`)
-- **App profile**: persistent dedicated directory at `…/smart-automator-chrome`
-- **System profiles**: your normal Chrome/Chromium profiles discovered from this PC (e.g. `Chrome — Person 1`). Connect copies the profile into a mirror directory under `…/smart-automator-chrome/mirrors/` and launches that copy with remote debugging, so it does not conflict with an already-open Chrome.
+## Chrome profiles
 
-These are **not** the profiles shown in the Smart Automator dashboard on the gaming PC. Connect launches Chrome here; the dashboard profile picker applies when Chrome runs on the server.
+Profiles discovered on this PC are sent to the server as `profiles`. The dashboard can pick a profile for a run; Connect launches Chrome with the requested user-data / profile directory (or a fresh isolated profile when `fresh_profile` is set).
 
-To switch profiles: **Disconnect**, edit the connection (or pick another), choose a different Chrome profile, then **Connect** again.
+Chrome uses an ephemeral debug port (`--remote-debugging-port=0`); Connect waits for DevTools readiness before sending `browser.ready`.
 
-While connected, click **Reset profile** to wipe the current profile (or re-mirror a system profile) and relaunch Chrome without tearing down the SSH/LAN tunnel. Use this before starting a new test.
+## Protocol (summary)
 
-**Note:** System profiles are mirrored locally before connect. The first mirror can take up to a minute on Windows if the profile is large; later connects reuse the mirror and skip the copy. If mirroring fails or stalls, fully quit Chrome (including the tray icon) and try again, or use **Fresh isolated profile** / **App profile** to skip mirroring. Connect uses the mirror, not your live profile session. **Reset profile** re-mirrors from disk for system profiles.
+| Plane | Transport | Role |
+|-------|-----------|------|
+| Control | JSON text frames | `hello`, `profiles`, `browser.start` / `ready` / `stop` / `stopped`, `error`, `ping` / `pong` |
+| CDP | Binary frames | 9-byte mux header (`conn_id`, flags, length) + payload; flags `DATA=0`, `OPEN=1`, `CLOSE=2` |
 
-**LAN mode (Windows):** The CDP proxy listens on all interfaces (`0.0.0.0`) but the gaming PC uses your **Local IP** (e.g. `192.168.1.42:9223`). Set Local IP manually in the connection editor if auto-detect picks a VPN or virtual adapter. Allow Connect through Windows Firewall for private networks if verification fails.
-
-## SSH keys
-
-The app keeps one Ed25519 keypair for all connections:
-
-- Linux: `~/.config/smart-automator/ssh/id_ed25519`
-- Windows: `%APPDATA%\smart-automator\ssh\id_ed25519`
-
-On first connect to a remote host, the password is used once to append the public key to `~/.ssh/authorized_keys` on the gaming PC. Passwords are **not** saved to disk.
-
-If you change a connection's host or user, you will be prompted for the password again on the next connect.
-
-## Defaults
-
-| Setting | Default |
-|---------|---------|
-| SSH user | `smartprints` |
-| UI port | `8400` |
-| Chrome debug port | `9222` |
-| Remote CDP port | `9224` |
-| LAN CDP port | `9223` |
-
-## Tunnel cleanup
-
-Closing the app or clicking **Disconnect** stops the SSH tunnel. The SSH process is tied to the app so remote port `9224` is released when you exit.
+The server opens a localhost CDP proxy for Playwright and sends mux `OPEN` when a client connects; Connect dials local Chrome and relays bytes.

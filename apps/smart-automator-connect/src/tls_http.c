@@ -9,6 +9,7 @@
 
 #include <openssl/err.h>
 #include <openssl/ssl.h>
+#include <openssl/x509.h>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -26,6 +27,56 @@ static void ensure_ssl(void) {
   SSL_load_error_strings();
   OpenSSL_add_all_algorithms();
   g_ssl_inited = 1;
+}
+
+static int tls_insecure_allowed(void) {
+  const char *v = getenv("SMART_AUTOMATOR_INSECURE_TLS");
+  if (v == NULL || v[0] == '\0') {
+    return 0;
+  }
+  return strcmp(v, "1") == 0 || strcmp(v, "true") == 0 || strcmp(v, "yes") == 0 ||
+         strcmp(v, "TRUE") == 0 || strcmp(v, "YES") == 0;
+}
+
+static int configure_client_ssl_ctx(SSL_CTX *ctx, char *err, size_t err_len) {
+  if (ctx == NULL) {
+    return -1;
+  }
+  if (tls_insecure_allowed()) {
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
+    return 0;
+  }
+  SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
+  SSL_CTX_set_verify_depth(ctx, 10);
+  if (SSL_CTX_set_default_verify_paths(ctx) != 1) {
+    if (err && err_len) {
+      snprintf(err, err_len, "Failed to load TLS CA certificates");
+    }
+    return -1;
+  }
+  return 0;
+}
+
+static int ssl_set_hostname(SSL *ssl, const char *host, char *err, size_t err_len) {
+  if (ssl == NULL || host == NULL || host[0] == '\0') {
+    return -1;
+  }
+  SSL_set_tlsext_host_name(ssl, host);
+  if (tls_insecure_allowed()) {
+    return 0;
+  }
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+  if (SSL_set1_host(ssl, host) != 1) {
+    if (err && err_len) {
+      snprintf(err, err_len, "Failed to set TLS hostname check");
+    }
+    return -1;
+  }
+#else
+  (void)err;
+  (void)err_len;
+#endif
+  return 0;
 }
 
 static int parse_url(
@@ -118,13 +169,13 @@ static int io_read_some(SSL *ssl, sa_socket_t fd, void *buf, size_t len) {
 int sa_json_get_string(const char *json, const char *key, char *out, size_t out_len) {
   char pattern[128];
   const char *found;
-  const char *start;
-  const char *end;
-  size_t n;
+  const char *cursor;
+  size_t n = 0;
 
   if (json == NULL || key == NULL || out == NULL || out_len == 0) {
     return -1;
   }
+  out[0] = '\0';
   snprintf(pattern, sizeof(pattern), "\"%s\"", key);
   found = strstr(json, pattern);
   if (found == NULL) {
@@ -141,23 +192,30 @@ int sa_json_get_string(const char *json, const char *key, char *out, size_t out_
   if (*found != '"') {
     return -1;
   }
-  start = found + 1;
-  end = start;
-  while (*end && *end != '"') {
-    if (*end == '\\' && end[1]) {
-      end += 2;
+  cursor = found + 1;
+  while (*cursor && *cursor != '"' && n + 1 < out_len) {
+    if (*cursor == '\\' && cursor[1]) {
+      char esc = cursor[1];
+      if (esc == '"' || esc == '\\' || esc == '/') {
+        out[n++] = esc;
+      } else if (esc == 'n') {
+        out[n++] = '\n';
+      } else if (esc == 'r') {
+        out[n++] = '\r';
+      } else if (esc == 't') {
+        out[n++] = '\t';
+      } else {
+        out[n++] = esc;
+      }
+      cursor += 2;
       continue;
     }
-    end++;
+    out[n++] = *cursor++;
   }
-  if (*end != '"') {
+  if (*cursor != '"') {
+    out[0] = '\0';
     return -1;
   }
-  n = (size_t)(end - start);
-  if (n >= out_len) {
-    n = out_len - 1;
-  }
-  memcpy(out, start, n);
   out[n] = '\0';
   return 0;
 }
@@ -200,7 +258,7 @@ int sa_http_post_json(
     return -1;
   }
 
-  fd = (sa_socket_t)sa_tcp_connect(host, port, 15000);
+  fd = sa_tcp_connect(host, port, 15000);
   if (fd == SA_INVALID_SOCKET) {
     snprintf(err, err_len, "Could not connect to %s:%d", host, port);
     return -1;
@@ -213,12 +271,36 @@ int sa_http_post_json(
       sa_tcp_close(fd);
       return -1;
     }
-    SSL_CTX_set_default_verify_paths(ctx);
+    if (configure_client_ssl_ctx(ctx, err, err_len) != 0) {
+      SSL_CTX_free(ctx);
+      sa_tcp_close(fd);
+      return -1;
+    }
     ssl = SSL_new(ctx);
-    SSL_set_tlsext_host_name(ssl, host);
+    if (ssl == NULL) {
+      snprintf(err, err_len, "TLS init failed");
+      SSL_CTX_free(ctx);
+      sa_tcp_close(fd);
+      return -1;
+    }
+    if (ssl_set_hostname(ssl, host, err, err_len) != 0) {
+      SSL_free(ssl);
+      SSL_CTX_free(ctx);
+      sa_tcp_close(fd);
+      return -1;
+    }
     SSL_set_fd(ssl, (int)fd);
     if (SSL_connect(ssl) != 1) {
-      snprintf(err, err_len, "TLS handshake failed");
+      long verify = SSL_get_verify_result(ssl);
+      if (!tls_insecure_allowed() && verify != X509_V_OK) {
+        snprintf(
+            err,
+            err_len,
+            "TLS certificate verify failed: %s (set SMART_AUTOMATOR_INSECURE_TLS=1 to bypass)",
+            X509_verify_cert_error_string(verify));
+      } else {
+        snprintf(err, err_len, "TLS handshake failed");
+      }
       SSL_free(ssl);
       SSL_CTX_free(ctx);
       sa_tcp_close(fd);

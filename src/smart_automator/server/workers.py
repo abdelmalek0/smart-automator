@@ -27,6 +27,7 @@ from .auth.stores import User, _atomic_write_json
 log = logging.getLogger(__name__)
 
 WORKER_BROWSER_TIMEOUT_SECONDS = 120.0
+WORKER_BROWSER_STOP_TIMEOUT_SECONDS = 5.0
 _MUX_HEADER = struct.Struct("!IBI")  # conn_id u32, flags u8, length u32
 FLAG_DATA = 0
 FLAG_OPEN = 1
@@ -35,6 +36,10 @@ _LOCAL_WS_URL_RE = re.compile(r"ws://(?:127\.0\.0\.1|localhost):\d+")
 _LOCAL_HTTP_URL_RE = re.compile(r"http://(?:127\.0\.0\.1|localhost):\d+")
 # Coalesce consecutive DATA mux frames under this payload size before one WS send.
 _OUTBOX_COALESCE_MAX = 56 * 1024
+_OUTBOX_MAX_BYTES = 8 * 1024 * 1024
+_OUTBOX_BATCH_ITEMS = 64
+_OUTBOX_BATCH_BYTES = 256 * 1024
+_WRITER_MAX_BYTES = 4 * 1024 * 1024
 
 LOCAL_BROWSER_ENV = "SMART_AUTOMATOR_LOCAL_BROWSER"
 
@@ -133,15 +138,21 @@ def pack_mux_frame(conn_id: int, flags: int, payload: bytes = b"") -> bytes:
 
 
 def unpack_mux_frames(buffer: bytearray) -> list[tuple[int, int, bytes]]:
+    """Parse mux frames using an offset, then compact once."""
     frames: list[tuple[int, int, bytes]] = []
-    while len(buffer) >= _MUX_HEADER.size:
-        conn_id, flags, length = _MUX_HEADER.unpack_from(buffer, 0)
-        total = _MUX_HEADER.size + length
-        if len(buffer) < total:
+    offset = 0
+    length = len(buffer)
+    while offset + _MUX_HEADER.size <= length:
+        conn_id, flags, payload_len = _MUX_HEADER.unpack_from(buffer, offset)
+        total = _MUX_HEADER.size + payload_len
+        if offset + total > length:
             break
-        payload = bytes(buffer[_MUX_HEADER.size : total])
-        del buffer[:total]
-        frames.append((conn_id, flags, payload))
+        start = offset + _MUX_HEADER.size
+        end = offset + total
+        frames.append((conn_id, flags, bytes(buffer[start:end])))
+        offset = end
+    if offset:
+        del buffer[:offset]
     return frames
 
 
@@ -162,29 +173,40 @@ class _ProxyClientWriter:
         self._queue: queue.SimpleQueue[bytes | None] = queue.SimpleQueue()
         self._thread = threading.Thread(target=self._run, daemon=True, name="cdp-proxy-writer")
         self._closed = False
+        self._queued_bytes = 0
+        self._lock = threading.Lock()
         self._thread.start()
 
     def write(self, data: bytes) -> None:
         if self._closed or not data:
             return
-        self._queue.put(data)
+        with self._lock:
+            if self._closed:
+                return
+            if self._queued_bytes + len(data) > _WRITER_MAX_BYTES:
+                raise OSError("CDP proxy writer backpressure")
+            self._queued_bytes += len(data)
+            self._queue.put(data)
 
     def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
         self._queue.put(None)
         try:
             self._sock.close()
         except OSError:
             pass
-        self._thread.join(timeout=2.0)
+        self._thread.join(timeout=1.0)
 
     def _run(self) -> None:
         while True:
             item = self._queue.get()
             if item is None:
                 return
+            with self._lock:
+                self._queued_bytes = max(0, self._queued_bytes - len(item))
             try:
                 self._sock.sendall(item)
             except OSError:
@@ -240,7 +262,7 @@ class CdpProxy:
                 pass
             self._sock = None
         if self._thread is not None:
-            self._thread.join(timeout=2.0)
+            self._thread.join(timeout=1.0)
             self._thread = None
 
     def handle_mux_frame(self, conn_id: int, flags: int, payload: bytes) -> None:
@@ -325,6 +347,10 @@ class CdpProxy:
             client.close()
             self._worker.enqueue_binary(pack_mux_frame(conn_id, FLAG_CLOSE))
 
+    def close_client(self, conn_id: int) -> None:
+        """Public wrapper used when outbox backpressure must reset a CDP stream."""
+        self._close_client(conn_id)
+
 
 @dataclass
 class WorkerConnection:
@@ -341,8 +367,12 @@ class WorkerConnection:
     ready_event: threading.Event = field(default_factory=threading.Event)
     stopped_event: threading.Event = field(default_factory=threading.Event)
     error_message: str = ""
+    lease_lock: threading.Lock = field(default_factory=threading.Lock)
     # Thread-safe outbox: proxy threads enqueue here; drain_outbox sends on the event loop.
     _sync_outbox: queue.SimpleQueue = field(default_factory=queue.SimpleQueue)
+    _outbox_bytes: int = 0
+    _outbox_lock: threading.Lock = field(default_factory=threading.Lock)
+    _wake_pending: bool = False
     _outbox_wake: asyncio.Event | None = field(default=None, init=False, repr=False)
     _binary_buffer: bytearray = field(default_factory=bytearray)
 
@@ -350,25 +380,59 @@ class WorkerConnection:
         self.last_seen = time.time()
 
     def _signal_outbox(self) -> None:
+        with self._outbox_lock:
+            if self._wake_pending:
+                return
+            self._wake_pending = True
+
         def _wake() -> None:
+            with self._outbox_lock:
+                self._wake_pending = False
             if self._outbox_wake is not None:
                 self._outbox_wake.set()
 
         try:
             self.loop.call_soon_threadsafe(_wake)
         except RuntimeError:
+            with self._outbox_lock:
+                self._wake_pending = False
             log.warning("worker outbox wake failed user=%s", self.user_id[:8])
 
     def enqueue_json(self, payload: dict[str, Any]) -> None:
+        # Control messages always accepted — they are small and latency-critical.
         try:
-            self._sync_outbox.put(("json", payload))
+            with self._outbox_lock:
+                self._sync_outbox.put(("json", payload))
             self._signal_outbox()
         except Exception:
             log.warning("worker outbox enqueue failed user=%s", self.user_id[:8])
 
     def enqueue_binary(self, payload: bytes) -> None:
         try:
-            self._sync_outbox.put(("bin", payload))
+            parsed = _parse_single_mux_frame(payload) if payload else None
+            flags = parsed[1] if parsed is not None else FLAG_DATA
+            # OPEN/CLOSE are control-plane mux — always accept like JSON.
+            is_control_mux = flags in (FLAG_OPEN, FLAG_CLOSE)
+            overflow_conn: int | None = None
+            with self._outbox_lock:
+                if (
+                    not is_control_mux
+                    and self._outbox_bytes + len(payload) > _OUTBOX_MAX_BYTES
+                ):
+                    overflow_conn = parsed[0] if parsed is not None else None
+                else:
+                    self._sync_outbox.put(("bin", payload))
+                    self._outbox_bytes += len(payload)
+            if overflow_conn is not None:
+                log.warning(
+                    "worker outbox backpressure user=%s conn=%s — closing client",
+                    self.user_id[:8],
+                    overflow_conn,
+                )
+                proxy = self.cdp_proxy
+                if proxy is not None:
+                    proxy.close_client(overflow_conn)
+                return
             self._signal_outbox()
         except Exception:
             log.warning("worker binary enqueue failed user=%s", self.user_id[:8])
@@ -383,7 +447,10 @@ class WorkerConnection:
     def _coalesce_outbox_items(
         items: list[tuple[str, Any]],
     ) -> list[tuple[str, Any]]:
-        """Merge consecutive FLAG_DATA mux frames for the same conn_id."""
+        """Merge consecutive FLAG_DATA mux frames for the same conn_id.
+
+        Preserves enqueue order so browser.start cannot leapfrog earlier CLOSE frames.
+        """
         if not items:
             return items
         out: list[tuple[str, Any]] = []
@@ -431,11 +498,21 @@ class WorkerConnection:
 
     async def _flush_sync_outbox(self) -> int:
         batch: list[tuple[str, Any]] = []
-        while True:
+        batch_bytes = 0
+        while len(batch) < _OUTBOX_BATCH_ITEMS and batch_bytes < _OUTBOX_BATCH_BYTES:
             try:
-                batch.append(self._sync_outbox.get_nowait())
+                item = self._sync_outbox.get_nowait()
             except queue.Empty:
                 break
+            kind, payload = item
+            with self._outbox_lock:
+                if kind == "bin" and isinstance(payload, (bytes, bytearray)):
+                    self._outbox_bytes = max(0, self._outbox_bytes - len(payload))
+            batch.append(item)
+            if isinstance(payload, (bytes, bytearray)):
+                batch_bytes += len(payload)
+            else:
+                batch_bytes += 64
         if not batch:
             return 0
         coalesced = self._coalesce_outbox_items(batch)
@@ -449,21 +526,32 @@ class WorkerConnection:
     async def drain_outbox(self) -> None:
         self._outbox_wake = asyncio.Event()
         wake = self._outbox_wake
-        while self.online:
-            flushed = await self._flush_sync_outbox()
-            if flushed:
-                continue
-            wake.clear()
-            # Re-check after clear — avoid missing a wake that raced with flush.
-            if await self._flush_sync_outbox():
-                continue
+        try:
+            while self.online:
+                flushed = await self._flush_sync_outbox()
+                if flushed:
+                    # Yield so receive/control can run between large batches.
+                    await asyncio.sleep(0)
+                    continue
+                wake.clear()
+                # Re-check after clear — avoid missing a wake that raced with flush.
+                if await self._flush_sync_outbox():
+                    await asyncio.sleep(0)
+                    continue
+                try:
+                    await asyncio.wait_for(wake.wait(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    await self.send_json({"type": "ping"})
+                    continue
+                wake.clear()
+                await self._flush_sync_outbox()
+        except Exception:
+            self.online = False
             try:
-                await asyncio.wait_for(wake.wait(), timeout=30.0)
-            except asyncio.TimeoutError:
-                await self.send_json({"type": "ping"})
-                continue
-            wake.clear()
-            await self._flush_sync_outbox()
+                await self.websocket.close(code=1011)
+            except Exception:
+                pass
+            raise
 
 
 class WorkerRegistry:
@@ -477,7 +565,7 @@ class WorkerRegistry:
             self._workers[worker.user_id] = worker
         if previous is not None and previous is not worker:
             previous.online = False
-            self._teardown_proxy(previous)
+            self._teardown_proxy(previous, blocking=False)
             try:
                 asyncio.run_coroutine_threadsafe(previous.websocket.close(code=1000), previous.loop)
             except RuntimeError:
@@ -489,7 +577,7 @@ class WorkerRegistry:
             if current is worker:
                 del self._workers[worker.user_id]
         worker.online = False
-        self._teardown_proxy(worker)
+        self._teardown_proxy(worker, blocking=False)
         worker.browser_state = "idle"
         worker.active_run_id = None
         worker.ready_event.set()
@@ -561,54 +649,63 @@ class WorkerRegistry:
         worker = self.get(user_id)
         if worker is None:
             raise RuntimeError("Connect app offline")
-        if worker.browser_state not in ("idle",) and worker.active_run_id not in (None, run_id):
-            raise RuntimeError("Connect browser is busy with another run")
 
-        self._teardown_proxy(worker)
-        worker.error_message = ""
-        worker.ready_event.clear()
-        worker.stopped_event.clear()
-        worker.browser_state = "starting"
-        worker.active_run_id = run_id
-        worker.cdp_url = None
+        deadline = time.monotonic() + timeout
+        with worker.lease_lock:
+            if worker.browser_state not in ("idle",) and worker.active_run_id not in (None, run_id):
+                raise RuntimeError("Connect browser is busy with another run")
 
-        proxy = CdpProxy(worker)
-        cdp_url = proxy.start()
-        worker.cdp_proxy = proxy
-        worker.cdp_url = cdp_url
+            self._teardown_proxy(worker, blocking=True)
+            worker.error_message = ""
+            worker.ready_event.clear()
+            worker.stopped_event.clear()
+            worker.browser_state = "starting"
+            worker.active_run_id = run_id
+            worker.cdp_url = None
 
-        worker.enqueue_json(
-            {
-                "type": "browser.start",
-                "run_id": run_id,
-                "fresh_profile": bool(fresh_profile),
-                "chrome_user_data": chrome_user_data or "",
-                "chrome_profile_directory": chrome_profile_directory or "",
-            }
-        )
+            proxy = CdpProxy(worker)
+            try:
+                cdp_url = proxy.start()
+            except Exception:
+                worker.browser_state = "idle"
+                worker.active_run_id = None
+                raise
+            worker.cdp_proxy = proxy
+            worker.cdp_url = cdp_url
 
-        deadline = time.time() + timeout
-        while True:
-            remaining = deadline - time.time()
+            worker.enqueue_json(
+                {
+                    "type": "browser.start",
+                    "run_id": run_id,
+                    "fresh_profile": bool(fresh_profile),
+                    "chrome_user_data": chrome_user_data or "",
+                    "chrome_profile_directory": chrome_profile_directory or "",
+                }
+            )
+
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Timed out waiting for Connect browser to become ready")
+                if worker.ready_event.wait(timeout=min(1.0, remaining)):
+                    worker.ready_event.clear()
+                    if worker.error_message:
+                        raise RuntimeError(worker.error_message)
+                    if worker.online and worker.browser_state == "ready" and worker.cdp_url:
+                        break
+                    if not worker.online:
+                        raise RuntimeError("Connect app offline")
+                    # Spurious wake (e.g. browser.stopped during relaunch) — keep waiting.
+
+            remaining = deadline - time.monotonic()
             if remaining <= 0:
-                self.request_browser_stop(user_id, run_id=run_id, wait=False)
-                raise TimeoutError("Timed out waiting for Connect browser to become ready")
-            if worker.ready_event.wait(timeout=min(1.0, remaining)):
-                worker.ready_event.clear()
-                if worker.error_message:
-                    message = worker.error_message
-                    self.request_browser_stop(user_id, run_id=run_id, wait=False)
-                    raise RuntimeError(message)
-                if worker.online and worker.browser_state == "ready" and worker.cdp_url:
-                    break
-                if not worker.online:
-                    self.request_browser_stop(user_id, run_id=run_id, wait=False)
-                    raise RuntimeError("Connect app offline")
-                # Spurious wake (e.g. browser.stopped during relaunch) — keep waiting.
-
-        self._wait_json_version(worker.cdp_url, timeout=timeout)
-        self._probe_cdp_http_rtt(worker.cdp_url, user_id=user_id)
-        return worker.cdp_url
+                raise TimeoutError("Timed out waiting for CDP /json/version")
+            self._wait_json_version(worker.cdp_url, timeout=remaining)
+            return worker.cdp_url
+        except Exception:
+            self.request_browser_stop(user_id, run_id=run_id, wait=False)
+            raise
 
     def request_browser_stop(
         self,
@@ -616,26 +713,30 @@ class WorkerRegistry:
         *,
         run_id: str | None = None,
         wait: bool = True,
-        timeout: float = 30.0,
+        timeout: float = WORKER_BROWSER_STOP_TIMEOUT_SECONDS,
     ) -> None:
         worker = self.get(user_id)
         if worker is None:
             return
-        if run_id is not None and worker.active_run_id not in (None, run_id):
-            return
-        if worker.browser_state in ("idle",) and worker.cdp_proxy is None:
-            return
+        with worker.lease_lock:
+            if run_id is not None and worker.active_run_id not in (None, run_id):
+                return
+            if worker.browser_state in ("idle",) and worker.cdp_proxy is None:
+                return
 
-        worker.browser_state = "stopping"
-        worker.stopped_event.clear()
-        worker.enqueue_json({"type": "browser.stop", "run_id": run_id or worker.active_run_id or ""})
+            worker.browser_state = "stopping"
+            worker.stopped_event.clear()
+            worker.enqueue_json(
+                {"type": "browser.stop", "run_id": run_id or worker.active_run_id or ""}
+            )
         if wait:
             worker.stopped_event.wait(timeout=timeout)
-        self._teardown_proxy(worker)
-        worker.browser_state = "idle"
-        worker.active_run_id = None
-        worker.cdp_url = None
-        worker.stopped_event.set()
+        with worker.lease_lock:
+            self._teardown_proxy(worker, blocking=True)
+            worker.browser_state = "idle"
+            worker.active_run_id = None
+            worker.cdp_url = None
+            worker.stopped_event.set()
 
     def handle_control_message(self, worker: WorkerConnection, message: dict[str, Any]) -> None:
         worker.touch()
@@ -658,19 +759,21 @@ class WorkerRegistry:
         if msg_type == "browser.stopped":
             # During an in-flight start, Connect may tear down a previous Chrome
             # before launching a new one. Do not wake the ready waiter as failure.
-            if worker.browser_state == "starting":
+            with worker.lease_lock:
+                if worker.browser_state == "starting":
+                    worker.stopped_event.set()
+                    return
+                worker.browser_state = "idle"
+                worker.active_run_id = None
+                self._teardown_proxy(worker, blocking=False)
                 worker.stopped_event.set()
-                return
-            worker.browser_state = "idle"
-            worker.active_run_id = None
-            self._teardown_proxy(worker)
-            worker.stopped_event.set()
-            worker.ready_event.set()
+                worker.ready_event.set()
             return
         if msg_type == "error":
-            worker.error_message = str(message.get("message") or "Connect worker error")
-            worker.ready_event.set()
-            worker.stopped_event.set()
+            with worker.lease_lock:
+                worker.error_message = str(message.get("message") or "Connect worker error")
+                worker.ready_event.set()
+                worker.stopped_event.set()
             return
         if msg_type in ("ping", "pong"):
             if msg_type == "ping":
@@ -688,52 +791,36 @@ class WorkerRegistry:
             proxy.handle_mux_frame(conn_id, flags, payload)
 
     @staticmethod
-    def _teardown_proxy(worker: WorkerConnection) -> None:
+    def _teardown_proxy(worker: WorkerConnection, *, blocking: bool = True) -> None:
         proxy = worker.cdp_proxy
         worker.cdp_proxy = None
-        if proxy is not None:
+        if proxy is None:
+            return
+        if blocking:
             proxy.stop()
+            return
+        threading.Thread(target=proxy.stop, daemon=True, name="cdp-proxy-stop").start()
 
     @staticmethod
     def _wait_json_version(cdp_url: str, *, timeout: float) -> None:
-        deadline = time.time() + timeout
+        deadline = time.monotonic() + max(0.0, timeout)
         url = cdp_url.rstrip("/") + "/json/version"
         last_error = "CDP proxy not ready"
-        while time.time() < deadline:
+        while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
             try:
-                with urllib.request.urlopen(url, timeout=2.0) as response:
+                with urllib.request.urlopen(url, timeout=min(2.0, max(0.1, remaining))) as response:
                     if 200 <= response.status < 300:
+                        log.info(
+                            "Connect CDP ready http_json_version ok url=%s",
+                            url,
+                        )
                         return
                     last_error = f"CDP /json/version HTTP {response.status}"
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
                 last_error = str(exc)
-            time.sleep(0.25)
+            time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
         raise TimeoutError(f"Timed out waiting for CDP /json/version: {last_error}")
-
-    @staticmethod
-    def _probe_cdp_http_rtt(cdp_url: str, *, user_id: str) -> None:
-        """Log /json/version RTT through the Connect CDP proxy right after browser.ready."""
-        url = cdp_url.rstrip("/") + "/json/version"
-        try:
-            started = time.perf_counter()
-            with urllib.request.urlopen(url, timeout=5.0) as response:
-                _ = response.read()
-                ok = 200 <= response.status < 300
-            elapsed_ms = (time.perf_counter() - started) * 1000
-            if ok:
-                log.info(
-                    "Connect CDP RTT user=%s http_json_version=%.1fms",
-                    user_id[:8],
-                    elapsed_ms,
-                )
-            else:
-                log.warning(
-                    "Connect CDP RTT probe HTTP non-2xx user=%s in %.1fms",
-                    user_id[:8],
-                    elapsed_ms,
-                )
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            log.warning("Connect CDP RTT probe HTTP failed user=%s: %s", user_id[:8], exc)
 
 
 _token_store: WorkerTokenStore | None = None

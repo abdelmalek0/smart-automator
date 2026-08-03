@@ -18,6 +18,9 @@ int sa_worker_ws_connect(
     char *err,
     size_t err_len);
 void sa_worker_ws_close(sa_worker_ws_t *ws);
+/* Mark disconnected and shutdown the TCP socket so poll wakes; do not free SSL.
+ * Safe to call from another thread; the owner thread must still call close/destroy. */
+void sa_worker_ws_interrupt(sa_worker_ws_t *ws);
 int sa_worker_ws_is_connected(const sa_worker_ws_t *ws);
 
 int sa_worker_ws_send_text(sa_worker_ws_t *ws, const char *text);

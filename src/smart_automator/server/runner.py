@@ -490,11 +490,6 @@ def run_automation(run: RunState) -> None:
             run.broadcast({"type": "error", "message": str(exc)})
             log.error("[run:%s] error: %s", run.run_id[:8], exc, exc_info=True)
     finally:
-        if worker_browser_started:
-            try:
-                worker_registry().request_browser_stop(run.user_id, run_id=run.run_id)
-            except Exception as exc:
-                log.warning("[run:%s] worker browser stop failed: %s", run.run_id[:8], exc)
         if run.finished_at is None:
             run.finished_at = time.time()
         if executor is not None:
@@ -537,6 +532,8 @@ def run_automation(run: RunState) -> None:
                     )
             _generate_report(run, executor, config)
         run.executor = None
+        # Detach Playwright before asking Connect to kill Chrome so cleanup is not
+        # racing a dead remote browser and so report/closed are not gated on stop.
         if executor is not None:
             try:
                 executor.cleanup()
@@ -547,6 +544,16 @@ def run_automation(run: RunState) -> None:
                 browser_context.close()
             except Exception:
                 pass
+        if worker_browser_started:
+            try:
+                worker_registry().request_browser_stop(
+                    run.user_id,
+                    run_id=run.run_id,
+                    wait=True,
+                    timeout=5.0,
+                )
+            except Exception as exc:
+                log.warning("[run:%s] worker browser stop failed: %s", run.run_id[:8], exc)
         duration = time.time() - run.started_at
         log.info("[run:%s] finished status=%s duration=%.1fs", run.run_id[:8], run.status, duration)
         try:

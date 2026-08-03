@@ -1,9 +1,9 @@
+#define _POSIX_C_SOURCE 200809L
 #include "worker_ws.h"
 
 #include "net.h"
 
 #include <errno.h>
-#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,8 +12,10 @@
 
 #include <openssl/evp.h>
 #include <openssl/ssl.h>
+#include <openssl/x509.h>
 
 #ifdef _WIN32
+#include <windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #else
@@ -34,12 +36,19 @@
 #define SA_WS_FRAME_MAX (768 * 1024)
 #define SA_WS_MASK_SCRATCH (64 * 1024)
 #define SA_CDP_READ_CHUNK (48 * 1024)
+#define SA_CDP_PENDING_MAX (512 * 1024)
+#define SA_CDP_DRAIN_BUDGET (96 * 1024)
+#define SA_CDP_DRAIN_FRAMES 4
+#define SA_WS_WRITE_DEADLINE_MS 10000
+#define SA_WS_CONNECT_DEADLINE_MS 20000
+#define SA_CDP_CONNECT_TIMEOUT_MS 750
 
 typedef struct {
   int conn_id;
   sa_socket_t fd;
   int in_use;
-  volatile int connecting;
+  int connecting;
+  long long connect_deadline_ms;
   unsigned char *pending;
   size_t pending_len;
   size_t pending_cap;
@@ -51,11 +60,22 @@ struct sa_worker_ws {
   SSL *ssl;
   int connected;
   int chrome_port;
+  int drain_cursor;
   unsigned char rx[SA_WS_RX_SIZE];
   size_t rx_len;
   unsigned char mask_scratch[SA_WS_MASK_SCRATCH];
   sa_cdp_channel_t channels[SA_MAX_CDP_CHANNELS];
 };
+
+static long long ws_now_ms(void) {
+#ifdef _WIN32
+  return (long long)GetTickCount64();
+#else
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+#endif
+}
 
 static void ensure_ssl(void) {
   static int ready = 0;
@@ -66,6 +86,56 @@ static void ensure_ssl(void) {
   SSL_load_error_strings();
   OpenSSL_add_all_algorithms();
   ready = 1;
+}
+
+static int tls_insecure_allowed(void) {
+  const char *v = getenv("SMART_AUTOMATOR_INSECURE_TLS");
+  if (v == NULL || v[0] == '\0') {
+    return 0;
+  }
+  return strcmp(v, "1") == 0 || strcmp(v, "true") == 0 || strcmp(v, "yes") == 0 ||
+         strcmp(v, "TRUE") == 0 || strcmp(v, "YES") == 0;
+}
+
+static int configure_client_ssl_ctx(SSL_CTX *ctx, char *err, size_t err_len) {
+  if (ctx == NULL) {
+    return -1;
+  }
+  if (tls_insecure_allowed()) {
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
+    return 0;
+  }
+  SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
+  SSL_CTX_set_verify_depth(ctx, 10);
+  if (SSL_CTX_set_default_verify_paths(ctx) != 1) {
+    if (err && err_len) {
+      snprintf(err, err_len, "Failed to load TLS CA certificates");
+    }
+    return -1;
+  }
+  return 0;
+}
+
+static int ssl_set_hostname(SSL *ssl, const char *host, char *err, size_t err_len) {
+  if (ssl == NULL || host == NULL || host[0] == '\0') {
+    return -1;
+  }
+  SSL_set_tlsext_host_name(ssl, host);
+  if (tls_insecure_allowed()) {
+    return 0;
+  }
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+  if (SSL_set1_host(ssl, host) != 1) {
+    if (err && err_len) {
+      snprintf(err, err_len, "Failed to set TLS hostname check");
+    }
+    return -1;
+  }
+#else
+  (void)err;
+  (void)err_len;
+#endif
+  return 0;
 }
 
 static int parse_server_url(
@@ -140,21 +210,50 @@ static int parse_server_url(
 static int io_write_all(sa_worker_ws_t *ws, const void *buf, size_t len) {
   const unsigned char *p = (const unsigned char *)buf;
   size_t left = len;
+  long long deadline_ms = ws_now_ms() + SA_WS_WRITE_DEADLINE_MS;
+
   while (left > 0) {
     int n;
+    long long now = ws_now_ms();
+    int left_ms;
+    if (now >= deadline_ms) {
+      return -1;
+    }
+    left_ms = (int)(deadline_ms - now);
     if (ws->ssl) {
       n = SSL_write(ws->ssl, p, (int)left);
-      if (n <= 0) {
-        return -1;
+      if (n > 0) {
+        p += (size_t)n;
+        left -= (size_t)n;
+        continue;
       }
-    } else {
-      if (sa_tcp_send_all(ws->fd, p, left) != 0) {
-        return -1;
+      {
+        int err = SSL_get_error(ws->ssl, n);
+        fd_set fds;
+        struct timeval tv;
+        if (err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) {
+          return -1;
+        }
+        FD_ZERO(&fds);
+        FD_SET(ws->fd, &fds);
+        tv.tv_sec = left_ms / 1000;
+        tv.tv_usec = (left_ms % 1000) * 1000;
+#ifdef _WIN32
+        if (select(0, err == SSL_ERROR_WANT_READ ? &fds : NULL, err == SSL_ERROR_WANT_WRITE ? &fds : NULL, NULL, &tv) <= 0) {
+#else
+        if (select(
+                (int)ws->fd + 1,
+                err == SSL_ERROR_WANT_READ ? &fds : NULL,
+                err == SSL_ERROR_WANT_WRITE ? &fds : NULL,
+                NULL,
+                &tv) <= 0) {
+#endif
+          return -1;
+        }
       }
-      return 0;
+      continue;
     }
-    p += (size_t)n;
-    left -= (size_t)n;
+    return sa_tcp_send_all_deadline(ws->fd, p, left, left_ms);
   }
   return 0;
 }
@@ -219,11 +318,12 @@ static int ws_send_frame(sa_worker_ws_t *ws, int opcode, const void *payload, si
   unsigned char header[14];
   size_t header_len = 0;
   unsigned char mask[4];
-  unsigned char *masked = NULL;
-  unsigned char *scratch = NULL;
-  int scratch_owned = 0;
+  unsigned char *frame = NULL;
+  unsigned char stack_frame[14 + SA_WS_MASK_SCRATCH];
   size_t i;
+  size_t total;
   int rc;
+  int heap = 0;
 
   header[0] = (unsigned char)(0x80 | (opcode & 0x0f));
   if (len < 126) {
@@ -255,29 +355,24 @@ static int ws_send_frame(sa_worker_ws_t *ws, int opcode, const void *payload, si
   mask[3] = (unsigned char)(rand() & 0xff);
   memcpy(header + header_len, mask, 4);
   header_len += 4;
+  total = header_len + len;
 
-  if (io_write_all(ws, header, header_len) != 0) {
-    return -1;
-  }
-  if (len == 0) {
-    return 0;
-  }
-  if (len <= SA_WS_MASK_SCRATCH) {
-    scratch = ws->mask_scratch;
+  if (total <= sizeof(stack_frame)) {
+    frame = stack_frame;
   } else {
-    scratch = (unsigned char *)malloc(len);
-    if (scratch == NULL) {
+    frame = (unsigned char *)malloc(total);
+    if (frame == NULL) {
       return -1;
     }
-    scratch_owned = 1;
+    heap = 1;
   }
-  masked = scratch;
+  memcpy(frame, header, header_len);
   for (i = 0; i < len; i++) {
-    masked[i] = ((const unsigned char *)payload)[i] ^ mask[i % 4];
+    frame[header_len + i] = ((const unsigned char *)payload)[i] ^ mask[i % 4];
   }
-  rc = io_write_all(ws, masked, len);
-  if (scratch_owned) {
-    free(scratch);
+  rc = io_write_all(ws, frame, total);
+  if (heap) {
+    free(frame);
   }
   return rc;
 }
@@ -323,6 +418,7 @@ static sa_cdp_channel_t *alloc_channel(sa_worker_ws_t *ws, int conn_id) {
       ws->channels[i].conn_id = conn_id;
       ws->channels[i].fd = SA_INVALID_SOCKET;
       ws->channels[i].connecting = 0;
+      ws->channels[i].connect_deadline_ms = 0;
       ws->channels[i].pending = NULL;
       ws->channels[i].pending_len = 0;
       ws->channels[i].pending_cap = 0;
@@ -349,10 +445,16 @@ static int append_channel_pending(sa_cdp_channel_t *ch, const unsigned char *pay
     return 0;
   }
   need = ch->pending_len + payload_len;
+  if (need > SA_CDP_PENDING_MAX) {
+    return -1;
+  }
   if (need > ch->pending_cap) {
     size_t cap = ch->pending_cap == 0 ? 4096 : ch->pending_cap;
     while (cap < need) {
       cap *= 2;
+    }
+    if (cap > SA_CDP_PENDING_MAX) {
+      cap = SA_CDP_PENDING_MAX;
     }
     next = (unsigned char *)realloc(ch->pending, cap);
     if (next == NULL) {
@@ -366,53 +468,100 @@ static int append_channel_pending(sa_cdp_channel_t *ch, const unsigned char *pay
   return 0;
 }
 
-static void flush_channel_pending(sa_cdp_channel_t *ch) {
+static void close_channel(sa_worker_ws_t *ws, sa_cdp_channel_t *ch);
+
+static int flush_channel_pending(sa_worker_ws_t *ws, sa_cdp_channel_t *ch) {
   if (ch == NULL || ch->fd == SA_INVALID_SOCKET || ch->pending_len == 0) {
     clear_channel_pending(ch);
-    return;
+    return 0;
   }
-  if (sa_tcp_send_all(ch->fd, ch->pending, ch->pending_len) != 0) {
-    /* Caller will close on next activity if needed. */
+  if (sa_tcp_send_all_deadline(ch->fd, ch->pending, ch->pending_len, SA_WS_WRITE_DEADLINE_MS) != 0) {
+    clear_channel_pending(ch);
+    close_channel(ws, ch);
+    return -1;
   }
   clear_channel_pending(ch);
+  return 0;
 }
 
-typedef struct {
-  sa_worker_ws_t *ws;
-  sa_cdp_channel_t *ch;
-  int port;
-} sa_chrome_open_job_t;
-
-static void *chrome_open_worker(void *arg) {
-  sa_chrome_open_job_t *job = (sa_chrome_open_job_t *)arg;
-  sa_socket_t fd;
-  sa_cdp_channel_t *ch;
-
-  if (job == NULL) {
-    return NULL;
+static void fail_channel_open(sa_worker_ws_t *ws, sa_cdp_channel_t *ch) {
+  unsigned char frame[9];
+  int n;
+  if (ch == NULL || !ch->in_use) {
+    return;
   }
-  ch = job->ch;
-  fd = (sa_socket_t)sa_tcp_connect("127.0.0.1", job->port, 750);
-  if (!ch->in_use) {
-    if (fd != SA_INVALID_SOCKET) {
-      sa_tcp_close(fd);
-    }
-    free(job);
-    return NULL;
+  if (ch->fd != SA_INVALID_SOCKET) {
+    sa_tcp_close(ch->fd);
+    ch->fd = SA_INVALID_SOCKET;
   }
-  if (fd == SA_INVALID_SOCKET) {
-    ch->connecting = 0;
-    clear_channel_pending(ch);
-    ch->in_use = 0;
-    free(job);
-    return NULL;
-  }
-  sa_tcp_set_nodelay(fd);
-  ch->fd = fd;
-  flush_channel_pending(ch);
+  clear_channel_pending(ch);
   ch->connecting = 0;
-  free(job);
-  return NULL;
+  n = pack_mux(frame, sizeof(frame), (unsigned int)ch->conn_id, SA_MUX_FLAG_CLOSE, NULL, 0);
+  if (n > 0 && ws->connected) {
+    ws_send_frame(ws, 0x2, frame, (size_t)n);
+  }
+  ch->in_use = 0;
+}
+
+static int begin_chrome_connect(sa_worker_ws_t *ws, sa_cdp_channel_t *ch) {
+  sa_socket_t fd;
+  struct sockaddr_in addr;
+  int port = ws->chrome_port > 0 ? ws->chrome_port : 9222;
+  int rc;
+
+  fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (fd == SA_INVALID_SOCKET) {
+    fail_channel_open(ws, ch);
+    return -1;
+  }
+  sa_tcp_set_nonblock(fd, 1);
+  sa_tcp_set_nodelay(fd);
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons((unsigned short)port);
+  if (inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr) != 1) {
+    sa_tcp_close(fd);
+    fail_channel_open(ws, ch);
+    return -1;
+  }
+  rc = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
+  if (rc == 0) {
+    ch->fd = fd;
+    ch->connecting = 0;
+    flush_channel_pending(ws, ch);
+    return 0;
+  }
+#ifdef _WIN32
+  if (WSAGetLastError() == WSAEWOULDBLOCK) {
+#else
+  if (errno == EINPROGRESS || errno == EINTR) {
+#endif
+    ch->fd = fd;
+    ch->connecting = 1;
+    ch->connect_deadline_ms = ws_now_ms() + SA_CDP_CONNECT_TIMEOUT_MS;
+    return 0;
+  }
+  sa_tcp_close(fd);
+  fail_channel_open(ws, ch);
+  return -1;
+}
+
+static void complete_chrome_connect(sa_worker_ws_t *ws, sa_cdp_channel_t *ch) {
+  int so_error = 0;
+#ifdef _WIN32
+  int slen = sizeof(so_error);
+#else
+  socklen_t slen = sizeof(so_error);
+#endif
+  if (ch == NULL || !ch->in_use || !ch->connecting || ch->fd == SA_INVALID_SOCKET) {
+    return;
+  }
+  if (getsockopt(ch->fd, SOL_SOCKET, SO_ERROR, (char *)&so_error, &slen) != 0 || so_error != 0) {
+    fail_channel_open(ws, ch);
+    return;
+  }
+  ch->connecting = 0;
+  flush_channel_pending(ws, ch);
 }
 
 static void close_channel(sa_worker_ws_t *ws, sa_cdp_channel_t *ch) {
@@ -453,10 +602,13 @@ static void handle_mux_frame(sa_worker_ws_t *ws, const unsigned char *data, size
   payload = data + 9;
 
   if (flags == SA_MUX_FLAG_OPEN) {
-    pthread_t opener;
-    sa_chrome_open_job_t *job;
     ch = alloc_channel(ws, (int)conn_id);
     if (ch == NULL) {
+      unsigned char frame[9];
+      int n = pack_mux(frame, sizeof(frame), conn_id, SA_MUX_FLAG_CLOSE, NULL, 0);
+      if (n > 0 && ws->connected) {
+        ws_send_frame(ws, 0x2, frame, (size_t)n);
+      }
       return;
     }
     if (ch->fd != SA_INVALID_SOCKET) {
@@ -465,30 +617,7 @@ static void handle_mux_frame(sa_worker_ws_t *ws, const unsigned char *data, size
     }
     clear_channel_pending(ch);
     ch->connecting = 1;
-    job = (sa_chrome_open_job_t *)malloc(sizeof(*job));
-    if (job == NULL) {
-      ch->connecting = 0;
-      close_channel(ws, ch);
-      return;
-    }
-    job->ws = ws;
-    job->ch = ch;
-    job->port = ws->chrome_port > 0 ? ws->chrome_port : 9222;
-    if (pthread_create(&opener, NULL, chrome_open_worker, job) != 0) {
-      int port = job->port;
-      free(job);
-      ch->connecting = 0;
-      /* Fallback: blocking connect so the channel still works. */
-      ch->fd = (sa_socket_t)sa_tcp_connect("127.0.0.1", port, 750);
-      if (ch->fd == SA_INVALID_SOCKET) {
-        close_channel(ws, ch);
-        return;
-      }
-      sa_tcp_set_nodelay(ch->fd);
-      flush_channel_pending(ch);
-      return;
-    }
-    pthread_detach(opener);
+    begin_chrome_connect(ws, ch);
     return;
   }
 
@@ -509,11 +638,11 @@ static void handle_mux_frame(sa_worker_ws_t *ws, const unsigned char *data, size
   if (flags == SA_MUX_FLAG_DATA && ch && payload_len > 0) {
     if (ch->connecting || ch->fd == SA_INVALID_SOCKET) {
       if (append_channel_pending(ch, payload, payload_len) != 0) {
-        close_channel(ws, ch);
+        fail_channel_open(ws, ch);
       }
       return;
     }
-    if (sa_tcp_send_all(ch->fd, payload, payload_len) != 0) {
+    if (sa_tcp_send_all_deadline(ch->fd, payload, payload_len, SA_WS_WRITE_DEADLINE_MS) != 0) {
       close_channel(ws, ch);
     }
   }
@@ -602,14 +731,17 @@ static int pump_cdp_channel(sa_worker_ws_t *ws, sa_cdp_channel_t *ch) {
   unsigned char buf[SA_CDP_READ_CHUNK];
   unsigned char frame[9 + SA_CDP_READ_CHUNK];
   int forwarded = 0;
+  size_t budget = SA_CDP_DRAIN_BUDGET;
+  int frames = 0;
 
   if (ch == NULL || !ch->in_use || ch->fd == SA_INVALID_SOCKET || ch->connecting) {
     return 0;
   }
 
-  /* Drain while Chrome has data — large CDP replies need many reads. */
-  for (;;) {
-    ssize_t n = sa_tcp_recv_some(ch->fd, buf, sizeof(buf), 0);
+  /* Fair drain: bound bytes/frames per channel per poll turn. */
+  while (budget > 0 && frames < SA_CDP_DRAIN_FRAMES) {
+    size_t want = budget < sizeof(buf) ? budget : sizeof(buf);
+    ssize_t n = sa_tcp_recv_some(ch->fd, buf, want, 0);
     int packed;
     if (n < 0) {
       close_channel(ws, ch);
@@ -627,6 +759,8 @@ static int pump_cdp_channel(sa_worker_ws_t *ws, sa_cdp_channel_t *ch) {
       return -1;
     }
     forwarded = 1;
+    budget -= (size_t)n;
+    frames++;
   }
   return forwarded;
 }
@@ -634,8 +768,10 @@ static int pump_cdp_channel(sa_worker_ws_t *ws, sa_cdp_channel_t *ch) {
 static int pump_cdp_reads(sa_worker_ws_t *ws) {
   int i;
   int any = 0;
+  int start = ws->drain_cursor % SA_MAX_CDP_CHANNELS;
   for (i = 0; i < SA_MAX_CDP_CHANNELS; i++) {
-    int rc = pump_cdp_channel(ws, &ws->channels[i]);
+    int idx = (start + i) % SA_MAX_CDP_CHANNELS;
+    int rc = pump_cdp_channel(ws, &ws->channels[idx]);
     if (rc < 0) {
       return -1;
     }
@@ -643,30 +779,43 @@ static int pump_cdp_reads(sa_worker_ws_t *ws) {
       any = 1;
     }
   }
+  ws->drain_cursor = (start + 1) % SA_MAX_CDP_CHANNELS;
   return any;
 }
 
 static int wait_for_ws_or_cdp(sa_worker_ws_t *ws, int timeout_ms) {
   fd_set rfds;
+  fd_set wfds;
   struct timeval tv;
   int max_fd;
   int i;
   int nfds;
   int has_ssl_pending = 0;
+  int use_write = 0;
 
   if (ws->ssl && SSL_pending(ws->ssl) > 0) {
     has_ssl_pending = 1;
   }
 
   FD_ZERO(&rfds);
+  FD_ZERO(&wfds);
   FD_SET(ws->fd, &rfds);
   max_fd = (int)ws->fd;
   for (i = 0; i < SA_MAX_CDP_CHANNELS; i++) {
     sa_cdp_channel_t *ch = &ws->channels[i];
-    if (!ch->in_use || ch->fd == SA_INVALID_SOCKET || ch->connecting) {
+    if (!ch->in_use || ch->fd == SA_INVALID_SOCKET) {
       continue;
     }
-    FD_SET(ch->fd, &rfds);
+    if (ch->connecting) {
+      if (ws_now_ms() >= ch->connect_deadline_ms) {
+        fail_channel_open(ws, ch);
+        continue;
+      }
+      FD_SET(ch->fd, &wfds);
+      use_write = 1;
+    } else {
+      FD_SET(ch->fd, &rfds);
+    }
     if ((int)ch->fd > max_fd) {
       max_fd = (int)ch->fd;
     }
@@ -674,9 +823,9 @@ static int wait_for_ws_or_cdp(sa_worker_ws_t *ws, int timeout_ms) {
 
   if (has_ssl_pending) {
     timeout_ms = 0;
-  } else if (timeout_ms > 25) {
-    /* Keep CDP duty cycle high even when the runtime passes a large timeout. */
-    timeout_ms = 25;
+  } else if (timeout_ms > 100) {
+    /* Keep CDP duty cycle responsive without busy-spinning at 25ms. */
+    timeout_ms = 100;
   }
   if (timeout_ms < 0) {
     timeout_ms = 0;
@@ -685,17 +834,28 @@ static int wait_for_ws_or_cdp(sa_worker_ws_t *ws, int timeout_ms) {
   tv.tv_sec = timeout_ms / 1000;
   tv.tv_usec = (timeout_ms % 1000) * 1000;
 #ifdef _WIN32
-  nfds = select(0, &rfds, NULL, NULL, &tv);
+  nfds = select(0, &rfds, use_write ? &wfds : NULL, NULL, &tv);
 #else
-  nfds = select(max_fd + 1, &rfds, NULL, NULL, &tv);
+  nfds = select(max_fd + 1, &rfds, use_write ? &wfds : NULL, NULL, &tv);
 #endif
   if (nfds < 0) {
     return -1;
   }
 
   for (i = 0; i < SA_MAX_CDP_CHANNELS; i++) {
-    sa_cdp_channel_t *ch = &ws->channels[i];
+    int idx = (ws->drain_cursor + i) % SA_MAX_CDP_CHANNELS;
+    sa_cdp_channel_t *ch = &ws->channels[idx];
     if (!ch->in_use || ch->fd == SA_INVALID_SOCKET) {
+      continue;
+    }
+    if (ch->connecting) {
+      if (FD_ISSET(ch->fd, &wfds) || ws_now_ms() >= ch->connect_deadline_ms) {
+        if (ws_now_ms() >= ch->connect_deadline_ms && !FD_ISSET(ch->fd, &wfds)) {
+          fail_channel_open(ws, ch);
+        } else {
+          complete_chrome_connect(ws, ch);
+        }
+      }
       continue;
     }
     if (FD_ISSET(ch->fd, &rfds)) {
@@ -704,6 +864,7 @@ static int wait_for_ws_or_cdp(sa_worker_ws_t *ws, int timeout_ms) {
       }
     }
   }
+  ws->drain_cursor = (ws->drain_cursor + 1) % SA_MAX_CDP_CHANNELS;
 
   if (has_ssl_pending || FD_ISSET(ws->fd, &rfds)) {
     return 1; /* WS side may have data */
@@ -779,6 +940,19 @@ void sa_worker_ws_close(sa_worker_ws_t *ws) {
   ws->rx_len = 0;
 }
 
+void sa_worker_ws_interrupt(sa_worker_ws_t *ws) {
+  sa_socket_t fd;
+  if (ws == NULL) {
+    return;
+  }
+  /* Drop the connected flag first so poll/send bail without touching freed SSL. */
+  ws->connected = 0;
+  fd = ws->fd;
+  if (fd != SA_INVALID_SOCKET) {
+    sa_tcp_shutdown(fd);
+  }
+}
+
 int sa_worker_ws_is_connected(const sa_worker_ws_t *ws) {
   return ws != NULL && ws->connected;
 }
@@ -836,71 +1010,143 @@ int sa_worker_ws_connect(
     snprintf(ws_path, sizeof(ws_path), "%s/ws/workers?token=%s", base_path, token);
   }
 
-  ws->fd = (sa_socket_t)sa_tcp_connect(host, port, 15000);
-  if (ws->fd == SA_INVALID_SOCKET) {
-    snprintf(err, err_len, "Could not connect to %s:%d", host, port);
-    return -1;
-  }
-  sa_tcp_set_nodelay(ws->fd);
+  {
+    long long connect_deadline = ws_now_ms() + SA_WS_CONNECT_DEADLINE_MS;
+    int tcp_timeout = SA_WS_CONNECT_DEADLINE_MS;
+    ws->fd = sa_tcp_connect(host, port, tcp_timeout);
+    if (ws->fd == SA_INVALID_SOCKET) {
+      snprintf(err, err_len, "Could not connect to %s:%d", host, port);
+      return -1;
+    }
+    sa_tcp_set_nodelay(ws->fd);
+    sa_tcp_set_nonblock(ws->fd, 1);
 
-  if (is_tls) {
-    ws->ctx = SSL_CTX_new(TLS_client_method());
-    if (ws->ctx == NULL) {
-      snprintf(err, err_len, "TLS init failed");
+    if (is_tls) {
+      long long left;
+      ws->ctx = SSL_CTX_new(TLS_client_method());
+      if (ws->ctx == NULL) {
+        snprintf(err, err_len, "TLS init failed");
+        sa_worker_ws_close(ws);
+        return -1;
+      }
+      if (configure_client_ssl_ctx(ws->ctx, err, err_len) != 0) {
+        sa_worker_ws_close(ws);
+        return -1;
+      }
+      ws->ssl = SSL_new(ws->ctx);
+      if (ws->ssl == NULL) {
+        snprintf(err, err_len, "TLS init failed");
+        sa_worker_ws_close(ws);
+        return -1;
+      }
+      if (ssl_set_hostname(ws->ssl, host, err, err_len) != 0) {
+        sa_worker_ws_close(ws);
+        return -1;
+      }
+      SSL_set_fd(ws->ssl, (int)ws->fd);
+      SSL_set_mode(ws->ssl, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+      for (;;) {
+        int n = SSL_connect(ws->ssl);
+        int ssl_err;
+        left = connect_deadline - ws_now_ms();
+        if (n == 1) {
+          break;
+        }
+        if (left <= 0) {
+          snprintf(err, err_len, "TLS handshake timed out");
+          sa_worker_ws_close(ws);
+          return -1;
+        }
+        ssl_err = SSL_get_error(ws->ssl, n);
+        if (ssl_err == SSL_ERROR_WANT_READ || ssl_err == SSL_ERROR_WANT_WRITE) {
+          fd_set fds;
+          struct timeval tv;
+          int wait_ms = (int)left;
+          FD_ZERO(&fds);
+          FD_SET(ws->fd, &fds);
+          tv.tv_sec = wait_ms / 1000;
+          tv.tv_usec = (wait_ms % 1000) * 1000;
+#ifdef _WIN32
+          if (select(0, ssl_err == SSL_ERROR_WANT_READ ? &fds : NULL, ssl_err == SSL_ERROR_WANT_WRITE ? &fds : NULL, NULL, &tv) <= 0) {
+#else
+          if (select(
+                  (int)ws->fd + 1,
+                  ssl_err == SSL_ERROR_WANT_READ ? &fds : NULL,
+                  ssl_err == SSL_ERROR_WANT_WRITE ? &fds : NULL,
+                  NULL,
+                  &tv) <= 0) {
+#endif
+            snprintf(err, err_len, "TLS handshake timed out");
+            sa_worker_ws_close(ws);
+            return -1;
+          }
+          continue;
+        }
+        {
+          long verify = SSL_get_verify_result(ws->ssl);
+          if (!tls_insecure_allowed() && verify != X509_V_OK) {
+            snprintf(
+                err,
+                err_len,
+                "TLS certificate verify failed: %s (set SMART_AUTOMATOR_INSECURE_TLS=1 to bypass)",
+                X509_verify_cert_error_string(verify));
+          } else {
+            snprintf(err, err_len, "TLS handshake failed");
+          }
+        }
+        sa_worker_ws_close(ws);
+        return -1;
+      }
+    }
+
+    for (i = 0; i < 16; i++) {
+      key_raw[i] = (char)(rand() & 0xff);
+    }
+    b64_encode((unsigned char *)key_raw, 16, key_b64, sizeof(key_b64));
+
+    snprintf(
+        request,
+        sizeof(request),
+        "GET %s HTTP/1.1\r\n"
+        "Host: %s\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Sec-WebSocket-Key: %s\r\n"
+        "Sec-WebSocket-Version: 13\r\n"
+        "User-Agent: smart-automator-connect\r\n"
+        "\r\n",
+        ws_path,
+        host,
+        key_b64);
+
+    if (io_write_all(ws, request, strlen(request)) != 0) {
+      snprintf(err, err_len, "Failed to send WebSocket upgrade");
       sa_worker_ws_close(ws);
       return -1;
     }
-    SSL_CTX_set_default_verify_paths(ws->ctx);
-    ws->ssl = SSL_new(ws->ctx);
-    SSL_set_tlsext_host_name(ws->ssl, host);
-    SSL_set_fd(ws->ssl, (int)ws->fd);
-    if (SSL_connect(ws->ssl) != 1) {
-      snprintf(err, err_len, "TLS handshake failed");
-      sa_worker_ws_close(ws);
-      return -1;
-    }
-  }
 
-  for (i = 0; i < 16; i++) {
-    key_raw[i] = (char)(rand() & 0xff);
-  }
-  b64_encode((unsigned char *)key_raw, 16, key_b64, sizeof(key_b64));
-
-  snprintf(
-      request,
-      sizeof(request),
-      "GET %s HTTP/1.1\r\n"
-      "Host: %s\r\n"
-      "Upgrade: websocket\r\n"
-      "Connection: Upgrade\r\n"
-      "Sec-WebSocket-Key: %s\r\n"
-      "Sec-WebSocket-Version: 13\r\n"
-      "User-Agent: smart-automator-connect\r\n"
-      "\r\n",
-      ws_path,
-      host,
-      key_b64);
-
-  if (io_write_all(ws, request, strlen(request)) != 0) {
-    snprintf(err, err_len, "Failed to send WebSocket upgrade");
-    sa_worker_ws_close(ws);
-    return -1;
-  }
-
-  while (response_len + 1 < sizeof(response)) {
-    int n = io_read_some(ws, response + response_len, sizeof(response) - response_len - 1, 10000);
-    if (n < 0) {
-      snprintf(err, err_len, "WebSocket upgrade read failed");
-      sa_worker_ws_close(ws);
-      return -1;
-    }
-    if (n == 0) {
-      continue;
-    }
-    response_len += (size_t)n;
-    response[response_len] = '\0';
-    if (strstr(response, "\r\n\r\n") != NULL) {
-      break;
+    while (response_len + 1 < sizeof(response)) {
+      int left_ms = (int)(connect_deadline - ws_now_ms());
+      int n;
+      if (left_ms <= 0) {
+        snprintf(err, err_len, "WebSocket upgrade timed out");
+        sa_worker_ws_close(ws);
+        return -1;
+      }
+      n = io_read_some(ws, response + response_len, sizeof(response) - response_len - 1, left_ms > 10000 ? 10000 : left_ms);
+      if (n < 0) {
+        snprintf(err, err_len, "WebSocket upgrade read failed");
+        sa_worker_ws_close(ws);
+        return -1;
+      }
+      if (n == 0) {
+        continue;
+      }
+      response_len += (size_t)n;
+      response[response_len] = '\0';
+      if (strstr(response, "\r\n\r\n") != NULL) {
+        break;
+      }
     }
   }
 

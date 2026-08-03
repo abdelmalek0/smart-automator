@@ -1,3 +1,7 @@
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "http.h"
 
 #include "net.h"
@@ -17,7 +21,7 @@ int sa_http_check_url(const char *url, int timeout_ms) {
   char host[256];
   char path[512];
   int port;
-  int fd;
+  sa_socket_t fd;
   char request[1024];
   char response[1024];
   size_t response_len = 0;
@@ -40,7 +44,7 @@ int sa_http_check_url(const char *url, int timeout_ms) {
   }
 
   fd = sa_tcp_connect(host, port, timeout_ms > 0 ? timeout_ms : 1000);
-  if (fd < 0) {
+  if (fd == SA_INVALID_SOCKET) {
     return -1;
   }
 

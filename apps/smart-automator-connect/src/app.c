@@ -26,6 +26,7 @@ typedef struct {
   GtkWidget *status_label;
   GtkWidget *user_label;
   GtkWidget *server_label;
+  GtkWidget *reconnect_btn;
   GtkWidget *logout_btn;
   sa_worker_session_t session;
   sa_runtime_t *runtime;
@@ -64,8 +65,11 @@ static gboolean apply_ui_event(gpointer data) {
   ui_event_t *event = (ui_event_t *)data;
   app_ctx_t *app = event->app;
   gtk_label_set_text(GTK_LABEL(app->status_label), event->status);
-  if (event->state == SA_CONN_ERROR) {
-    /* Keep reconnecting in background; surface message in status label. */
+  if (app->reconnect_btn != NULL) {
+    /* Offer reconnect after give-up while a session token is still saved. */
+    gtk_widget_set_sensitive(
+        app->reconnect_btn,
+        event->state == SA_CONN_ERROR && sa_worker_session_has_token(&app->session));
   }
   free(event);
   return G_SOURCE_REMOVE;
@@ -112,6 +116,22 @@ static void do_logout(app_ctx_t *app) {
 static void on_logout_clicked(GtkButton *button, gpointer user_data) {
   (void)button;
   do_logout((app_ctx_t *)user_data);
+}
+
+static void on_reconnect_clicked(GtkButton *button, gpointer user_data) {
+  app_ctx_t *app = (app_ctx_t *)user_data;
+  (void)button;
+  if (!sa_worker_session_has_token(&app->session)) {
+    show_login(app);
+    return;
+  }
+  if (sa_runtime_is_busy(app->runtime)) {
+    gtk_label_set_text(GTK_LABEL(app->status_label), "Still shutting down… click Reconnect again shortly");
+    return;
+  }
+  gtk_widget_set_sensitive(app->reconnect_btn, FALSE);
+  gtk_label_set_text(GTK_LABEL(app->status_label), "Reconnecting…");
+  sa_runtime_connect(app->runtime, &app->session);
 }
 
 static void on_login_clicked(GtkButton *button, gpointer user_data) {
@@ -251,13 +271,16 @@ static GtkWidget *build_status_page(app_ctx_t *app) {
   app->status_label = gtk_label_new("Starting…");
   app->user_label = gtk_label_new("—");
   app->server_label = gtk_label_new("—");
+  app->reconnect_btn = gtk_button_new_with_label("Reconnect");
   app->logout_btn = gtk_button_new_with_label("Log out");
   gtk_label_set_line_wrap(GTK_LABEL(app->status_label), TRUE);
   gtk_label_set_line_wrap(GTK_LABEL(app->server_label), TRUE);
   gtk_widget_set_halign(app->status_label, GTK_ALIGN_START);
   gtk_widget_set_halign(app->user_label, GTK_ALIGN_START);
   gtk_widget_set_halign(app->server_label, GTK_ALIGN_START);
+  gtk_widget_set_sensitive(app->reconnect_btn, FALSE);
 
+  g_signal_connect(app->reconnect_btn, "clicked", G_CALLBACK(on_reconnect_clicked), app);
   g_signal_connect(app->logout_btn, "clicked", G_CALLBACK(on_logout_clicked), app);
 
   gtk_box_pack_start(GTK_BOX(box), title, FALSE, FALSE, 0);
@@ -267,7 +290,8 @@ static GtkWidget *build_status_page(app_ctx_t *app) {
   gtk_box_pack_start(GTK_BOX(box), app->user_label, FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(box), gtk_label_new("Server"), FALSE, FALSE, 0);
   gtk_box_pack_start(GTK_BOX(box), app->server_label, FALSE, FALSE, 0);
-  gtk_box_pack_start(GTK_BOX(box), app->logout_btn, FALSE, FALSE, 12);
+  gtk_box_pack_start(GTK_BOX(box), app->reconnect_btn, FALSE, FALSE, 8);
+  gtk_box_pack_start(GTK_BOX(box), app->logout_btn, FALSE, FALSE, 4);
   return box;
 }
 

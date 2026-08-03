@@ -1,3 +1,7 @@
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "chrome.h"
 
 #include "chrome_mirror.h"
@@ -8,9 +12,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifdef _WIN32
+#include <shlobj.h>
 #include <windows.h>
 #endif
 
@@ -18,19 +24,54 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
+#include <stdatomic.h>
 #include <sys/wait.h>
 extern char **environ;
-#else
-#include <windows.h>
 #endif
 
 #ifdef _WIN32
 static DWORD g_chrome_pid = 0;
+static volatile LONG g_chrome_cancel = 0;
 #else
 static pid_t g_chrome_pid = -1;
+static atomic_int g_chrome_cancel = 0;
 #endif
 static int g_chrome_debug_port = 0;
 static char g_chrome_user_data[512];
+
+void sa_chrome_request_cancel(void) {
+#ifdef _WIN32
+  InterlockedExchange(&g_chrome_cancel, 1);
+#else
+  atomic_store(&g_chrome_cancel, 1);
+#endif
+}
+
+void sa_chrome_clear_cancel(void) {
+#ifdef _WIN32
+  InterlockedExchange(&g_chrome_cancel, 0);
+#else
+  atomic_store(&g_chrome_cancel, 0);
+#endif
+}
+
+static int chrome_cancel_requested(void) {
+#ifdef _WIN32
+  return InterlockedCompareExchange(&g_chrome_cancel, 0, 0) != 0;
+#else
+  return atomic_load(&g_chrome_cancel) != 0;
+#endif
+}
+
+static long long chrome_now_ms(void) {
+#ifdef _WIN32
+  return (long long)GetTickCount64();
+#else
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+#endif
+}
 
 static void chrome_store_pid(pid_t pid) {
 #ifndef _WIN32
@@ -60,7 +101,7 @@ static void chrome_kill_tracked(void) {
   int status;
   if (g_chrome_pid > 0) {
     kill(g_chrome_pid, SIGTERM);
-    usleep(150000);
+    sa_sleep_ms(150);
     if (waitpid(g_chrome_pid, &status, WNOHANG) <= 0) {
       kill(g_chrome_pid, SIGKILL);
       waitpid(g_chrome_pid, &status, 0);
@@ -76,6 +117,8 @@ static int find_chrome(char *out, size_t out_len) {
       "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
       "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
   };
+  char local_appdata[MAX_PATH];
+  char local_chrome[MAX_PATH];
   size_t i;
 
   for (i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
@@ -83,6 +126,20 @@ static int find_chrome(char *out, size_t out_len) {
       snprintf(out, out_len, "%s", candidates[i]);
       return 0;
     }
+  }
+  if (SHGetFolderPathA(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, local_appdata) == S_OK) {
+    snprintf(
+        local_chrome,
+        sizeof(local_chrome),
+        "%s\\Google\\Chrome\\Application\\chrome.exe",
+        local_appdata);
+    if (GetFileAttributesA(local_chrome) != INVALID_FILE_ATTRIBUTES) {
+      snprintf(out, out_len, "%s", local_chrome);
+      return 0;
+    }
+  }
+  if (out_len > 0 && SearchPathA(NULL, "chrome.exe", NULL, (DWORD)out_len, out, NULL) > 0) {
+    return 0;
   }
   return -1;
 #else
@@ -184,14 +241,14 @@ void sa_chrome_kill_debug_port(int port, const char *user_data_dir, int fresh_pr
     }
     (void)profile;
     (void)port;
-    usleep(100000);
+    sa_sleep_ms(100);
   }
 #else
   (void)user_data_dir;
   (void)fresh_profile;
   (void)port;
   chrome_kill_tracked();
-  Sleep(300);
+  sa_sleep_ms(300);
 #endif
 }
 
@@ -359,19 +416,6 @@ static int read_devtools_active_port(const char *user_data_dir, int *out_port) {
   return 0;
 }
 
-static int chrome_port_listening(int port, int timeout_ms) {
-  sa_socket_t fd;
-  if (port <= 0) {
-    return 0;
-  }
-  fd = (sa_socket_t)sa_tcp_connect("127.0.0.1", port, timeout_ms > 0 ? timeout_ms : 200);
-  if (fd == SA_INVALID_SOCKET) {
-    return 0;
-  }
-  sa_tcp_close(fd);
-  return 1;
-}
-
 static int wait_for_chrome_ready(
     int preferred_port,
     const char *user_data_dir,
@@ -379,39 +423,52 @@ static int wait_for_chrome_ready(
     int use_app_profile,
     char *err,
     size_t err_len) {
-  int poll_ms = 250;
-  int check_ms = 400;
-  int elapsed = 0;
+  int poll_ms = 100;
   int detected_port = 0;
   int last_seen_port = 0;
+  long long deadline_ms;
 
   (void)preferred_port;
   if (max_wait_ms < 1000) {
     max_wait_ms = 1000;
   }
   g_chrome_debug_port = 0;
+  deadline_ms = chrome_now_ms() + max_wait_ms;
 
   /* Chrome writes DevToolsActivePort once the debug server is bound. Prefer that
    * over a fixed port: --remote-debugging-port=0 picks a free port, and a busy
-   * fixed port can leave the UI up with no CDP. */
-  while (elapsed < max_wait_ms) {
+   * fixed port can leave the UI up with no CDP. Require a real /json/version
+   * response — a TCP accept alone is not enough for browser.ready. */
+  while (chrome_now_ms() < deadline_ms) {
+    int remaining;
+    int check_ms;
+    if (chrome_cancel_requested()) {
+      snprintf(err, err_len, "Chrome start cancelled");
+      return -1;
+    }
     detected_port = 0;
+    remaining = (int)(deadline_ms - chrome_now_ms());
+    if (remaining <= 0) {
+      break;
+    }
+    check_ms = remaining < 400 ? remaining : 400;
     if (read_devtools_active_port(user_data_dir, &detected_port) == 0) {
       last_seen_port = detected_port;
-      if (sa_chrome_ready_on_port(detected_port, check_ms) ||
-          chrome_port_listening(detected_port, check_ms)) {
+      if (sa_chrome_ready_on_port(detected_port, check_ms)) {
         g_chrome_debug_port = detected_port;
         return 0;
       }
     }
-#ifdef _WIN32
-    Sleep(poll_ms);
-#else
-    usleep((unsigned)poll_ms * 1000U);
-#endif
-    elapsed += poll_ms;
+    {
+      int sleep_ms = poll_ms < remaining ? poll_ms : remaining;
+      sa_sleep_ms(sleep_ms);
+    }
   }
 
+  if (chrome_cancel_requested()) {
+    snprintf(err, err_len, "Chrome start cancelled");
+    return -1;
+  }
   if (last_seen_port > 0) {
     snprintf(
         err,
@@ -519,6 +576,8 @@ int sa_chrome_start(
     int fresh_profile,
     char *err,
     size_t err_len) {
+  /* Do not clear cancel here — runtime arms clear only when intentionally
+   * starting. Clearing here would wipe an in-flight stop/cancel. */
   return chrome_start_internal(
       port, user_data_dir, profile_directory, fresh_profile, fresh_profile ? 1 : 0, 0, err, err_len);
 }
@@ -531,11 +590,7 @@ static int wait_for_port_closed(int port, int max_ms) {
     if (!sa_chrome_ready_on_port(port, step_ms)) {
       return 0;
     }
-#ifdef _WIN32
-    Sleep(step_ms);
-#else
-    usleep((unsigned)step_ms * 1000U);
-#endif
+    sa_sleep_ms(step_ms);
     elapsed += step_ms;
   }
   return -1;

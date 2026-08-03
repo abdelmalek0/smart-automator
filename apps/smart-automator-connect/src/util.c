@@ -1,3 +1,7 @@
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "util.h"
 
 #include <errno.h>
@@ -5,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #ifdef _WIN32
 #include <direct.h>
@@ -29,6 +34,38 @@ char *sa_strdup(const char *s) {
     memcpy(copy, s, n);
   }
   return copy;
+}
+
+void sa_sleep_ms(int ms) {
+  if (ms <= 0) {
+    return;
+  }
+#ifdef _WIN32
+  Sleep((DWORD)ms);
+#else
+  {
+    struct timespec ts;
+    ts.tv_sec = ms / 1000;
+    ts.tv_nsec = (long)(ms % 1000) * 1000000L;
+    while (nanosleep(&ts, &ts) != 0) {
+      if (errno != EINTR) {
+        break;
+      }
+    }
+  }
+#endif
+}
+
+long long sa_monotonic_ms(void) {
+#ifdef _WIN32
+  return (long long)GetTickCount64();
+#else
+  {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+  }
+#endif
 }
 
 void sa_trim(char *s) {

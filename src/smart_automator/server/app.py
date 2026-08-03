@@ -682,10 +682,11 @@ async def ws_run_stream(websocket: WebSocket, run_id: str):
 async def ws_workers(websocket: WebSocket):
     token = websocket.query_params.get("token") or ""
     user = resolve_user_from_worker_token(token)
-    await websocket.accept()
     if user is None:
+        # Reject before accept so a bad token never gets a 101 upgrade.
         await websocket.close(code=1008)
         return
+    await websocket.accept()
 
     loop = asyncio.get_running_loop()
     worker = WorkerConnection(user_id=user.id, websocket=websocket, loop=loop)
@@ -694,8 +695,8 @@ async def ws_workers(websocket: WebSocket):
     log.info("worker connected user=%s", user.id[:8])
 
     outbox_task = asyncio.create_task(worker.drain_outbox())
-    try:
-        await worker.send_json({"type": "hello", "user_id": user.id})
+
+    async def _receive_loop() -> None:
         while True:
             message = await websocket.receive()
             if message.get("type") == "websocket.disconnect":
@@ -704,21 +705,36 @@ async def ws_workers(websocket: WebSocket):
                 try:
                     payload = json.loads(message["text"])
                 except json.JSONDecodeError:
+                    log.warning(
+                        "worker control JSON decode failed user=%s",
+                        user.id[:8],
+                    )
                     continue
                 if isinstance(payload, dict):
                     registry.handle_control_message(worker, payload)
             elif "bytes" in message and message["bytes"] is not None:
                 registry.handle_binary(worker, message["bytes"])
+
+    recv_task = asyncio.create_task(_receive_loop())
+    try:
+        await worker.send_json({"type": "hello", "user_id": user.id})
+        done, pending = await asyncio.wait(
+            {outbox_task, recv_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in done:
+            exc = task.exception() if not task.cancelled() else None
+            if exc is not None:
+                raise exc
     except WebSocketDisconnect:
         log.debug("worker WS disconnect user=%s", user.id[:8])
     except Exception as exc:
         log.warning("worker WS error user=%s: %s", user.id[:8], exc)
     finally:
-        outbox_task.cancel()
-        try:
-            await outbox_task
-        except asyncio.CancelledError:
-            pass
+        worker.online = False
+        for task in (outbox_task, recv_task):
+            task.cancel()
+        await asyncio.gather(outbox_task, recv_task, return_exceptions=True)
         registry.unregister(worker)
         log.info("worker disconnected user=%s", user.id[:8])
 

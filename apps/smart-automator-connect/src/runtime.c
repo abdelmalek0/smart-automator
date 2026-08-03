@@ -3,9 +3,11 @@
 #include "chrome.h"
 #include "chrome_profiles.h"
 #include "common.h"
+#include "util.h"
 #include "worker_ws.h"
 
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,27 +18,30 @@
 #include <unistd.h>
 #endif
 
+#define SA_RECONNECT_STABLE_MS 30000
+#define SA_CHROME_REAP_WAIT_MS 3000
+
 struct sa_runtime {
   sa_status_cb cb;
   void *userdata;
   pthread_t thread;
   pthread_mutex_t lock;
-  int thread_running;
-  int stop_requested;
-  int connected;
-  int busy;
+  atomic_int thread_running;
+  atomic_int stop_requested;
+  atomic_int connected;
+  atomic_int busy;
   sa_worker_session_t session;
   sa_worker_ws_t *ws;
   char active_run_id[64];
-  int browser_up;
+  atomic_int browser_up;
   int chrome_port;
 
   /* Chrome start runs off the WSS poll thread so heartbeats stay alive. */
   pthread_t chrome_thread;
-  int chrome_thread_running;
-  int chrome_job_cancel;
+  atomic_int chrome_thread_running;
+  atomic_int chrome_job_cancel;
   char chrome_start_json[8192];
-  int chrome_result_pending;
+  atomic_int chrome_result_pending;
   int chrome_result_ok;
   int chrome_result_port;
   char chrome_result_err[512];
@@ -51,10 +56,13 @@ static void emit_status(sa_runtime_t *rt, sa_conn_state_t state, const char *sta
 static int json_get_string_local(const char *json, const char *key, char *out, size_t out_len) {
   char pattern[128];
   const char *found;
-  const char *start;
-  const char *end;
-  size_t n;
+  const char *cursor;
+  size_t n = 0;
 
+  if (out == NULL || out_len == 0) {
+    return -1;
+  }
+  out[0] = '\0';
   snprintf(pattern, sizeof(pattern), "\"%s\"", key);
   found = strstr(json, pattern);
   if (found == NULL) {
@@ -71,23 +79,30 @@ static int json_get_string_local(const char *json, const char *key, char *out, s
   if (*found != '"') {
     return -1;
   }
-  start = found + 1;
-  end = start;
-  while (*end && *end != '"') {
-    if (*end == '\\' && end[1]) {
-      end += 2;
+  cursor = found + 1;
+  while (*cursor && *cursor != '"' && n + 1 < out_len) {
+    if (*cursor == '\\' && cursor[1]) {
+      char esc = cursor[1];
+      if (esc == '"' || esc == '\\' || esc == '/') {
+        out[n++] = esc;
+      } else if (esc == 'n') {
+        out[n++] = '\n';
+      } else if (esc == 'r') {
+        out[n++] = '\r';
+      } else if (esc == 't') {
+        out[n++] = '\t';
+      } else {
+        out[n++] = esc;
+      }
+      cursor += 2;
       continue;
     }
-    end++;
+    out[n++] = *cursor++;
   }
-  if (*end != '"') {
+  if (*cursor != '"') {
+    out[0] = '\0';
     return -1;
   }
-  n = (size_t)(end - start);
-  if (n >= out_len) {
-    n = out_len - 1;
-  }
-  memcpy(out, start, n);
   out[n] = '\0';
   return 0;
 }
@@ -207,20 +222,55 @@ static void send_profiles(sa_runtime_t *rt) {
   sa_worker_ws_send_text(rt->ws, json);
 }
 
-static void stop_browser(sa_runtime_t *rt, int notify) {
-  /* Cancel any in-flight start so we don't race a late ready. */
-  rt->chrome_job_cancel = 1;
-  if (rt->chrome_thread_running) {
-    pthread_join(rt->chrome_thread, NULL);
-    rt->chrome_thread_running = 0;
+static void join_chrome_thread_if_done(sa_runtime_t *rt) {
+  if (!atomic_load(&rt->chrome_thread_running)) {
+    return;
   }
-  rt->chrome_result_pending = 0;
+  if (!atomic_load(&rt->chrome_result_pending)) {
+    return;
+  }
+  pthread_join(rt->chrome_thread, NULL);
+  atomic_store(&rt->chrome_thread_running, 0);
+}
 
-  if (rt->browser_up) {
+/* Cancel + kill, then reap without blocking for a full Chrome startup timeout. */
+static void reap_chrome_after_cancel(sa_runtime_t *rt, int max_wait_ms) {
+  long long deadline = sa_monotonic_ms() + (max_wait_ms > 0 ? max_wait_ms : SA_CHROME_REAP_WAIT_MS);
+
+  atomic_store(&rt->chrome_job_cancel, 1);
+  sa_chrome_request_cancel();
+  if (atomic_load(&rt->browser_up) || rt->chrome_port > 0) {
+    sa_chrome_kill_debug_port(rt->chrome_port, NULL, 0);
+    atomic_store(&rt->browser_up, 0);
+  }
+  sa_chrome_kill_debug_port(sa_chrome_debug_port(), NULL, 0);
+
+  while (atomic_load(&rt->chrome_thread_running) && sa_monotonic_ms() < deadline) {
+    join_chrome_thread_if_done(rt);
+    if (!atomic_load(&rt->chrome_thread_running)) {
+      break;
+    }
+    sa_sleep_ms(50);
+  }
+  if (atomic_load(&rt->chrome_thread_running)) {
+    /* Cancelled readiness should exit soon; join to avoid leaking the thread. */
+    pthread_join(rt->chrome_thread, NULL);
+    atomic_store(&rt->chrome_thread_running, 0);
+  }
+  atomic_store(&rt->chrome_result_pending, 0);
+}
+
+/* Cancel in-flight start without blocking the WSS thread on a long Chrome wait. */
+static void stop_browser(sa_runtime_t *rt, int notify) {
+  atomic_store(&rt->chrome_job_cancel, 1);
+  sa_chrome_request_cancel();
+  join_chrome_thread_if_done(rt);
+
+  if (atomic_load(&rt->browser_up)) {
     emit_status(rt, SA_CONN_CONNECTED, notify ? "Stopping Chrome…" : "Restarting Chrome…");
     sa_chrome_kill_debug_port(rt->chrome_port, NULL, 0);
     sa_worker_ws_close_cdp_channels(rt->ws);
-    rt->browser_up = 0;
+    atomic_store(&rt->browser_up, 0);
     rt->active_run_id[0] = '\0';
   } else {
     sa_chrome_kill_debug_port(rt->chrome_port, NULL, 0);
@@ -258,16 +308,16 @@ static void *chrome_start_worker(void *arg) {
   json_get_string_local(json, "chrome_profile_directory", profile_dir, sizeof(profile_dir));
   fresh = json_get_bool(json, "fresh_profile", 1);
 
-  if (rt->chrome_job_cancel || rt->stop_requested) {
+  if (atomic_load(&rt->chrome_job_cancel) || atomic_load(&rt->stop_requested)) {
     snprintf(err, sizeof(err), "Chrome start cancelled");
     goto done;
   }
 
   /* Kill previous Chrome without notifying the server (silent relaunch). */
-  if (rt->browser_up) {
+  if (atomic_load(&rt->browser_up)) {
     emit_status(rt, SA_CONN_CONNECTED, "Restarting Chrome…");
     sa_chrome_kill_debug_port(rt->chrome_port, NULL, 0);
-    rt->browser_up = 0;
+    atomic_store(&rt->browser_up, 0);
   }
 
   snprintf(rt->active_run_id, sizeof(rt->active_run_id), "%s", run_id);
@@ -280,6 +330,14 @@ static void *chrome_start_worker(void *arg) {
     profile_arg = profile_dir;
   }
 
+  /* Cancel was cleared only by queue_browser_start. If stop raced after that,
+   * honour cancel without clearing it again. */
+  if (atomic_load(&rt->chrome_job_cancel) || atomic_load(&rt->stop_requested)) {
+    sa_chrome_request_cancel();
+    snprintf(err, sizeof(err), "Chrome start cancelled");
+    goto done;
+  }
+
   if (sa_chrome_start(0, user_data_arg, profile_arg, fresh, err, sizeof(err)) != 0) {
     if (!err[0]) {
       snprintf(err, sizeof(err), "Chrome start failed");
@@ -287,7 +345,7 @@ static void *chrome_start_worker(void *arg) {
     goto done;
   }
 
-  if (rt->chrome_job_cancel || rt->stop_requested) {
+  if (atomic_load(&rt->chrome_job_cancel) || atomic_load(&rt->stop_requested)) {
     sa_chrome_kill_debug_port(sa_chrome_debug_port(), NULL, 0);
     snprintf(err, sizeof(err), "Chrome start cancelled");
     goto done;
@@ -307,24 +365,10 @@ done:
   rt->chrome_result_ok = ok;
   rt->chrome_result_port = debug_port;
   snprintf(rt->chrome_result_err, sizeof(rt->chrome_result_err), "%s", err);
-  rt->chrome_result_pending = 1;
+  atomic_store(&rt->chrome_result_pending, 1);
   /* Leave chrome_thread_running set until the WSS thread joins us. */
   pthread_mutex_unlock(&rt->lock);
   return NULL;
-}
-
-static void join_chrome_thread_if_done(sa_runtime_t *rt) {
-  if (!rt->chrome_thread_running) {
-    return;
-  }
-  pthread_mutex_lock(&rt->lock);
-  if (!rt->chrome_result_pending) {
-    pthread_mutex_unlock(&rt->lock);
-    return;
-  }
-  pthread_mutex_unlock(&rt->lock);
-  pthread_join(rt->chrome_thread, NULL);
-  rt->chrome_thread_running = 0;
 }
 
 /* Called only from the WSS poll thread — keeps SSL I/O single-threaded. */
@@ -336,18 +380,22 @@ static void flush_chrome_result(sa_runtime_t *rt) {
 
   join_chrome_thread_if_done(rt);
 
+  if (!atomic_load(&rt->chrome_result_pending)) {
+    return;
+  }
   pthread_mutex_lock(&rt->lock);
-  if (!rt->chrome_result_pending) {
+  if (!atomic_load(&rt->chrome_result_pending)) {
     pthread_mutex_unlock(&rt->lock);
     return;
   }
   ok = rt->chrome_result_ok;
   port = rt->chrome_result_port;
   snprintf(err, sizeof(err), "%s", rt->chrome_result_err);
-  rt->chrome_result_pending = 0;
+  atomic_store(&rt->chrome_result_pending, 0);
   pthread_mutex_unlock(&rt->lock);
 
-  if (rt->chrome_job_cancel || rt->stop_requested || !sa_worker_ws_is_connected(rt->ws)) {
+  if (atomic_load(&rt->chrome_job_cancel) || atomic_load(&rt->stop_requested) ||
+      !sa_worker_ws_is_connected(rt->ws)) {
     if (ok && port > 0) {
       sa_chrome_kill_debug_port(port, NULL, 0);
     }
@@ -356,9 +404,19 @@ static void flush_chrome_result(sa_runtime_t *rt) {
 
   if (!ok) {
     char msg[640];
-    snprintf(msg, sizeof(msg), "{\"type\":\"error\",\"message\":\"%s\"}", err[0] ? err : "Chrome start failed");
+    const char *raw = err[0] ? err : "Chrome start failed";
+    snprintf(msg, sizeof(msg), "{\"type\":\"error\",\"message\":\"");
+    append_json_escaped(msg, sizeof(msg), raw);
+    {
+      size_t used = strlen(msg);
+      if (used + 3 < sizeof(msg)) {
+        msg[used++] = '"';
+        msg[used++] = '}';
+        msg[used] = '\0';
+      }
+    }
     sa_worker_ws_send_text(rt->ws, msg);
-    emit_status(rt, SA_CONN_CONNECTED, err[0] ? err : "Chrome start failed");
+    emit_status(rt, SA_CONN_CONNECTED, raw);
     rt->active_run_id[0] = '\0';
     return;
   }
@@ -366,29 +424,36 @@ static void flush_chrome_result(sa_runtime_t *rt) {
   rt->chrome_port = port;
   sa_worker_ws_close_cdp_channels(rt->ws);
   sa_worker_ws_set_chrome_port(rt->ws, port);
-  rt->browser_up = 1;
+  atomic_store(&rt->browser_up, 1);
   sa_worker_ws_send_text(rt->ws, "{\"type\":\"browser.ready\"}");
   snprintf(status, sizeof(status), "Browser ready (CDP %d) — run in progress", port);
   emit_status(rt, SA_CONN_CONNECTED, status);
 }
 
 static void queue_browser_start(sa_runtime_t *rt, const char *json) {
-  if (rt->chrome_thread_running) {
-    /* A start is already in flight; kill it and replace. */
-    rt->chrome_job_cancel = 1;
-    pthread_join(rt->chrome_thread, NULL);
-    rt->chrome_thread_running = 0;
-    rt->chrome_result_pending = 0;
+  if (atomic_load(&rt->chrome_thread_running)) {
+    /* Cancel the in-flight start; reap only if it already finished. */
+    atomic_store(&rt->chrome_job_cancel, 1);
+    sa_chrome_request_cancel();
+    join_chrome_thread_if_done(rt);
+    if (atomic_load(&rt->chrome_thread_running)) {
+      /* Previous start still running — ask the server to cancel/retry. */
+      sa_worker_ws_send_text(
+          rt->ws,
+          "{\"type\":\"error\",\"message\":\"Chrome start already in progress; cancel and retry\"}");
+      return;
+    }
   }
 
-  rt->chrome_job_cancel = 0;
+  atomic_store(&rt->chrome_job_cancel, 0);
+  sa_chrome_clear_cancel();
   snprintf(rt->chrome_start_json, sizeof(rt->chrome_start_json), "%s", json ? json : "");
   sa_worker_ws_send_text(rt->ws, "{\"type\":\"browser.starting\"}");
   emit_status(rt, SA_CONN_CONNECTED, "Starting Chrome…");
 
-  rt->chrome_thread_running = 1;
+  atomic_store(&rt->chrome_thread_running, 1);
   if (pthread_create(&rt->chrome_thread, NULL, chrome_start_worker, rt) != 0) {
-    rt->chrome_thread_running = 0;
+    atomic_store(&rt->chrome_thread_running, 0);
     sa_worker_ws_send_text(
         rt->ws,
         "{\"type\":\"error\",\"message\":\"Failed to start Chrome worker thread\"}");
@@ -398,7 +463,6 @@ static void queue_browser_start(sa_runtime_t *rt, const char *json) {
 
 static void on_ws_text(void *userdata, const char *json) {
   sa_runtime_t *rt = (sa_runtime_t *)userdata;
-  const char *type;
 
   if (json == NULL) {
     return;
@@ -411,30 +475,27 @@ static void on_ws_text(void *userdata, const char *json) {
     stop_browser(rt, 1);
     return;
   }
-  if (strstr(json, "\"type\":\"ping\"") != NULL) {
+  if (strstr(json, "\"type\":\"ping\"") != NULL || strstr(json, "\"type\": \"ping\"") != NULL) {
     sa_worker_ws_send_text(rt->ws, "{\"type\":\"pong\"}");
     return;
   }
-  if (strstr(json, "\"type\":\"hello\"") != NULL) {
+  if (strstr(json, "\"type\":\"hello\"") != NULL || strstr(json, "\"type\": \"hello\"") != NULL) {
     return;
   }
-  type = strstr(json, "\"type\"");
-  (void)type;
 }
 
 static void *runtime_worker(void *arg) {
   sa_runtime_t *rt = (sa_runtime_t *)arg;
   char err[512];
   int backoff_ms = 1000;
-  /* One budget per Connect click: failed connects + post-disconnect retries. */
+  /* Consecutive failures only; reset only after a stable connected dwell. */
   const int max_reconnect_attempts = 10;
   int reconnect_attempts = 0;
+  long long connected_at_ms = 0;
 
-  pthread_mutex_lock(&rt->lock);
-  rt->busy = 1;
-  pthread_mutex_unlock(&rt->lock);
+  atomic_store(&rt->busy, 1);
 
-  while (!rt->stop_requested) {
+  while (!atomic_load(&rt->stop_requested)) {
     emit_status(rt, SA_CONN_CONNECTING, "Connecting to server…");
     err[0] = '\0';
     if (sa_worker_ws_connect(rt->ws, rt->session.server_url, rt->session.worker_token, err, sizeof(err)) != 0) {
@@ -444,7 +505,7 @@ static void *runtime_worker(void *arg) {
         snprintf(
             status,
             sizeof(status),
-            "Gave up after %d connect attempts — click Connect to retry%s%s",
+            "Gave up after %d connect attempts — click Reconnect to retry%s%s",
             max_reconnect_attempts,
             err[0] ? ": " : "",
             err[0] ? err : "");
@@ -461,54 +522,46 @@ static void *runtime_worker(void *arg) {
       emit_status(rt, SA_CONN_ERROR, status);
       {
         int waited = 0;
-        while (!rt->stop_requested && waited < backoff_ms) {
-#ifdef _WIN32
-          Sleep(200);
-#else
-          usleep(200 * 1000);
-#endif
+        int delay = backoff_ms > 15000 ? 15000 : backoff_ms;
+        while (!atomic_load(&rt->stop_requested) && waited < delay) {
+          sa_sleep_ms(200);
           waited += 200;
         }
       }
       if (backoff_ms < 15000) {
-        backoff_ms *= 2;
+        int next = backoff_ms * 2;
+        backoff_ms = next > 15000 ? 15000 : next;
       }
       continue;
     }
 
     backoff_ms = 1000;
-    pthread_mutex_lock(&rt->lock);
-    rt->connected = 1;
-    pthread_mutex_unlock(&rt->lock);
+    connected_at_ms = sa_monotonic_ms();
+    atomic_store(&rt->connected, 1);
 
     sa_worker_ws_send_text(rt->ws, "{\"type\":\"hello\"}");
     send_profiles(rt);
     emit_status(rt, SA_CONN_CONNECTED, "Connected — waiting for runs");
 
-    while (!rt->stop_requested && sa_worker_ws_is_connected(rt->ws)) {
+    while (!atomic_load(&rt->stop_requested) && sa_worker_ws_is_connected(rt->ws)) {
       if (sa_worker_ws_poll(rt->ws, on_ws_text, rt, 250) != 0) {
         break;
       }
       flush_chrome_result(rt);
+      /* Reset consecutive failures only after a stable session. */
+      if (reconnect_attempts > 0 &&
+          (sa_monotonic_ms() - connected_at_ms) >= SA_RECONNECT_STABLE_MS) {
+        reconnect_attempts = 0;
+      }
     }
 
-    rt->chrome_job_cancel = 1;
-    if (rt->chrome_thread_running) {
-      pthread_join(rt->chrome_thread, NULL);
-      rt->chrome_thread_running = 0;
-    }
-    rt->chrome_result_pending = 0;
-
-    if (rt->browser_up) {
-      sa_chrome_kill_debug_port(rt->chrome_port, NULL, 0);
-      rt->browser_up = 0;
-    }
+    reap_chrome_after_cancel(rt, SA_CHROME_REAP_WAIT_MS);
+    sa_worker_ws_close_cdp_channels(rt->ws);
     sa_worker_ws_close(rt->ws);
-    pthread_mutex_lock(&rt->lock);
-    rt->connected = 0;
-    pthread_mutex_unlock(&rt->lock);
+    atomic_store(&rt->connected, 0);
+    rt->active_run_id[0] = '\0';
 
-    if (rt->stop_requested) {
+    if (atomic_load(&rt->stop_requested)) {
       break;
     }
 
@@ -518,7 +571,7 @@ static void *runtime_worker(void *arg) {
       snprintf(
           status,
           sizeof(status),
-          "Disconnected repeatedly (%d times) — click Connect to retry",
+          "Disconnected repeatedly (%d times) — click Reconnect to retry",
           max_reconnect_attempts);
       emit_status(rt, SA_CONN_ERROR, status);
       break;
@@ -533,22 +586,16 @@ static void *runtime_worker(void *arg) {
           max_reconnect_attempts);
       emit_status(rt, SA_CONN_CONNECTING, status);
     }
-#ifdef _WIN32
-    Sleep(1000);
-#else
-    sleep(1);
-#endif
+    sa_sleep_ms(1000);
   }
 
-  if (!rt->stop_requested) {
+  if (!atomic_load(&rt->stop_requested)) {
     /* Keep the last ERROR status (gave up reconnecting); only clear when user disconnects. */
   } else {
     emit_status(rt, SA_CONN_IDLE, "Disconnected");
   }
-  pthread_mutex_lock(&rt->lock);
-  rt->busy = 0;
-  rt->thread_running = 0;
-  pthread_mutex_unlock(&rt->lock);
+  atomic_store(&rt->busy, 0);
+  atomic_store(&rt->thread_running, 0);
   return NULL;
 }
 
@@ -561,6 +608,14 @@ sa_runtime_t *sa_runtime_create(sa_status_cb cb, void *userdata) {
   rt->userdata = userdata;
   rt->chrome_port = SA_DEFAULT_CHROME_PORT;
   pthread_mutex_init(&rt->lock, NULL);
+  atomic_init(&rt->thread_running, 0);
+  atomic_init(&rt->stop_requested, 0);
+  atomic_init(&rt->connected, 0);
+  atomic_init(&rt->busy, 0);
+  atomic_init(&rt->browser_up, 0);
+  atomic_init(&rt->chrome_thread_running, 0);
+  atomic_init(&rt->chrome_job_cancel, 0);
+  atomic_init(&rt->chrome_result_pending, 0);
   rt->ws = sa_worker_ws_create();
   if (rt->ws == NULL) {
     free(rt);
@@ -575,7 +630,7 @@ void sa_runtime_destroy(sa_runtime_t *rt) {
     return;
   }
   sa_runtime_disconnect(rt);
-  if (rt->thread_running) {
+  if (atomic_load(&rt->thread_running)) {
     pthread_join(rt->thread, NULL);
   }
   sa_worker_ws_destroy(rt->ws);
@@ -587,19 +642,14 @@ void sa_runtime_connect(sa_runtime_t *rt, const sa_worker_session_t *session) {
   if (rt == NULL || session == NULL) {
     return;
   }
-  pthread_mutex_lock(&rt->lock);
-  if (rt->thread_running) {
-    pthread_mutex_unlock(&rt->lock);
+  if (atomic_load(&rt->thread_running)) {
     return;
   }
   rt->session = *session;
-  rt->stop_requested = 0;
-  rt->thread_running = 1;
-  pthread_mutex_unlock(&rt->lock);
+  atomic_store(&rt->stop_requested, 0);
+  atomic_store(&rt->thread_running, 1);
   if (pthread_create(&rt->thread, NULL, runtime_worker, rt) != 0) {
-    pthread_mutex_lock(&rt->lock);
-    rt->thread_running = 0;
-    pthread_mutex_unlock(&rt->lock);
+    atomic_store(&rt->thread_running, 0);
     emit_status(rt, SA_CONN_ERROR, "Failed to start worker thread");
   }
 }
@@ -608,40 +658,36 @@ void sa_runtime_disconnect(sa_runtime_t *rt) {
   if (rt == NULL) {
     return;
   }
-  rt->stop_requested = 1;
-  rt->chrome_job_cancel = 1;
-  sa_worker_ws_close(rt->ws);
-  if (rt->thread_running) {
+  atomic_store(&rt->stop_requested, 1);
+  atomic_store(&rt->chrome_job_cancel, 1);
+  sa_chrome_request_cancel();
+  /* Wake the WSS thread without freeing SSL from this thread. */
+  sa_worker_ws_interrupt(rt->ws);
+  if (atomic_load(&rt->thread_running)) {
     pthread_join(rt->thread, NULL);
   }
-  if (rt->chrome_thread_running) {
+  if (atomic_load(&rt->chrome_thread_running)) {
     pthread_join(rt->chrome_thread, NULL);
-    rt->chrome_thread_running = 0;
+    atomic_store(&rt->chrome_thread_running, 0);
   }
-  if (rt->browser_up) {
+  /* Owner thread normally closed the socket; ensure cleanup if it never ran. */
+  sa_worker_ws_close(rt->ws);
+  if (atomic_load(&rt->browser_up)) {
     sa_chrome_kill_debug_port(rt->chrome_port, NULL, 0);
-    rt->browser_up = 0;
+    atomic_store(&rt->browser_up, 0);
   }
 }
 
 int sa_runtime_is_busy(const sa_runtime_t *rt) {
-  int busy = 0;
   if (rt == NULL) {
     return 0;
   }
-  pthread_mutex_lock((pthread_mutex_t *)&rt->lock);
-  busy = rt->busy || rt->thread_running;
-  pthread_mutex_unlock((pthread_mutex_t *)&rt->lock);
-  return busy;
+  return atomic_load(&rt->busy) || atomic_load(&rt->thread_running);
 }
 
 int sa_runtime_is_connected(const sa_runtime_t *rt) {
-  int connected = 0;
   if (rt == NULL) {
     return 0;
   }
-  pthread_mutex_lock((pthread_mutex_t *)&rt->lock);
-  connected = rt->connected;
-  pthread_mutex_unlock((pthread_mutex_t *)&rt->lock);
-  return connected;
+  return atomic_load(&rt->connected);
 }
