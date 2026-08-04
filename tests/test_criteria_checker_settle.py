@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from smart_automator.agent.context import AgentContext, AgentOptions
 from smart_automator.agents.criteria_checker import CriteriaCheckerAgent
@@ -26,6 +26,7 @@ class TestCriteriaCheckerSettle(unittest.TestCase):
             visual_viewport_height=800,
         )
         browser_context.get_state.return_value = browser_state
+        browser_context.get_current_page.return_value = MagicMock()
 
         context = AgentContext(
             task_id="t1",
@@ -34,7 +35,11 @@ class TestCriteriaCheckerSettle(unittest.TestCase):
             options=AgentOptions(),
         )
 
-        message = CriteriaCheckerAgent.build_state_message(context)
+        with patch(
+            "smart_automator.agents.criteria_checker.collect_accessible_names",
+            return_value=[],
+        ):
+            message = CriteriaCheckerAgent.build_state_message(context)
 
         browser_context.get_state.assert_called_once_with(
             show_highlights=False,

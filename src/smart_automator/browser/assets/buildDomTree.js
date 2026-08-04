@@ -790,6 +790,28 @@ window.buildDomTree = (
   }
 
   /**
+   * Whether the element exposes a meaningful accessible identity (role / name).
+   * Used to skip flaky elementFromPoint for a11y-backed UI layers.
+   *
+   * @param {HTMLElement} element
+   * @returns {boolean}
+   */
+  function hasMeaningfulAccessibleIdentity(element) {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) return false;
+    const ariaLabel = (element.getAttribute('aria-label') || '').trim();
+    if (ariaLabel) return true;
+    const ignoredRoles = new Set(['presentation', 'none', 'generic']);
+    const role = (element.getAttribute('role') || '').trim().toLowerCase();
+    if (role && !ignoredRoles.has(role)) return true;
+    // Flutter semantics nodes often carry labels without a standard role.
+    if (element.tagName && element.tagName.toLowerCase() === 'flt-semantics') {
+      const title = (element.getAttribute('title') || '').trim();
+      if (title) return true;
+    }
+    return false;
+  }
+
+  /**
    * Checks if an element is the topmost element at its position.
    *
    * @param {HTMLElement} element - The element to check.
@@ -1392,11 +1414,20 @@ window.buildDomTree = (
     if (node.nodeType === Node.ELEMENT_NODE) {
       nodeData.isVisible = isElementVisible(node); // isElementVisible uses offsetWidth/Height, which is fine
       if (nodeData.isVisible) {
-        nodeData.isTopElement = isTopElement(node);
-
         // Special handling for ARIA menu containers - check interactivity even if not top element
         const role = node.getAttribute('role');
         const isMenuContainer = role === 'menu' || role === 'menubar' || role === 'listbox';
+
+        // Accessible identity (role / aria-label / Flutter semantics): skip flaky
+        // elementFromPoint hit-testing — canvas overlays and overflow layers often
+        // make secondary list/panel nodes fail isTopElement while chrome survives.
+        // Visibility and viewport checks still apply (see isInExpandedViewport below).
+        if (hasMeaningfulAccessibleIdentity(node)) {
+          nodeData.isTopElement =
+            viewportExpansion === -1 || isInExpandedViewport(node, viewportExpansion);
+        } else {
+          nodeData.isTopElement = isTopElement(node);
+        }
 
         if (nodeData.isTopElement || isMenuContainer) {
           nodeData.isInteractive = isInteractiveElement(node);

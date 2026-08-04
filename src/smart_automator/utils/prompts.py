@@ -123,12 +123,20 @@ def build_browser_state_message(
     browser_state: BrowserState,
     *,
     include_action_results: bool = True,
+    max_elements: int | None = None,
+    max_chars: int | None = None,
 ) -> str:
     raw_elements, shown_count, total_count = bounded_clickable_elements_to_string(
         browser_state.element_tree,
         context.options.include_attributes,
-        max_elements=context.options.max_observation_elements,
-        max_chars=context.options.max_observation_chars,
+        max_elements=(
+            max_elements
+            if max_elements is not None
+            else context.options.max_observation_elements
+        ),
+        max_chars=(
+            max_chars if max_chars is not None else context.options.max_observation_chars
+        ),
     )
 
     if raw_elements:

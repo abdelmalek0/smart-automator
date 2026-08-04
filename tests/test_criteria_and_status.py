@@ -273,5 +273,49 @@ class TestReportCriteriaFields(unittest.TestCase):
         self.assertIn("Criteria verdict:", html)
 
 
+class TestApplyCriteriaVerdictPreview(unittest.TestCase):
+    def test_persists_observation_preview(self):
+        from unittest.mock import MagicMock, patch
+
+        from smart_automator.server.runner import _apply_criteria_verdict
+
+        run = RunState(
+            run_id="run-preview",
+            task="Verify page",
+            headless=True,
+            max_steps=5,
+            success_criteria="Banner visible",
+            name="Preview test",
+            user_id="test-user",
+        )
+        executor = MagicMock()
+        executor.context.final_answer = ""
+        executor.context.task = run.task
+
+        long_state = "STATE\n" + ("x" * 5000)
+        with (
+            patch(
+                "smart_automator.server.runner.CriteriaCheckerAgent.build_state_message",
+                return_value=long_state,
+            ),
+            patch(
+                "smart_automator.server.runner.CriteriaCheckerAgent.check",
+                return_value={
+                    "passed": True,
+                    "evidence": "ok",
+                    "reason": "criteria met",
+                },
+            ),
+        ):
+            _apply_criteria_verdict(run, executor, llm=MagicMock())
+
+        self.assertTrue(run.criteria_verdict["passed"])
+        preview = run.criteria_verdict.get("observation_preview", "")
+        self.assertTrue(preview.startswith("STATE"))
+        self.assertLessEqual(len(preview), 4020)
+        self.assertIn("[truncated]", preview)
+        self.assertEqual(run.status, "pass")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -193,13 +193,20 @@ def _apply_criteria_verdict(
 ) -> None:
     context = executor.context
     checker = CriteriaCheckerAgent(llm)
+    state_message = CriteriaCheckerAgent.build_state_message(context)
     verdict = checker.check(
         task=run.task,
         success_criteria=run.success_criteria,
-        state_message=CriteriaCheckerAgent.build_state_message(context),
+        state_message=state_message,
         final_answer=context.final_answer or "",
         test_name=run.name,
     )
+    # Persist a truncated copy of what the grader saw for debugging false fails.
+    preview = state_message.strip()
+    if len(preview) > 4000:
+        preview = preview[:4000] + "\n... [truncated]"
+    if preview:
+        verdict["observation_preview"] = preview
     run.criteria_verdict = verdict
     if verdict.get("passed"):
         summary = (

@@ -4,6 +4,10 @@ import logging
 
 from typing import TYPE_CHECKING
 
+from ..browser.accessible_names import (
+    collect_accessible_names,
+    format_accessible_names_section,
+)
 from ..utils.prompts import build_browser_state_message
 from .base import BaseAgent
 from .output_schemas import validate_criteria_output
@@ -13,6 +17,12 @@ if TYPE_CHECKING:
     from ..agent.context import AgentContext
 
 log = logging.getLogger(__name__)
+
+# Verification budgets — higher than navigator action observation (80 / 12k).
+CRITERIA_MAX_OBSERVATION_ELEMENTS = 200
+CRITERIA_MAX_OBSERVATION_CHARS = 24000
+CRITERIA_MAX_ACCESSIBLE_NAMES = 200
+CRITERIA_MAX_ACCESSIBLE_CHARS = 12000
 
 CRITERIA_CHECKER_SYSTEM_PROMPT = """You are a test criteria evaluator for browser QA automation.
 
@@ -24,6 +34,7 @@ Output ONLY valid JSON:
 Rules:
 - Judge ONLY against the success criteria, not the task instructions alone.
 - Base your judgment on the CURRENT page state shown, not assumptions or memory.
+- Use interactive elements, visible text, AND accessible names as evidence of page content.
 - passed=true only when the success criteria are clearly fulfilled on the current page.
 - passed=false when criteria are unmet, ambiguous, or contradicted by the page.
 - No commentary outside JSON.
@@ -79,6 +90,29 @@ class CriteriaCheckerAgent(BaseAgent):
                 show_highlights=False,
                 wait_for_stable=True,
             )
-            return build_browser_state_message(context, browser_state)
+            message = build_browser_state_message(
+                context,
+                browser_state,
+                include_action_results=False,
+                max_elements=CRITERIA_MAX_OBSERVATION_ELEMENTS,
+                max_chars=CRITERIA_MAX_OBSERVATION_CHARS,
+            )
+            accessible_section = cls._accessible_names_section(context)
+            if accessible_section:
+                message = f"{message.rstrip()}\n\n{accessible_section}"
+            return message
+        except Exception:
+            return ""
+
+    @classmethod
+    def _accessible_names_section(cls, context: "AgentContext") -> str:
+        try:
+            page = context.browser_context.get_current_page()
+            names = collect_accessible_names(
+                page,
+                max_names=CRITERIA_MAX_ACCESSIBLE_NAMES,
+                max_chars=CRITERIA_MAX_ACCESSIBLE_CHARS,
+            )
+            return format_accessible_names_section(names)
         except Exception:
             return ""
