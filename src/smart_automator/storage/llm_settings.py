@@ -261,6 +261,9 @@ class LlmSettingsStore:
         elif runtime_provider(provider) == "google":
             model = os.environ.get("GOOGLE_MODEL", "")
             base_url = default_base_url(provider)
+        elif runtime_provider(provider) == "openrouter":
+            model = os.environ.get("OPENROUTER_MODEL", "")
+            base_url = default_base_url(provider)
         else:
             model = ""
             base_url = default_base_url(provider)

@@ -73,13 +73,17 @@ uv run smart-automator-api
 Active LLM provider and model are set in `.env`:
 
 ```env
-LLM_PROVIDER=groq  # groq, google, ollama, or ollama-cloud
+LLM_PROVIDER=groq  # groq, google, openrouter, ollama, or ollama-cloud
 GROQ_API_KEY=gsk_...
 GROQ_MODEL=llama-3.3-70b-versatile
 
 # Google Gemini
 GOOGLE_API_KEY=
 GOOGLE_MODEL=gemini-2.5-flash
+
+# OpenRouter
+OPENROUTER_API_KEY=
+OPENROUTER_MODEL=deepseek/deepseek-v4-flash-0731
 
 # Ollama (local)
 OLLAMA_BASE_URL=http://localhost:11434

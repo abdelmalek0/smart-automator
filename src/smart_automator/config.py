@@ -26,6 +26,8 @@ class Config(BaseModel):
     ollama_cloud_api_key: str = ""
     google_api_key: str = ""
     google_model: str = "gemini-2.5-flash"
+    openrouter_api_key: str = ""
+    openrouter_model: str = "deepseek/deepseek-v4-flash-0731"
     openai_base_url: str = ""
     active_provider: str = ""
     active_model: str = ""
@@ -118,6 +120,8 @@ def load_config() -> Config:
         ollama_cloud_api_key=os.getenv("OLLAMA_CLOUD_API_KEY", ""),
         google_api_key=os.getenv("GOOGLE_API_KEY", ""),
         google_model=os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"),
+        openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
+        openrouter_model=os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-v4-flash-0731"),
         headless=os.getenv("HEADLESS", "false").lower() == "true",
         home_page_url=os.getenv("HOME_PAGE_URL", "about:blank"),
         viewport_width=int(os.getenv("VIEWPORT_WIDTH", "1280")),

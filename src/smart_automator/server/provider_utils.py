@@ -4,8 +4,8 @@ import os
 
 import httpx
 
-SUPPORTED_PROVIDERS = ("groq", "ollama", "google")
-UI_PROVIDERS = ("groq", "ollama-cloud", "ollama", "google")
+SUPPORTED_PROVIDERS = ("groq", "ollama", "google", "openrouter")
+UI_PROVIDERS = ("groq", "ollama-cloud", "ollama", "google", "openrouter")
 
 _PROVIDER_ALIASES = {
     "ollama-local": "ollama",
@@ -19,12 +19,14 @@ _PROVIDER_ALIASES = {
 _PROVIDER_KEY_ENV = {
     "groq": "GROQ_API_KEY",
     "google": "GOOGLE_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
     "ollama-cloud": "OLLAMA_CLOUD_API_KEY",
 }
 
 _PROVIDER_MODEL_ENV = {
     "groq": "GROQ_MODEL",
     "google": "GOOGLE_MODEL",
+    "openrouter": "OPENROUTER_MODEL",
     "ollama": "OLLAMA_MODEL",
     "ollama-cloud": "OLLAMA_CLOUD_MODEL",
 }
@@ -100,7 +102,7 @@ def normalize_provider(provider: str) -> str:
         return _PROVIDER_ALIASES[key]
     if key in SUPPORTED_PROVIDERS:
         return key
-    if key in ("ollama-cloud", "google"):
+    if key == "ollama-cloud":
         return key
     return "groq"
 
@@ -121,6 +123,8 @@ def default_base_url(provider: str) -> str:
         return "https://api.groq.com/openai/v1"
     if canonical == "google":
         return "https://generativelanguage.googleapis.com/v1beta/openai"
+    if canonical == "openrouter":
+        return "https://openrouter.ai/api/v1"
     if canonical == "ollama":
         return _LOCAL_OLLAMA_DEFAULT_URL
     return _CLOUD_OLLAMA_DEFAULT_URL
@@ -132,6 +136,8 @@ def default_model_for_provider(provider: str) -> str:
         return "llama-3.3-70b-versatile"
     if canonical == "google":
         return "gemini-2.5-flash"
+    if canonical == "openrouter":
+        return "deepseek/deepseek-v4-flash-0731"
     if canonical == "ollama":
         return "llama3.2"
     return "gemma4:31b-cloud"

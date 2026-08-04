@@ -15,15 +15,20 @@ def _chat_completions_url(base_url: str) -> str:
 
 
 class OpenAICompatLLM(BaseLLM):
-    """OpenAI-compatible chat client for Groq, Google Gemini, and similar APIs."""
+    """OpenAI-compatible chat client for Groq, Google Gemini, OpenRouter, and similar APIs."""
 
     def __init__(self, config: Config, *, provider: str | None = None):
         super().__init__()
         selected = (provider or config.llm_provider or "groq").strip().lower()
+        self._provider = selected
         if selected == "google":
             self._api_key = config.google_api_key
             self._model = config.active_model or config.google_model
             base = config.openai_base_url or default_base_url("google")
+        elif selected == "openrouter":
+            self._api_key = config.openrouter_api_key
+            self._model = config.active_model or config.openrouter_model
+            base = config.openai_base_url or default_base_url("openrouter")
         else:
             self._api_key = config.groq_api_key
             self._model = config.active_model or config.groq_model
@@ -60,6 +65,16 @@ class OpenAICompatLLM(BaseLLM):
                 cancel_check=self._check_abort,
             )
 
+    def _headers(self) -> dict[str, str]:
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        if self._provider == "openrouter":
+            headers["HTTP-Referer"] = "https://github.com/smart-automator"
+            headers["X-Title"] = "smart-automator"
+        return headers
+
     def _post(self, messages: list[dict], *, temperature: float, json_mode: bool) -> str:
         self._check_abort()
         payload: dict = {
@@ -72,10 +87,7 @@ class OpenAICompatLLM(BaseLLM):
             payload["response_format"] = {"type": "json_object"}
         response = self._client.post(
             self._base_url,
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=self._headers(),
             json=payload,
         )
         if response.status_code >= 400:

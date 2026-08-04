@@ -219,6 +219,7 @@ export default function SettingsPage() {
                   <SelectItem value="ollama-cloud">Ollama Cloud</SelectItem>
                   <SelectItem value="ollama">Ollama (local)</SelectItem>
                   <SelectItem value="google">Google Gemini</SelectItem>
+                  <SelectItem value="openrouter">OpenRouter</SelectItem>
                   <SelectItem value="groq">Groq</SelectItem>
                 </SelectContent>
               </Select>
@@ -436,6 +437,7 @@ export default function SettingsPage() {
                     <SelectContent>
                       <SelectItem value="groq">groq</SelectItem>
                       <SelectItem value="google">google</SelectItem>
+                      <SelectItem value="openrouter">openrouter</SelectItem>
                       <SelectItem value="ollama-cloud">ollama-cloud</SelectItem>
                       <SelectItem value="ollama">ollama</SelectItem>
                     </SelectContent>

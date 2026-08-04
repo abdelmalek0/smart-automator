@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 
 from smart_automator.config import Config
+from smart_automator.llm.groq import OpenAICompatLLM
 from smart_automator.llm.ollama import OllamaLLM
 from smart_automator.main import create_llm
 from smart_automator.server.config_service import (
@@ -19,10 +20,105 @@ from smart_automator.server.models import ConfigUpdate
 from smart_automator.server.provider_utils import (
     coerce_provider_base_url,
     coerce_provider_model,
+    default_base_url,
+    default_model_for_provider,
     format_llm_connection_error,
     is_ollama_cloud_url,
+    normalize_provider,
+    runtime_provider,
 )
 from smart_automator.storage.llm_settings import LlmSettingsStore
+
+
+class TestOpenRouterProvider(unittest.TestCase):
+    def test_normalize_and_runtime(self):
+        self.assertEqual(normalize_provider("openrouter"), "openrouter")
+        self.assertEqual(runtime_provider("openrouter"), "openrouter")
+        self.assertEqual(
+            default_base_url("openrouter"),
+            "https://openrouter.ai/api/v1",
+        )
+        self.assertEqual(
+            default_model_for_provider("openrouter"),
+            "deepseek/deepseek-v4-flash-0731",
+        )
+
+    @patch("smart_automator.server.config_service.LlmSettingsStore")
+    @patch("smart_automator.server.config_service.load_config")
+    @patch("smart_automator.server.config_service.reload_runtime_env")
+    def test_config_for_run_openrouter(
+        self,
+        _reload,
+        load_config_mock,
+        store_mock,
+    ):
+        load_config_mock.return_value = Config(
+            llm_provider="openrouter",
+            openrouter_model="deepseek/deepseek-v4-flash-0731",
+            openrouter_api_key="sk-or-test",
+        )
+        catalog = MagicMock()
+        catalog.base_url = "https://openrouter.ai/api/v1"
+        catalog.models = ["deepseek/deepseek-v4-flash-0731"]
+        settings = MagicMock()
+        settings.get_provider.return_value = catalog
+        store_mock.return_value.ensure_loaded.return_value = settings
+
+        config = config_for_run()
+
+        self.assertEqual(config.llm_provider, "openrouter")
+        self.assertEqual(config.active_provider, "openrouter")
+        self.assertEqual(config.active_model, "deepseek/deepseek-v4-flash-0731")
+        self.assertEqual(config.openrouter_model, "deepseek/deepseek-v4-flash-0731")
+        self.assertEqual(config.openai_base_url, "https://openrouter.ai/api/v1")
+
+    def test_create_llm_openrouter(self):
+        config = Config(
+            llm_provider="openrouter",
+            openrouter_api_key="sk-or-test",
+            openrouter_model="deepseek/deepseek-v4-flash-0731",
+            openai_base_url="https://openrouter.ai/api/v1",
+            active_model="deepseek/deepseek-v4-flash-0731",
+        )
+        llm = create_llm(config, "openrouter")
+        self.assertIsInstance(llm, OpenAICompatLLM)
+        self.assertEqual(llm.model_name, "deepseek/deepseek-v4-flash-0731")
+        self.assertEqual(llm._provider, "openrouter")
+        headers = llm._headers()
+        self.assertEqual(headers["Authorization"], "Bearer sk-or-test")
+        self.assertEqual(headers["X-Title"], "smart-automator")
+        self.assertIn("HTTP-Referer", headers)
+
+    @patch("smart_automator.server.config_service.LlmSettingsStore")
+    @patch("smart_automator.server.config_service.load_config")
+    @patch("smart_automator.server.config_service.reload_runtime_env")
+    def test_config_for_check_openrouter_api_key(
+        self,
+        _reload,
+        load_config_mock,
+        store_mock,
+    ):
+        load_config_mock.return_value = Config()
+        catalog = MagicMock()
+        catalog.base_url = "https://openrouter.ai/api/v1"
+        catalog.models = ["deepseek/deepseek-v4-flash-0731"]
+        settings = MagicMock()
+        settings.get_provider.return_value = catalog
+        store_mock.return_value.ensure_loaded.return_value = settings
+
+        update = ConfigUpdate(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            model="deepseek/deepseek-v4-flash-0731",
+            api_key="sk-or-form",
+        )
+        config = config_for_check(update)
+
+        self.assertEqual(config.llm_provider, "openrouter")
+        self.assertEqual(config.active_provider, "openrouter")
+        self.assertEqual(config.openrouter_model, "deepseek/deepseek-v4-flash-0731")
+        self.assertEqual(config.openrouter_api_key, "sk-or-form")
+        self.assertEqual(config.openai_base_url, "https://openrouter.ai/api/v1")
 
 
 class TestProviderCoercion(unittest.TestCase):

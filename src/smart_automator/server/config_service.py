@@ -126,6 +126,8 @@ def _active_model(config: Config, ui_provider: str) -> str:
         return config.groq_model
     if canonical == "google":
         return config.google_model
+    if canonical == "openrouter":
+        return config.openrouter_model
     if canonical == "ollama-cloud":
         return config.ollama_cloud_model
     return config.ollama_model
@@ -362,6 +364,9 @@ def config_for_run() -> Config:
     elif runtime == "google":
         config.google_model = config.active_model
         config.openai_base_url = catalog.base_url or default_base_url("google")
+    elif runtime == "openrouter":
+        config.openrouter_model = config.active_model
+        config.openai_base_url = catalog.base_url or default_base_url("openrouter")
     else:
         config.ollama_model = config.active_model
         if ui_provider == "ollama-cloud":
@@ -429,6 +434,8 @@ def config_for_check(update=None) -> Config:
             config.groq_api_key = update.api_key
         elif key_env == "GOOGLE_API_KEY":
             config.google_api_key = update.api_key
+        elif key_env == "OPENROUTER_API_KEY":
+            config.openrouter_api_key = update.api_key
         elif key_env == "OLLAMA_CLOUD_API_KEY":
             config.ollama_cloud_api_key = update.api_key
             config.ollama_api_key = update.api_key
@@ -439,6 +446,9 @@ def config_for_check(update=None) -> Config:
     elif runtime == "google":
         config.google_model = model
         config.openai_base_url = base_url or default_base_url("google")
+    elif runtime == "openrouter":
+        config.openrouter_model = model
+        config.openai_base_url = base_url or default_base_url("openrouter")
     else:
         config.ollama_model = model
         config.ollama_base_url = base_url or default_base_url(ui_provider)

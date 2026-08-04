@@ -1,5 +1,5 @@
 /** Canonical LLM provider ids shared by settings UI. */
-export type LlmProvider = 'groq' | 'ollama-cloud' | 'ollama' | 'google'
+export type LlmProvider = 'groq' | 'ollama-cloud' | 'ollama' | 'google' | 'openrouter'
 
 const PROVIDER_ALIASES: Record<string, LlmProvider> = {
   'ollama-local': 'ollama',
@@ -13,7 +13,13 @@ const PROVIDER_ALIASES: Record<string, LlmProvider> = {
 export function normalizeProvider(provider: string): LlmProvider {
   const key = provider.trim().toLowerCase()
   if (key in PROVIDER_ALIASES) return PROVIDER_ALIASES[key]
-  if (key === 'groq' || key === 'ollama-cloud' || key === 'ollama' || key === 'google') {
+  if (
+    key === 'groq' ||
+    key === 'ollama-cloud' ||
+    key === 'ollama' ||
+    key === 'google' ||
+    key === 'openrouter'
+  ) {
     return key
   }
   return 'groq'
@@ -43,6 +49,7 @@ export function defaultBaseUrl(provider: string): string {
   if (canonical === 'google') {
     return 'https://generativelanguage.googleapis.com/v1beta/openai'
   }
+  if (canonical === 'openrouter') return 'https://openrouter.ai/api/v1'
   if (canonical === 'ollama') return 'http://localhost:11434'
   return 'https://ollama.com'
 }
@@ -51,6 +58,7 @@ export function defaultModel(provider: string): string {
   const canonical = normalizeProvider(provider)
   if (canonical === 'groq') return 'llama-3.3-70b-versatile'
   if (canonical === 'google') return 'gemini-2.5-flash'
+  if (canonical === 'openrouter') return 'deepseek/deepseek-v4-flash-0731'
   if (canonical === 'ollama') return 'llama3.2'
   return 'gemma4:31b-cloud'
 }
