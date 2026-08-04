@@ -163,10 +163,78 @@ def test_runner_detaches_proxy_before_playwright_cleanup() -> None:
     runner_src = (
         Path(__file__).resolve().parents[1] / "src/smart_automator/server/runner.py"
     ).read_text(encoding="utf-8")
-    detach = runner_src.index("detach_cdp_proxy")
-    cleanup = runner_src.index("executor.cleanup()")
-    stop = runner_src.index("request_browser_stop(")
+    finally_src = runner_src.rsplit("    finally:", 1)[1]
+    detach = finally_src.index("detach_cdp_proxy")
+    cleanup = finally_src.index("executor.cleanup()")
+    stop = finally_src.index("request_browser_stop(")
+    history = finally_src.index("save_run_history(")
+    report = finally_src.index("_generate_report(")
     assert detach < cleanup < stop
+    assert stop < history < report
+
+
+def test_request_browser_start_waits_for_idle_lease() -> None:
+    """Consecutive start waits until the previous run releases the lease."""
+    import threading
+
+    registry = WorkerRegistry()
+    loop = MagicMock()
+    worker = WorkerConnection(user_id="user-1", websocket=MagicMock(), loop=loop)
+    registry.register(worker)
+    worker.browser_state = "ready"
+    worker.active_run_id = "run-prev"
+    worker.stopped_event.clear()
+
+    def release_then_ready() -> None:
+        time.sleep(0.15)
+        with worker.lease_lock:
+            worker.browser_state = "idle"
+            worker.active_run_id = None
+            worker.stopped_event.set()
+        # Wait until the new start acquires the lease, then signal ready.
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if worker.active_run_id == "run-next" and worker.browser_state == "starting":
+                registry.handle_control_message(worker, {"type": "browser.ready"})
+                return
+            time.sleep(0.01)
+
+    with (
+        patch.object(WorkerRegistry, "_teardown_proxy"),
+        patch.object(workers.CdpProxy, "start", return_value="http://127.0.0.1:9999"),
+        patch.object(WorkerRegistry, "_wait_json_version"),
+    ):
+        threading.Thread(target=release_then_ready, daemon=True).start()
+        url = registry.request_browser_start(
+            "user-1",
+            run_id="run-next",
+            fresh_profile=True,
+            timeout=2.0,
+        )
+        assert url == "http://127.0.0.1:9999"
+        assert worker.active_run_id == "run-next"
+        assert worker.browser_state == "ready"
+
+
+def test_request_browser_start_busy_timeout() -> None:
+    """Deadline expires while another run still holds the lease."""
+    registry = WorkerRegistry()
+    loop = MagicMock()
+    worker = WorkerConnection(user_id="user-1", websocket=MagicMock(), loop=loop)
+    registry.register(worker)
+    worker.browser_state = "ready"
+    worker.active_run_id = "run-prev"
+    worker.stopped_event.clear()
+
+    with pytest.raises(RuntimeError, match="busy with another run"):
+        registry.request_browser_start(
+            "user-1",
+            run_id="run-next",
+            fresh_profile=True,
+            timeout=0.25,
+        )
+    assert worker.active_run_id == "run-prev"
+    assert worker.browser_state == "ready"
 
 
 def test_connect_cdp_eof_does_not_kill_control_wss() -> None:

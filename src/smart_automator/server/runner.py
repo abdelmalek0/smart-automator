@@ -501,6 +501,34 @@ def run_automation(run: RunState) -> None:
             run.finished_at = time.time()
         if executor is not None:
             executor.flush_token_usage()
+        # Drop the CDP mux before Playwright closes sockets so cleanup cannot
+        # flood/kill the worker control WSS. Then stop Chrome only (WSS stays).
+        # Release the lease before history/report so a consecutive run can start.
+        if worker_browser_started:
+            try:
+                worker_registry().detach_cdp_proxy(run.user_id, run_id=run.run_id)
+            except Exception as exc:
+                log.warning("[run:%s] CDP proxy detach failed: %s", run.run_id[:8], exc)
+        if executor is not None:
+            try:
+                executor.cleanup()
+            except Exception:
+                pass
+        elif browser_context is not None:
+            try:
+                browser_context.close()
+            except Exception:
+                pass
+        if worker_browser_started:
+            try:
+                worker_registry().request_browser_stop(
+                    run.user_id,
+                    run_id=run.run_id,
+                    wait=True,
+                    timeout=5.0,
+                )
+            except Exception as exc:
+                log.warning("[run:%s] worker browser stop failed: %s", run.run_id[:8], exc)
         if run.status != "cancelled" and executor is not None:
             try:
                 save_run_history(run.run_id, executor.context.history)
@@ -539,33 +567,6 @@ def run_automation(run: RunState) -> None:
                     )
             _generate_report(run, executor, config)
         run.executor = None
-        # Drop the CDP mux before Playwright closes sockets so cleanup cannot
-        # flood/kill the worker control WSS. Then stop Chrome only (WSS stays).
-        if worker_browser_started:
-            try:
-                worker_registry().detach_cdp_proxy(run.user_id, run_id=run.run_id)
-            except Exception as exc:
-                log.warning("[run:%s] CDP proxy detach failed: %s", run.run_id[:8], exc)
-        if executor is not None:
-            try:
-                executor.cleanup()
-            except Exception:
-                pass
-        elif browser_context is not None:
-            try:
-                browser_context.close()
-            except Exception:
-                pass
-        if worker_browser_started:
-            try:
-                worker_registry().request_browser_stop(
-                    run.user_id,
-                    run_id=run.run_id,
-                    wait=True,
-                    timeout=5.0,
-                )
-            except Exception as exc:
-                log.warning("[run:%s] worker browser stop failed: %s", run.run_id[:8], exc)
         duration = time.time() - run.started_at
         log.info("[run:%s] finished status=%s duration=%.1fs", run.run_id[:8], run.status, duration)
         try:

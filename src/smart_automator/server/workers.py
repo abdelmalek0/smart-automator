@@ -651,37 +651,47 @@ class WorkerRegistry:
             raise RuntimeError("Connect app offline")
 
         deadline = time.monotonic() + timeout
-        with worker.lease_lock:
-            if worker.browser_state not in ("idle",) and worker.active_run_id not in (None, run_id):
+        while True:
+            with worker.lease_lock:
+                busy = (
+                    worker.browser_state not in ("idle",)
+                    and worker.active_run_id not in (None, run_id)
+                )
+                if not busy:
+                    self._teardown_proxy(worker, blocking=True)
+                    worker.error_message = ""
+                    worker.ready_event.clear()
+                    worker.stopped_event.clear()
+                    worker.browser_state = "starting"
+                    worker.active_run_id = run_id
+                    worker.cdp_url = None
+
+                    proxy = CdpProxy(worker)
+                    try:
+                        cdp_url = proxy.start()
+                    except Exception:
+                        worker.browser_state = "idle"
+                        worker.active_run_id = None
+                        raise
+                    worker.cdp_proxy = proxy
+                    worker.cdp_url = cdp_url
+
+                    worker.enqueue_json(
+                        {
+                            "type": "browser.start",
+                            "run_id": run_id,
+                            "fresh_profile": bool(fresh_profile),
+                            "chrome_user_data": chrome_user_data or "",
+                            "chrome_profile_directory": chrome_profile_directory or "",
+                        }
+                    )
+                    break
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 raise RuntimeError("Connect browser is busy with another run")
-
-            self._teardown_proxy(worker, blocking=True)
-            worker.error_message = ""
-            worker.ready_event.clear()
+            worker.stopped_event.wait(timeout=min(1.0, remaining))
             worker.stopped_event.clear()
-            worker.browser_state = "starting"
-            worker.active_run_id = run_id
-            worker.cdp_url = None
-
-            proxy = CdpProxy(worker)
-            try:
-                cdp_url = proxy.start()
-            except Exception:
-                worker.browser_state = "idle"
-                worker.active_run_id = None
-                raise
-            worker.cdp_proxy = proxy
-            worker.cdp_url = cdp_url
-
-            worker.enqueue_json(
-                {
-                    "type": "browser.start",
-                    "run_id": run_id,
-                    "fresh_profile": bool(fresh_profile),
-                    "chrome_user_data": chrome_user_data or "",
-                    "chrome_profile_directory": chrome_profile_directory or "",
-                }
-            )
 
         try:
             while True:
