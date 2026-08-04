@@ -65,14 +65,22 @@ export default function NewRunModal({
     queryFn: listProjects,
   })
 
-  const isRerun = Boolean(initialValues?.source_run_id)
+  const isRerun = Boolean(initialValues)
   const sourceRunId = initialValues?.source_run_id
-  const { data: sourceRun } = useQuery({
+  const { data: sourceRun, isFetched: sourceRunFetched, isError: sourceRunMissing } = useQuery({
     queryKey: ['runs', sourceRunId],
     queryFn: () => getRun(sourceRunId!),
     enabled: Boolean(sourceRunId),
+    retry: false,
   })
-  const canUseAutomatic = Boolean(sourceRunId && sourceRun && canRunUseAutomatic(sourceRun))
+  // Training is always available (new independent training).
+  const canUseTraining = true
+  // Automatic only when a replay source is available (live training or retained orphan replay).
+  const canUseAutomatic = Boolean(
+    sourceRunId &&
+      ((sourceRun && canRunUseAutomatic(sourceRun)) ||
+        (sourceRunMissing && Boolean(initialValues?.use_replay_script))),
+  )
   const selectedProject =
     projectId !== NO_PROJECT ? projectList.find((p) => p.id === projectId) : null
 
@@ -90,18 +98,28 @@ export default function NewRunModal({
     setHeadless(initialValues.headless ?? false)
     setFreshProfile(initialValues.fresh_profile ?? true)
     setMaxSteps(initialValues.max_steps ?? 100)
-    const wantsAutomatic = initialValues.use_replay_script ?? false
-    if (initialValues.source_run_id && sourceRun === undefined) return
-    setUseReplayScript(
-      wantsAutomatic && sourceRun ? canRunUseAutomatic(sourceRun) : false,
-    )
-  }, [initialValues, sourceRun])
+    const wantsAutomatic = Boolean(initialValues.use_replay_script)
+    if (wantsAutomatic && sourceRunId && !sourceRunFetched && !sourceRunMissing) return
+    if (wantsAutomatic && canUseAutomatic) {
+      setUseReplayScript(true)
+    } else if (!canUseAutomatic) {
+      setUseReplayScript(false)
+    } else {
+      setUseReplayScript(false)
+    }
+  }, [initialValues, sourceRun, sourceRunId, sourceRunFetched, sourceRunMissing, canUseAutomatic])
 
   useEffect(() => {
     if (!canUseAutomatic && useReplayScript) {
       setUseReplayScript(false)
     }
   }, [canUseAutomatic, useReplayScript])
+
+  useEffect(() => {
+    if (!canUseTraining && !useReplayScript) {
+      setUseReplayScript(true)
+    }
+  }, [canUseTraining, useReplayScript])
 
 
   async function handleSubmit(e: React.FormEvent) {
@@ -113,7 +131,7 @@ export default function NewRunModal({
       let runProjectId = projectId !== NO_PROJECT ? projectId : undefined
       let websiteTaskId = initialValues?.website_task_id
 
-      const useAutomatic = canUseAutomatic && useReplayScript
+      const useAutomatic = Boolean(canUseAutomatic && useReplayScript && sourceRunId)
 
       const payload = {
         name: name.trim() || undefined,
@@ -125,10 +143,10 @@ export default function NewRunModal({
         fresh_profile: freshProfile,
         website_id: runProjectId,
         ...(websiteTaskId ? { website_task_id: websiteTaskId } : {}),
-        ...(sourceRunId
+        ...(useAutomatic
           ? {
               source_run_id: sourceRunId,
-              use_replay_script: useAutomatic,
+              use_replay_script: true,
             }
           : { use_replay_script: false }),
       }
@@ -176,20 +194,32 @@ export default function NewRunModal({
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-xl max-h-[90vh] flex flex-col gap-0 p-0 overflow-hidden">
         <DialogHeader className="flex-shrink-0 px-6 pt-6 pb-4 border-b border-border">
-          <DialogTitle>{isRerun ? 'Re-run QA Test' : 'New QA Run'}</DialogTitle>
+          <DialogTitle>
+            {isRerun ? 'Re-run QA Test' : 'New QA Run'}
+          </DialogTitle>
           <DialogDescription>
             What should the agent do, and how do you know it passed?
           </DialogDescription>
-          {isRerun && initialValues?.source_run_id && (
+          {isRerun && useReplayScript && sourceRunId && (
             <p className="pt-1 text-xs text-muted-foreground">
-              From{' '}
-              <Link
-                to={`/runs/${initialValues.source_run_id}`}
-                className="mono text-primary hover:underline underline-offset-2"
-                onClick={onClose}
-              >
-                {initialValues.source_run_id.slice(0, 8)}
-              </Link>
+              From training{' '}
+              {sourceRun ? (
+                <Link
+                  to={`/runs/${sourceRunId}`}
+                  className="mono text-primary hover:underline underline-offset-2"
+                  onClick={onClose}
+                >
+                  {sourceRunId.slice(0, 8)}
+                </Link>
+              ) : (
+                <span className="mono">{sourceRunId.slice(0, 8)}</span>
+              )}
+              {!sourceRun ? ' (removed from list — replay kept)' : null}
+            </p>
+          )}
+          {isRerun && !useReplayScript && (
+            <p className="pt-1 text-xs text-muted-foreground">
+              Starts a new training run. Training runs are not linked to other trainings.
             </p>
           )}
         </DialogHeader>
@@ -280,12 +310,19 @@ export default function NewRunModal({
               >
                 <button
                   type="button"
-                  onClick={() => setUseReplayScript(false)}
+                  onClick={() => canUseTraining && setUseReplayScript(false)}
+                  disabled={!canUseTraining}
+                  title={
+                    canUseTraining
+                      ? undefined
+                      : 'Training is not available for this run'
+                  }
                   className={cn(
                     'rounded-md px-3 py-2 text-sm transition-colors',
                     !useReplayScript
                       ? 'bg-background text-foreground shadow-sm'
                       : 'text-muted-foreground hover:text-foreground',
+                    !canUseTraining && 'cursor-not-allowed opacity-50',
                   )}
                 >
                   Training
@@ -294,6 +331,11 @@ export default function NewRunModal({
                   type="button"
                   onClick={() => canUseAutomatic && setUseReplayScript(true)}
                   disabled={!canUseAutomatic}
+                  title={
+                    canUseAutomatic
+                      ? undefined
+                      : 'Automatic needs a saved replay from a passed training run'
+                  }
                   className={cn(
                     'rounded-md px-3 py-2 text-sm transition-colors',
                     useReplayScript
@@ -307,10 +349,10 @@ export default function NewRunModal({
               </div>
               <p className="text-xs text-muted-foreground">
                 {useReplayScript
-                  ? 'Runs the saved Playwright steps, then checks criteria.'
+                  ? 'Runs the saved Playwright steps from the training run, then checks criteria.'
                   : canUseAutomatic
-                    ? 'Training run with LLM and element highlights.'
-                    : 'Train this flow first, then re-run to use automatic execution.'}
+                    ? 'New training with LLM and element highlights. Not linked to other training runs.'
+                    : 'Automatic is unavailable until a training run passes and saves a replay.'}
               </p>
             </div>
 

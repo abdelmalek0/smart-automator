@@ -100,3 +100,71 @@ def test_delete_without_purge_leaves_finished_run(client: TestClient) -> None:
     assert get_run("keep-finished-run") is not None
 
     client.delete("/api/runs/keep-finished-run?purge=true")
+
+
+def test_purge_training_retains_replay_when_automatic_dependents_exist(
+    client: TestClient, tmp_path, monkeypatch
+) -> None:
+    replay_dir = tmp_path / "replays"
+    monkeypatch.setattr("smart_automator.server.replay_store.REPLAY_DIR", replay_dir)
+
+    user_id = client.get("/api/auth/me").json()["user"]["id"]
+    training_id = "train-with-dependents"
+    save_run_replay(training_id, [{"index": 1, "action": "wait", "args": {"seconds": 1}}], "# script")
+
+    training = RunState(
+        run_id=training_id,
+        task="Train",
+        headless=True,
+        max_steps=5,
+        success_criteria="ok",
+        user_id=user_id,
+        use_replay_script=False,
+    )
+    training.status = "pass"
+    training.finished_at = time.time()
+    add_run(training)
+    training.persist()
+
+    automatic = RunState(
+        run_id="auto-child",
+        task="Train",
+        headless=True,
+        max_steps=5,
+        success_criteria="ok",
+        user_id=user_id,
+        source_run_id=training_id,
+        use_replay_script=True,
+    )
+    automatic.status = "pass"
+    automatic.finished_at = time.time()
+    add_run(automatic)
+    automatic.persist()
+
+    res = client.delete(f"/api/runs/{training_id}?purge=true")
+    assert res.status_code == 200
+    assert get_run(training_id) is None
+    assert replay_json_path(training_id).is_file()
+
+    # Orphan automatic remains and can start another automatic from retained replay
+    list_res = client.get("/api/runs")
+    ids = {item["run_id"] for item in list_res.json()}
+    assert "auto-child" in ids
+    assert training_id not in ids
+
+    orphan = next(item for item in list_res.json() if item["run_id"] == "auto-child")
+    assert orphan["has_replay_script"] is True
+
+    rerun = client.post(
+        "/api/runs",
+        json={
+            "task": "Train",
+            "success_criteria": "ok",
+            "source_run_id": training_id,
+            "use_replay_script": True,
+            "headless": True,
+            "max_steps": 5,
+        },
+    )
+    assert rerun.status_code == 201
+    assert rerun.json()["source_run_id"] == training_id

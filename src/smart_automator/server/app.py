@@ -144,6 +144,30 @@ def _require_owned_run(user: User, run_id: str) -> RunState:
     return run
 
 
+def _user_has_automatic_dependent(user_id: str, source_run_id: str) -> bool:
+    for run in list_runs_for_user(user_id):
+        if run.use_replay_script and run.source_run_id == source_run_id:
+            return True
+    return False
+
+
+def _user_can_use_source_replay(user_id: str, source_run_id: str) -> bool:
+    """Allow automatic replay when source exists (owned) or orphan dependents remain with replay kept."""
+    if load_run_replay(source_run_id) is None:
+        return False
+    source = get_run_for_user(user_id, source_run_id)
+    if source is not None:
+        return True
+    return _user_has_automatic_dependent(user_id, source_run_id)
+
+
+def _effective_has_replay_script(run: RunState) -> bool:
+    """For automatic runs, report whether the source training's replay is still available."""
+    if run.use_replay_script and run.source_run_id:
+        return has_replay_script(run.source_run_id)
+    return has_replay_script(run.run_id)
+
+
 @app.post("/api/runs", status_code=201)
 async def start_run(req: StartRunRequest, user: User = Depends(get_current_user)):
     run_id = str(uuid.uuid4())
@@ -159,25 +183,19 @@ async def start_run(req: StartRunRequest, user: User = Depends(get_current_user)
                 status_code=400,
                 detail="source_run_id is required when use_replay_script is true",
             )
-        if get_run_for_user(user.id, req.source_run_id) is None:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Source run not found: {req.source_run_id}",
-            )
-        if load_run_replay(req.source_run_id) is None:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Replay script not found for source run {req.source_run_id}",
-            )
-        source_run_id = req.source_run_id
-    elif req.source_run_id:
-        if get_run_for_user(user.id, req.source_run_id) is None:
+        if not _user_can_use_source_replay(user.id, req.source_run_id):
+            if load_run_replay(req.source_run_id) is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Replay script not found for source run {req.source_run_id}",
+                )
             raise HTTPException(
                 status_code=404,
                 detail=f"Source run not found: {req.source_run_id}",
             )
         source_run_id = req.source_run_id
     else:
+        # Training runs are never linked to other runs via source_run_id.
         source_run_id = None
 
     test_name = req.name.strip() if req.name else None
@@ -234,17 +252,17 @@ async def start_run(req: StartRunRequest, user: User = Depends(get_current_user)
     )
     run._loop = asyncio.get_event_loop()
     add_run(run)
-    run.persist(has_replay_script=has_replay_script(run.run_id))
+    run.persist(has_replay_script=_effective_has_replay_script(run))
 
     thread = threading.Thread(target=run_automation, args=(run,), daemon=True)
     thread.start()
-    return run.to_summary(has_replay_script=has_replay_script(run.run_id))
+    return run.to_summary(has_replay_script=_effective_has_replay_script(run))
 
 
 @app.get("/api/runs")
 async def api_list_runs(user: User = Depends(get_current_user)):
     return [
-        run.to_summary(has_replay_script=has_replay_script(run.run_id))
+        run.to_summary(has_replay_script=_effective_has_replay_script(run))
         for run in list_runs_for_user(user.id)
     ]
 
@@ -252,7 +270,7 @@ async def api_list_runs(user: User = Depends(get_current_user)):
 @app.get("/api/runs/{run_id}")
 async def api_get_run(run_id: str, user: User = Depends(get_current_user)):
     run = _require_owned_run(user, run_id)
-    return run.to_dict(has_replay_script=has_replay_script(run_id))
+    return run.to_dict(has_replay_script=_effective_has_replay_script(run))
 
 
 @app.get("/api/runs/{run_id}/report")
@@ -345,9 +363,15 @@ def _cancel_active_run(run: RunState) -> None:
         log.debug("Failed to persist cancelled run %s", run.run_id[:8], exc_info=True)
 
 
-def _purge_run_artifacts(run_id: str, *, report_path: str | None = None) -> None:
+def _purge_run_artifacts(
+    run_id: str,
+    *,
+    report_path: str | None = None,
+    retain_replay: bool = False,
+) -> None:
     delete_run_history(run_id)
-    delete_run_replay(run_id)
+    if not retain_replay:
+        delete_run_replay(run_id)
 
     report_candidates = [REPORT_DIR / f"{run_id}.html"]
     if report_path:
@@ -372,11 +396,26 @@ async def cancel_run(run_id: str, purge: bool = False, user: User = Depends(get_
     run = _require_owned_run(user, run_id)
     if purge:
         report_path = run.report_path
+        source_to_maybe_clean = (
+            run.source_run_id if run.use_replay_script and run.source_run_id else None
+        )
         _cancel_active_run(run)
         _websites(user).clear_last_trained_run_id(run_id)
+        # Delete the run record first, then see if automatic dependents remain.
         delete_run_for_user(user.id, run_id)
-        _purge_run_artifacts(run_id, report_path=report_path)
-        log.info("DELETE /api/runs/%s — purged", run_id[:8])
+        retain_replay = _user_has_automatic_dependent(user.id, run_id)
+        _purge_run_artifacts(run_id, report_path=report_path, retain_replay=retain_replay)
+        if source_to_maybe_clean:
+            source_still_exists = get_run_for_user(user.id, source_to_maybe_clean) is not None
+            if not source_still_exists and not _user_has_automatic_dependent(
+                user.id, source_to_maybe_clean
+            ):
+                delete_run_replay(source_to_maybe_clean)
+        log.info(
+            "DELETE /api/runs/%s — purged%s",
+            run_id[:8],
+            " (replay retained for dependents)" if retain_replay else "",
+        )
         return {"ok": True}
     if run.status not in ("pending", "running", "awaiting_human"):
         return {"ok": True}

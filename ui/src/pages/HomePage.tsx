@@ -1,17 +1,20 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Bot, Play, Sparkles } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { listRuns } from '@/api'
 import { Button } from '@/components/ui/button'
+import RunModeFilterControl from '@/components/RunModeFilterControl'
 import RunThreadList from '@/components/RunThreadList'
 import { useRunModal } from '@/contexts/RunModalContext'
 import { useProjects } from '@/hooks/useProjects'
+import type { RunModeFilter } from '@/lib/run-threads'
 
 export default function HomePage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const { openNewRun } = useRunModal()
   const { projects } = useProjects()
+  const [modeFilter, setModeFilter] = useState<RunModeFilter>('all')
   const projectNames = useMemo(
     () => Object.fromEntries(projects.map((project) => [project.id, project.name])),
     [projects],
@@ -50,11 +53,26 @@ export default function HomePage() {
 
       {hasRuns && (
         <div className="max-w-3xl mx-auto px-8 pb-12">
-          <div className="flex items-center gap-2 mb-4">
-            <Sparkles className="h-4 w-4 text-primary" />
-            <h2 className="text-sm font-semibold">Recent Runs</h2>
+          <div className="flex items-center justify-between gap-3 mb-4">
+            <div className="flex items-center gap-2 min-w-0">
+              <Sparkles className="h-4 w-4 text-primary shrink-0" />
+              <h2 className="text-sm font-semibold">Recent Runs</h2>
+            </div>
+            <RunModeFilterControl
+              value={modeFilter}
+              onChange={setModeFilter}
+              size="md"
+              className="w-[220px] shrink-0"
+            />
           </div>
-          <RunThreadList runs={runs} variant="home" limit={5} projectNames={projectNames} />
+          <RunThreadList
+            runs={runs}
+            variant="home"
+            limit={5}
+            projectNames={projectNames}
+            projects={projects}
+            modeFilter={modeFilter}
+          />
         </div>
       )}
     </div>

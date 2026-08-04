@@ -1,10 +1,23 @@
 import type { RunStatus, RunSummary } from '@/types'
 
+export interface TrainingNode {
+  training: RunSummary
+  automaticRuns: RunSummary[]
+}
+
+export interface TestRunTree {
+  trainings: TrainingNode[]
+  orphanAutomaticRuns: RunSummary[]
+}
+
 export interface RunTestGroup {
   id: string
   taskKey: string
   title: string
+  /** Flat list of all runs in the test (for activity / expand checks). */
   runs: RunSummary[]
+  trainings: TrainingNode[]
+  orphanAutomaticRuns: RunSummary[]
 }
 
 export interface RunThread {
@@ -22,74 +35,96 @@ export const TEST_RUNS_PAGE_SIZE = 10
 
 const ACTIVE_STATUSES: RunStatus[] = ['pending', 'running', 'awaiting_human']
 
-/** Ensure the active run is included when it falls outside the current window. */
-export function minimumVisibleTestRuns(
+function sortRunsNewestFirst(runs: RunSummary[]): RunSummary[] {
+  return [...runs].sort((a, b) => b.started_at - a.started_at)
+}
+
+function isTrainingRun(run: RunSummary): boolean {
+  return !run.use_replay_script
+}
+
+function isAutomaticRun(run: RunSummary): boolean {
+  return Boolean(run.use_replay_script)
+}
+
+/** Group trainings as siblings; nest automatics under their source training; else orphans. */
+export function buildTestRunTree(runs: RunSummary[]): TestRunTree {
+  const trainings = sortRunsNewestFirst(runs.filter(isTrainingRun))
+  const trainingIds = new Set(trainings.map((run) => run.run_id))
+  const automaticBySource = new Map<string, RunSummary[]>()
+  const orphanAutomaticRuns: RunSummary[] = []
+
+  for (const run of sortRunsNewestFirst(runs.filter(isAutomaticRun))) {
+    const sourceId = run.source_run_id
+    if (sourceId && trainingIds.has(sourceId)) {
+      const existing = automaticBySource.get(sourceId) ?? []
+      existing.push(run)
+      automaticBySource.set(sourceId, existing)
+    } else {
+      orphanAutomaticRuns.push(run)
+    }
+  }
+
+  return {
+    trainings: trainings.map((training) => ({
+      training,
+      automaticRuns: automaticBySource.get(training.run_id) ?? [],
+    })),
+    orphanAutomaticRuns,
+  }
+}
+
+export type RunModeFilter = 'all' | 'training' | 'automatic'
+
+export const RUN_MODE_FILTERS: { value: RunModeFilter; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'training', label: 'Training' },
+  { value: 'automatic', label: 'Automatic' },
+]
+
+/** Flat training runs for a test (newest first — already ordered in trainings). */
+export function testTrainingRuns(test: RunTestGroup): RunSummary[] {
+  return test.trainings.map((node) => node.training)
+}
+
+/** Flat automatic runs for a test (attached + orphans), newest first. */
+export function testAutomaticRuns(test: RunTestGroup): RunSummary[] {
+  const attached = test.trainings.flatMap((node) => node.automaticRuns)
+  return sortRunsNewestFirst([...attached, ...test.orphanAutomaticRuns])
+}
+
+/** Ensure the active run is included when it falls outside the current window of a flat list. */
+export function minimumVisibleSectionRuns(
   runs: RunSummary[],
   visibleCount: number,
   activeRunId: string | null,
 ): number {
-  if (!activeRunId) return visibleCount
+  const total = runs.length
+  if (!activeRunId) return Math.min(visibleCount, total)
   const index = runs.findIndex((run) => run.run_id === activeRunId)
-  if (index < 0) return visibleCount
-  return Math.max(visibleCount, index + 1)
+  if (index < 0) return Math.min(visibleCount, total)
+  return Math.min(Math.max(visibleCount, index + 1), total)
 }
 
 export function nextVisibleTestRunCount(current: number, total: number): number {
   return Math.min(current + TEST_RUNS_PAGE_SIZE, total)
 }
 
-function sortRunsNewestFirst(runs: RunSummary[]): RunSummary[] {
-  return [...runs].sort((a, b) => b.started_at - a.started_at)
+/** Whether an automatic run's source training is still present in this test's training list. */
+export function automaticSourceExistsInTest(run: RunSummary, test: RunTestGroup): boolean {
+  if (!run.source_run_id) return false
+  return test.trainings.some((node) => node.training.run_id === run.source_run_id)
 }
 
-function sortRunsOldestFirst(runs: RunSummary[]): RunSummary[] {
-  return [...runs].sort((a, b) => a.started_at - b.started_at)
+function taskGroupId(scopeId: string, taskKey: string): string {
+  return `${scopeId}:task:${encodeURIComponent(taskKey)}`
 }
 
-function resolveRoot(run: RunSummary, byId: Map<string, RunSummary>): RunSummary {
-  const seen = new Set<string>()
-  let current = run
-
-  while (current.source_run_id) {
-    if (seen.has(current.source_run_id)) break
-    seen.add(current.run_id)
-    const parent = byId.get(current.source_run_id)
-    if (!parent) break
-    current = parent
-  }
-
-  return current
+function truncateTitle(taskKey: string): string {
+  return taskKey.length > 36 ? `${taskKey.slice(0, 36)}…` : taskKey
 }
 
-function buildChainThreads(runs: RunSummary[]): RunThread[] {
-  const byId = new Map(runs.map((run) => [run.run_id, run]))
-  const grouped = new Map<string, RunSummary[]>()
-
-  for (const run of runs) {
-    const root = resolveRoot(run, byId)
-    const existing = grouped.get(root.run_id) ?? []
-    if (!existing.some((item) => item.run_id === run.run_id)) {
-      existing.push(run)
-    }
-    grouped.set(root.run_id, existing)
-  }
-
-  return Array.from(grouped.entries()).map(([rootId, threadRuns]) => {
-    const sortedRuns = sortRunsNewestFirst(threadRuns)
-    const root = byId.get(rootId) ?? sortedRuns[sortedRuns.length - 1]
-    return {
-      id: `run:${rootId}`,
-      root,
-      runs: sortedRuns,
-    }
-  })
-}
-
-function taskGroupId(projectId: string, taskKey: string): string {
-  return `project:${projectId}:task:${encodeURIComponent(taskKey)}`
-}
-
-function buildTestGroups(projectId: string, runs: RunSummary[]): RunTestGroup[] {
+function buildTestGroups(scopeId: string, runs: RunSummary[]): RunTestGroup[] {
   const grouped = new Map<string, RunSummary[]>()
 
   for (const run of runs) {
@@ -103,13 +138,15 @@ function buildTestGroups(projectId: string, runs: RunSummary[]): RunTestGroup[] 
 
   return Array.from(grouped.entries())
     .map(([taskKey, testRuns]) => {
+      const tree = buildTestRunTree(testRuns)
       const sorted = sortRunsNewestFirst(testRuns)
-      const title = taskKey.length > 36 ? `${taskKey.slice(0, 36)}…` : taskKey
       return {
-        id: taskGroupId(projectId, taskKey),
+        id: taskGroupId(scopeId, taskKey),
         taskKey,
-        title,
+        title: truncateTitle(taskKey),
         runs: sorted,
+        trainings: tree.trainings,
+        orphanAutomaticRuns: tree.orphanAutomaticRuns,
       }
     })
     .sort((a, b) => latestTestActivity(b) - latestTestActivity(a))
@@ -135,7 +172,7 @@ function buildProjectThreads(runs: RunSummary[]): RunThread[] {
       projectId,
       root: latest,
       runs: sortedRuns,
-      testGroups: buildTestGroups(projectId, projectRuns),
+      testGroups: buildTestGroups(`project:${projectId}`, projectRuns),
     }
   })
 }
@@ -143,28 +180,13 @@ function buildProjectThreads(runs: RunSummary[]): RunThread[] {
 function buildUncategorizedThread(runs: RunSummary[]): RunThread | null {
   if (runs.length === 0) return null
 
-  const chains = buildChainThreads(runs)
   const sortedRuns = sortRunsNewestFirst(runs)
-
-  const testGroups: RunTestGroup[] = chains
-    .map((chain) => {
-      const taskKey = chain.root.name || chain.root.task
-      const title = taskKey.length > 36 ? `${taskKey.slice(0, 36)}…` : taskKey
-      return {
-        id: chain.id,
-        taskKey,
-        title,
-        runs: chain.runs,
-      }
-    })
-    .sort((a, b) => latestTestActivity(b) - latestTestActivity(a))
-
   return {
     id: UNCATEGORIZED_THREAD_ID,
     uncategorized: true,
     root: sortedRuns[0],
     runs: sortedRuns,
-    testGroups,
+    testGroups: buildTestGroups(UNCATEGORIZED_THREAD_ID, runs),
   }
 }
 
@@ -247,10 +269,26 @@ export function testHasActiveRun(test: RunTestGroup): boolean {
   return test.runs.some((run) => isActiveRunStatus(run.status))
 }
 
-export function testRunLabel(run: RunSummary, test: RunTestGroup): string {
-  const ordered = sortRunsOldestFirst(test.runs)
+export function runModeLabel(run: RunSummary): 'Training' | 'Automatic' {
+  return run.use_replay_script ? 'Automatic' : 'Training'
+}
+
+/** Oldest-first attempt number within one mode section (training and automatic count separately). */
+export function sectionAttemptLabel(run: RunSummary, sectionRuns: RunSummary[]): string {
+  const ordered = [...sectionRuns].sort((a, b) => a.started_at - b.started_at)
   const index = ordered.findIndex((item) => item.run_id === run.run_id) + 1
-  return `Attempt ${index}`
+  return index > 0 ? `Attempt ${index}` : 'Attempt'
+}
+
+export function formatRunStartedLabel(startedAt: number): string {
+  const date = new Date(startedAt * 1000)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }
 
 export function threadTitle(
@@ -264,12 +302,6 @@ export function threadTitle(
     return projectNames[thread.projectId] ?? 'Project'
   }
   return thread.root.name || thread.root.task
-}
-
-export function threadRunLabel(run: RunSummary, thread: RunThread): string {
-  const ordered = sortRunsOldestFirst(thread.runs)
-  const index = ordered.findIndex((item) => item.run_id === run.run_id) + 1
-  return `Attempt ${index}`
 }
 
 export function threadHasActiveRun(thread: RunThread): boolean {
@@ -307,4 +339,11 @@ export function allThreadExpandIds(threads: RunThread[]): Set<string> {
     }
   }
   return ids
+}
+
+/** Whether any automatic run in the list still depends on this training for replay. */
+export function hasAutomaticDependents(runId: string, runs: RunSummary[]): boolean {
+  return runs.some(
+    (run) => run.use_replay_script && run.source_run_id === runId && run.run_id !== runId,
+  )
 }

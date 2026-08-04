@@ -41,7 +41,7 @@ def test_start_run_includes_new_fields(client: TestClient) -> None:
     assert body["source_run_id"] is None
 
 
-def test_start_run_rejects_missing_source_run(client: TestClient) -> None:
+def test_start_run_strips_source_run_id_for_training(client: TestClient) -> None:
     res = client.post(
         "/api/runs",
         json={
@@ -51,11 +51,12 @@ def test_start_run_rejects_missing_source_run(client: TestClient) -> None:
             "use_replay_script": False,
         },
     )
-    assert res.status_code == 404
-    assert "Source run not found" in res.json()["detail"]
+    assert res.status_code == 201
+    assert res.json()["source_run_id"] is None
+    assert res.json()["use_replay_script"] is False
 
 
-def test_start_run_training_rerun_accepts_lineage(client: TestClient) -> None:
+def test_start_run_training_rerun_strips_lineage(client: TestClient) -> None:
     source_res = client.post(
         "/api/runs",
         json={
@@ -81,7 +82,7 @@ def test_start_run_training_rerun_accepts_lineage(client: TestClient) -> None:
     )
     assert res.status_code == 201
     body = res.json()
-    assert body["source_run_id"] == source_run_id
+    assert body["source_run_id"] is None
     assert body["use_replay_script"] is False
 
 

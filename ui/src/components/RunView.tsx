@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, Globe, Hand, Loader2, RotateCcw } from 'lucide-react'
-import { cancelRun, listProjects, returnControl, takeControl } from '@/api'
+import { cancelRun, listProjects, listRuns, returnControl, takeControl } from '@/api'
 import { useRunStream } from '@/hooks/useRunStream'
 import RunStats from '@/components/RunStats'
 import StepCard from '@/components/StepCard'
@@ -10,7 +10,7 @@ import CompletedStepsPanel from '@/components/CompletedStepsPanel'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { useRunModal } from '@/contexts/RunModalContext'
-import { runSummaryToDraft } from '@/lib/run-draft'
+import { getPrimaryRunAction } from '@/lib/run-draft'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -60,9 +60,17 @@ export default function RunView({ runId, onRunComplete }: Props) {
     queryFn: listProjects,
     staleTime: 60_000,
   })
+  const { data: allRuns = [] } = useQuery({
+    queryKey: ['runs'],
+    queryFn: listRuns,
+    staleTime: 30_000,
+  })
   const projectName = run?.website_id
     ? projects.find((p) => p.id === run.website_id)?.name
     : null
+  const sourceRunExists = Boolean(
+    run?.source_run_id && allRuns.some((item) => item.run_id === run.source_run_id),
+  )
 
   useEffect(() => {
     if (run?.status === 'running' || run?.status === 'awaiting_human') {
@@ -104,6 +112,7 @@ export default function RunView({ runId, onRunComplete }: Props) {
     run?.status === 'pending' ||
     run?.status === 'awaiting_human'
   const isRunning = isActiveRun
+  const primaryAction = run && !isActiveRun ? getPrimaryRunAction(run, projects) : null
   const humanControlling = Boolean(run?.human_controlling)
   const canUseHitl = Boolean(run && !run.headless && isActiveRun && !run.use_replay_script)
   const showReport =
@@ -183,7 +192,7 @@ export default function RunView({ runId, onRunComplete }: Props) {
               <span className="font-medium text-foreground">Criteria:</span> {run.success_criteria}
             </p>
           )}
-          {run?.source_run_id && (
+          {run?.use_replay_script && run.source_run_id && sourceRunExists && (
             <p className="mt-1 text-xs text-muted-foreground">
               From{' '}
               <Link
@@ -193,6 +202,9 @@ export default function RunView({ runId, onRunComplete }: Props) {
                 {run.source_run_id.slice(0, 8)}
               </Link>
             </p>
+          )}
+          {run?.use_replay_script && run.source_run_id && !sourceRunExists && (
+            <p className="mt-1 text-xs text-muted-foreground">Training removed</p>
           )}
           {streamError && run?.status === 'error' && (
             <p className="mt-1 text-xs text-destructive break-words">{streamError}</p>
@@ -264,11 +276,11 @@ export default function RunView({ runId, onRunComplete }: Props) {
               </a>
             </Button>
           )}
-          {run && !isRunning && (
+          {primaryAction && (
             <Button
               variant="outline"
               size="sm"
-              onClick={() => openNewRun(runSummaryToDraft(run, projects))}
+              onClick={() => openNewRun(primaryAction.draft)}
             >
               <RotateCcw className="h-3.5 w-3.5" />
               Re-run

@@ -7,10 +7,12 @@ import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useRunModal } from '@/contexts/RunModalContext'
 import { useAuth } from '@/contexts/AuthContext'
+import RunModeFilterControl from '@/components/RunModeFilterControl'
 import RunThreadList from '@/components/RunThreadList'
 import SidebarNav from '@/components/SidebarNav'
 import { useProjects } from '@/hooks/useProjects'
 import { cn } from '@/lib/utils'
+import type { RunModeFilter } from '@/lib/run-threads'
 
 interface Props {
   runs: RunSummary[]
@@ -20,6 +22,7 @@ interface Props {
 export default function Sidebar({ runs, activeRunId }: Props) {
   const [recentExpanded, setRecentExpanded] = useState(true)
   const [expandAllToken, setExpandAllToken] = useState(0)
+  const [modeFilter, setModeFilter] = useState<RunModeFilter>('all')
   const { openNewRun } = useRunModal()
   const { user, logout } = useAuth()
   const { projects } = useProjects()
@@ -29,7 +32,7 @@ export default function Sidebar({ runs, activeRunId }: Props) {
   )
 
   return (
-    <aside className="w-[260px] flex-shrink-0 bg-card/80 backdrop-blur-sm border-r border-border/60 flex flex-col h-full">
+    <aside className="w-[300px] flex-shrink-0 bg-card/80 backdrop-blur-sm border-r border-border/60 flex flex-col h-full">
       <div className="px-3 py-3 bg-secondary/30">
         <Link
           to="/"
@@ -74,6 +77,12 @@ export default function Sidebar({ runs, activeRunId }: Props) {
         )}
       </button>
 
+      {recentExpanded ? (
+        <div className="px-3 pb-2">
+          <RunModeFilterControl value={modeFilter} onChange={setModeFilter} size="sm" />
+        </div>
+      ) : null}
+
       <ScrollArea className="flex-1 px-1.5">
         <div className="pb-2">
           <RunThreadList
@@ -82,6 +91,7 @@ export default function Sidebar({ runs, activeRunId }: Props) {
             variant="sidebar"
             projectNames={projectNames}
             projects={projects}
+            modeFilter={modeFilter}
             rootsCollapsed={!recentExpanded}
             expandAllToken={expandAllToken}
             onRequestExpandRoots={() => setRecentExpanded(true)}

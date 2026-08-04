@@ -1,7 +1,16 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight, Globe, History, Inbox, MoreHorizontal, RotateCcw, Trash2 } from 'lucide-react'
+import {
+  ChevronDown,
+  ChevronRight,
+  Globe,
+  History,
+  Inbox,
+  MoreHorizontal,
+  RotateCcw,
+  Trash2,
+} from 'lucide-react'
 import { deleteRun } from '@/api'
 import { Button } from '@/components/ui/button'
 import {
@@ -21,27 +30,30 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { useRunModal } from '@/contexts/RunModalContext'
-import { runSummaryToDraft } from '@/lib/run-draft'
+import { getPrimaryRunAction } from '@/lib/run-draft'
 import {
   allThreadExpandIds,
+  automaticSourceExistsInTest,
   buildRunThreads,
   collectAutoExpandIds,
+  hasAutomaticDependents,
   INITIAL_TEST_RUNS_VISIBLE,
-  minimumVisibleTestRuns,
+  minimumVisibleSectionRuns,
   nextVisibleTestRunCount,
+  sectionAttemptLabel,
   sortThreadsForSidebar,
   TEST_RUNS_PAGE_SIZE,
+  testAutomaticRuns,
   testHasActiveRun,
-  testRunLabel,
+  testTrainingRuns,
   threadHasActiveRun,
   threadTitle,
+  type RunModeFilter,
   type RunTestGroup,
   type RunThread,
 } from '@/lib/run-threads'
 import {
   elapsedSeconds,
-  executionModeChipClass,
-  executionModeShortLabel,
   formatElapsed,
   statusLabel,
 } from '@/lib/run-status'
@@ -56,6 +68,7 @@ interface Props {
   emptyMessage?: string
   projectNames?: Record<string, string>
   projects?: Project[]
+  modeFilter?: RunModeFilter
   /** When true, show only top-level project/section headers. */
   rootsCollapsed?: boolean
   onRequestExpandRoots?: () => void
@@ -80,87 +93,26 @@ function StatusDot({ status }: { status: RunStatus }) {
   )
 }
 
-function ModeChip({ useReplayScript, compact = false }: { useReplayScript?: boolean; compact?: boolean }) {
-  return (
-    <span
-      title={useReplayScript ? 'Automatic execution' : 'Training'}
-      className={cn(
-        'inline-flex items-center rounded border font-semibold uppercase tracking-wide flex-shrink-0',
-        compact ? 'px-1 py-0 text-[9px]' : 'px-1.5 py-0.5 text-[10px]',
-        executionModeChipClass(useReplayScript),
-      )}
-    >
-      {executionModeShortLabel(useReplayScript)}
-    </span>
-  )
-}
-
 function MetaSep() {
   return <span className="text-muted-foreground/50 shrink-0">·</span>
-}
-
-interface RunActionsProps {
-  run: RunSummary
-  projects?: Project[]
-  onDelete: (run: RunSummary) => void
-}
-
-function RunActions({ run, projects, onDelete }: RunActionsProps) {
-  const { openNewRun } = useRunModal()
-
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity"
-          onClick={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-          }}
-        >
-          <MoreHorizontal className="h-3.5 w-3.5" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-36">
-        <DropdownMenuItem
-          onClick={(e) => {
-            e.stopPropagation()
-            openNewRun(runSummaryToDraft(run, projects))
-          }}
-        >
-          <RotateCcw className="h-3.5 w-3.5" />
-          Re-run
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          className="text-destructive focus:text-destructive"
-          onClick={(e) => {
-            e.stopPropagation()
-            onDelete(run)
-          }}
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-          Delete
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  )
 }
 
 interface RunRowProps {
   run: RunSummary
   active: boolean
-  nested?: boolean
-  label?: string
+  label: string
   roomy?: boolean
   projects?: Project[]
   onDelete: (run: RunSummary) => void
+  /** Extra muted line under the title (e.g. from training id). */
+  sourceMeta?: string | null
 }
 
-function RunRow({ run, active, nested = false, label, roomy = false, projects, onDelete }: RunRowProps) {
-  const title = label ?? (run.name || run.task)
+function RunRow({ run, active, label, roomy = false, projects, onDelete, sourceMeta }: RunRowProps) {
+  const { openNewRun } = useRunModal()
+  const finished = Boolean(run.finished_at) || !['pending', 'running', 'awaiting_human'].includes(run.status)
+  const primary = finished ? getPrimaryRunAction(run, projects) : null
+  const duration = formatElapsed(elapsedSeconds(run.started_at, run.finished_at))
 
   return (
     <div
@@ -171,31 +123,83 @@ function RunRow({ run, active, nested = false, label, roomy = false, projects, o
     >
       <Link
         to={`/runs/${run.run_id}`}
-        title={`${title} · ${run.step_count} steps`}
-        className={cn('block w-full text-left pr-9', roomy ? 'px-3 py-2.5' : 'px-3 py-2')}
+        title={`${label} · ${statusLabel(run.status)} · ${duration}`}
+        className={cn('block w-full text-left pr-16', roomy ? 'px-3 py-2.5' : 'px-3 py-2')}
       >
         <p
           className={cn(
-            'truncate leading-snug mb-1',
-            nested ? 'text-xs font-medium' : 'text-sm font-medium',
-            active ? 'text-foreground' : 'text-foreground/90',
+            'truncate leading-snug mb-0.5 text-sm font-semibold text-foreground',
+            active && 'text-foreground',
           )}
         >
-          {title}
+          {label}
         </p>
+        {sourceMeta ? (
+          <p className="mb-1 truncate text-[10px] text-muted-foreground/80">{sourceMeta}</p>
+        ) : null}
         <div className="flex items-center gap-1.5 min-w-0 text-[11px] text-muted-foreground">
           <StatusDot status={run.status} />
           <span className="truncate">{statusLabel(run.status)}</span>
           <MetaSep />
-          <ModeChip useReplayScript={run.use_replay_script} compact />
-          <MetaSep />
-          <span className="mono truncate">
-            {formatElapsed(elapsedSeconds(run.started_at, run.finished_at))}
-          </span>
+          <span className="mono truncate">{duration}</span>
         </div>
       </Link>
-      <div className="absolute right-0.5 top-1/2 -translate-y-1/2">
-        <RunActions run={run} projects={projects} onDelete={onDelete} />
+      <div className="absolute right-0.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
+        {primary ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity"
+            title={primary.label}
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              openNewRun(primary.draft)
+            }}
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+          </Button>
+        ) : null}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity"
+              onClick={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+              }}
+            >
+              <MoreHorizontal className="h-3.5 w-3.5" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-44">
+            {primary ? (
+              <DropdownMenuItem
+                onClick={(e) => {
+                  e.stopPropagation()
+                  openNewRun(primary.draft)
+                }}
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                {primary.label}
+              </DropdownMenuItem>
+            ) : null}
+            <DropdownMenuItem
+              className="text-destructive focus:text-destructive"
+              onClick={(e) => {
+                e.stopPropagation()
+                onDelete(run)
+              }}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </div>
   )
@@ -281,6 +285,109 @@ function ThreadHeader({
   )
 }
 
+function ModeSection({
+  mode,
+  label,
+  count,
+  runs,
+  activeRunId,
+  roomy,
+  projects,
+  onDelete,
+  test,
+  emptyMessage,
+}: {
+  mode: 'training' | 'automatic'
+  label: string
+  count: number
+  runs: RunSummary[]
+  activeRunId: string | null
+  roomy?: boolean
+  projects?: Project[]
+  onDelete: (run: RunSummary) => void
+  test: RunTestGroup
+  emptyMessage: string
+}) {
+  const [visibleCount, setVisibleCount] = useState(INITIAL_TEST_RUNS_VISIBLE)
+  const effectiveVisible = minimumVisibleSectionRuns(runs, visibleCount, activeRunId)
+  const visibleRuns = runs.slice(0, effectiveVisible)
+  const remaining = runs.length - effectiveVisible
+  const isExpandedBeyondDefault = visibleCount > INITIAL_TEST_RUNS_VISIBLE
+
+  useEffect(() => {
+    setVisibleCount(INITIAL_TEST_RUNS_VISIBLE)
+  }, [runs.length])
+
+  const accent =
+    mode === 'training'
+      ? 'border-warning/30 bg-warning/5'
+      : 'border-brand-blue/30 bg-brand-blue/5'
+
+  return (
+    <div className={cn('rounded-md border border-l-[3px] py-1.5 px-1 space-y-px', accent)}>
+      <button
+        type="button"
+        onClick={() => {
+          if (isExpandedBeyondDefault) {
+            setVisibleCount(INITIAL_TEST_RUNS_VISIBLE)
+          }
+        }}
+        disabled={!isExpandedBeyondDefault}
+        title={isExpandedBeyondDefault ? 'Show fewer attempts' : undefined}
+        className={cn(
+          'w-full px-2 pb-1 pt-0.5 text-left rounded-sm',
+          isExpandedBeyondDefault
+            ? 'hover:bg-accent/30 cursor-pointer'
+            : 'cursor-default',
+        )}
+      >
+        <span className="text-[10px] font-semibold tracking-widest text-muted-foreground uppercase">
+          {label} ({count})
+        </span>
+      </button>
+      {runs.length === 0 ? (
+        <p className="px-2 py-1.5 text-[11px] text-muted-foreground">{emptyMessage}</p>
+      ) : (
+        <>
+          {visibleRuns.map((run) => {
+            let sourceMeta: string | null = null
+            if (run.use_replay_script && run.source_run_id) {
+              sourceMeta = automaticSourceExistsInTest(run, test)
+                ? `from ${run.source_run_id.slice(0, 8)}`
+                : 'training removed'
+            }
+            return (
+              <RunRow
+                key={run.run_id}
+                run={run}
+                label={sectionAttemptLabel(run, runs)}
+                active={activeRunId === run.run_id}
+                roomy={roomy}
+                projects={projects}
+                onDelete={onDelete}
+                sourceMeta={sourceMeta}
+              />
+            )
+          })}
+          {remaining > 0 ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 w-full justify-start px-2 text-[11px] text-muted-foreground hover:text-foreground"
+              onClick={() =>
+                setVisibleCount(nextVisibleTestRunCount(effectiveVisible, runs.length))
+              }
+            >
+              Show {Math.min(remaining, TEST_RUNS_PAGE_SIZE)} more
+            </Button>
+          ) : null}
+        </>
+      )}
+    </div>
+  )
+}
+
 interface TestGroupBlockProps {
   test: RunTestGroup
   activeRunId: string | null
@@ -289,6 +396,7 @@ interface TestGroupBlockProps {
   onDelete: (run: RunSummary) => void
   roomy?: boolean
   projects?: Project[]
+  modeFilter: RunModeFilter
 }
 
 function TestGroupBlock({
@@ -299,20 +407,17 @@ function TestGroupBlock({
   onDelete,
   roomy = false,
   projects,
+  modeFilter,
 }: TestGroupBlockProps) {
-  const [visibleCount, setVisibleCount] = useState(INITIAL_TEST_RUNS_VISIBLE)
   const containsActive = Boolean(
     activeRunId && test.runs.some((run) => run.run_id === activeRunId),
   )
-  const effectiveVisible = minimumVisibleTestRuns(test.runs, visibleCount, activeRunId)
-  const visibleRuns = test.runs.slice(0, effectiveVisible)
-  const remaining = test.runs.length - effectiveVisible
-
-  useEffect(() => {
-    if (!expanded) {
-      setVisibleCount(INITIAL_TEST_RUNS_VISIBLE)
-    }
-  }, [expanded])
+  const trainingRuns = testTrainingRuns(test)
+  const automaticRuns = testAutomaticRuns(test)
+  const showTraining =
+    modeFilter === 'training' || (modeFilter === 'all' && trainingRuns.length > 0)
+  const showAutomatic =
+    modeFilter === 'automatic' || (modeFilter === 'all' && automaticRuns.length > 0)
 
   return (
     <div className="space-y-px">
@@ -326,31 +431,37 @@ function TestGroupBlock({
         collapseLabel="test"
       />
       <CollapsePanel expanded={expanded}>
-        <div className={cn('space-y-px', CHILD_RAIL)}>
-          {visibleRuns.map((run) => (
-            <RunRow
-              key={run.run_id}
-              run={run}
-              active={activeRunId === run.run_id}
-              nested
-              label={testRunLabel(run, test)}
+        <div className={cn('space-y-2 py-1', CHILD_RAIL)}>
+          {showTraining ? (
+            <ModeSection
+              mode="training"
+              label="Training"
+              count={trainingRuns.length}
+              runs={trainingRuns}
+              activeRunId={activeRunId}
               roomy={roomy}
               projects={projects}
               onDelete={onDelete}
+              test={test}
+              emptyMessage="No training runs yet"
             />
-          ))}
-          {remaining > 0 ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="h-7 w-full justify-start px-2 text-[11px] text-muted-foreground hover:text-foreground"
-              onClick={() =>
-                setVisibleCount(nextVisibleTestRunCount(effectiveVisible, test.runs.length))
-              }
-            >
-              Show {Math.min(remaining, TEST_RUNS_PAGE_SIZE)} more
-            </Button>
+          ) : null}
+          {showAutomatic ? (
+            <ModeSection
+              mode="automatic"
+              label="Automatic"
+              count={automaticRuns.length}
+              runs={automaticRuns}
+              activeRunId={activeRunId}
+              roomy={roomy}
+              projects={projects}
+              onDelete={onDelete}
+              test={test}
+              emptyMessage="No automatic runs yet"
+            />
+          ) : null}
+          {modeFilter === 'all' && trainingRuns.length === 0 && automaticRuns.length === 0 ? (
+            <p className="px-2 py-1.5 text-[11px] text-muted-foreground">No runs yet</p>
           ) : null}
         </div>
       </CollapsePanel>
@@ -369,6 +480,7 @@ interface ProjectThreadBlockProps {
   projectNames: Record<string, string>
   roomy?: boolean
   projects?: Project[]
+  modeFilter: RunModeFilter
 }
 
 function ProjectThreadBlock({
@@ -382,6 +494,7 @@ function ProjectThreadBlock({
   projectNames,
   roomy = false,
   projects,
+  modeFilter,
 }: ProjectThreadBlockProps) {
   const testGroups = thread.testGroups ?? []
   const containsActive = Boolean(
@@ -413,6 +526,7 @@ function ProjectThreadBlock({
               onDelete={onDelete}
               roomy={roomy}
               projects={projects}
+              modeFilter={modeFilter}
             />
           ))}
         </div>
@@ -448,6 +562,7 @@ export default function RunThreadList({
   emptyMessage = 'No runs yet',
   projectNames = {},
   projects = [],
+  modeFilter = 'all',
   rootsCollapsed = false,
   onRequestExpandRoots,
   expandAllToken = 0,
@@ -526,6 +641,7 @@ export default function RunThreadList({
     try {
       await deleteRun(deleteTarget.run_id)
       await queryClient.invalidateQueries({ queryKey: ['runs'] })
+      await queryClient.invalidateQueries({ queryKey: ['projects'] })
       if (location.pathname === `/runs/${deleteTarget.run_id}`) {
         navigate('/')
       }
@@ -536,6 +652,11 @@ export default function RunThreadList({
       setDeleting(false)
     }
   }
+
+  const deleteKeepsDependents =
+    deleteTarget &&
+    !deleteTarget.use_replay_script &&
+    hasAutomaticDependents(deleteTarget.run_id, runs)
 
   if (visibleThreads.length === 0) {
     if (variant === 'sidebar') {
@@ -580,6 +701,7 @@ export default function RunThreadList({
               projectNames={projectNames}
               roomy={roomy}
               projects={projects}
+              modeFilter={modeFilter}
             />
           )
         })}
@@ -590,8 +712,11 @@ export default function RunThreadList({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete this run?</AlertDialogTitle>
             <AlertDialogDescription>
-              This permanently removes the run and its saved history, replay script, and report. Re-runs
-              linked to this run will remain but lose their parent link.
+              {deleteKeepsDependents
+                ? 'This removes the training run from your list. Automatic runs that used this training stay in the list. Their replay script is kept so you can still re-run them.'
+                : deleteTarget?.use_replay_script
+                  ? 'This permanently removes the automatic run and its saved history and report.'
+                  : 'This permanently removes the run and its saved history, replay script (if unused), and report.'}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -613,4 +738,4 @@ export default function RunThreadList({
   )
 }
 
-export { StatusDot, ModeChip }
+export { StatusDot }
