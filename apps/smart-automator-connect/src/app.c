@@ -35,6 +35,7 @@ typedef struct {
 #ifndef _WIN32
   GtkStatusIcon *tray_icon;
   GtkWidget *tray_menu;
+  GtkWidget *tray_logout_item;
 #else
   NOTIFYICONDATAW nid;
   HWND tray_hwnd;
@@ -54,6 +55,7 @@ typedef struct {
 } ui_event_t;
 
 static void do_quit(app_ctx_t *app);
+static void sync_tray_for_session(app_ctx_t *app);
 
 #ifndef _WIN32
 static app_ctx_t *g_signal_app = NULL;
@@ -72,26 +74,50 @@ static void show_window(app_ctx_t *app) {
   if (app == NULL || app->window == NULL) {
     return;
   }
+  /* Clear iconified state so restore from tray is a normal visible window. */
+  gtk_window_deiconify(GTK_WINDOW(app->window));
   gtk_widget_show(app->window);
   gtk_window_present(GTK_WINDOW(app->window));
 }
 
-static void hide_window(app_ctx_t *app) {
+/* Hide to tray: clear minimize bit first so a later Show is not still iconified. */
+static void hide_to_tray(app_ctx_t *app) {
   if (app == NULL || app->window == NULL) {
     return;
   }
+  gtk_window_deiconify(GTK_WINDOW(app->window));
   gtk_widget_hide(app->window);
+}
+
+static int app_is_connected(const app_ctx_t *app) {
+  return app != NULL && app->last_conn_state == SA_CONN_CONNECTED;
+}
+
+static int app_has_session(const app_ctx_t *app) {
+  return app != NULL && sa_worker_session_has_token(&app->session);
 }
 
 static void show_login(app_ctx_t *app) {
   gtk_stack_set_visible_child_name(GTK_STACK(app->stack), "login");
   show_window(app);
+  sync_tray_for_session(app);
 }
 
 static void show_status(app_ctx_t *app) {
   gtk_stack_set_visible_child_name(GTK_STACK(app->stack), "status");
   gtk_label_set_text(GTK_LABEL(app->user_label), app->session.username[0] ? app->session.username : "—");
   gtk_label_set_text(GTK_LABEL(app->server_label), app->session.server_url[0] ? app->session.server_url : "—");
+  sync_tray_for_session(app);
+}
+
+/* Tray "Show window": status page if signed in, login only if no saved token. */
+static void present_from_tray(app_ctx_t *app) {
+  if (app_has_session(app)) {
+    show_status(app);
+    show_window(app);
+  } else {
+    show_login(app);
+  }
 }
 
 static void normalize_server_url(char *url, size_t url_len) {
@@ -159,7 +185,47 @@ static void do_quit(app_ctx_t *app) {
   }
 }
 
+/* Tray icon + Log out only while a worker token is saved (not on the login form). */
+static void sync_tray_for_session(app_ctx_t *app) {
+  int has;
+
+  if (app == NULL || app->quitting) {
+    return;
+  }
+  has = app_has_session(app);
+#ifdef _WIN32
+  if (has) {
+    if (!app->tray_added && app->tray_hwnd != NULL) {
+      if (Shell_NotifyIconW(NIM_ADD, &app->nid)) {
+        app->tray_added = 1;
+      }
+    }
+  } else if (app->tray_added) {
+    Shell_NotifyIconW(NIM_DELETE, &app->nid);
+    app->tray_added = 0;
+  }
+#else
+  if (app->tray_logout_item != NULL) {
+    gtk_widget_set_sensitive(app->tray_logout_item, has);
+    gtk_widget_set_visible(app->tray_logout_item, has);
+  }
+  if (app->tray_icon != NULL) {
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+    gtk_status_icon_set_visible(app->tray_icon, has);
+    G_GNUC_END_IGNORE_DEPRECATIONS
+  }
+#endif
+}
+
 static void do_logout(app_ctx_t *app) {
+  if (app == NULL) {
+    return;
+  }
+  /* No session → already on login; ignore tray/status Log out. */
+  if (!app_has_session(app)) {
+    show_login(app);
+    return;
+  }
   sa_runtime_disconnect(app->runtime);
   sa_worker_session_clear(&app->session);
   sa_worker_session_save(&app->session);
@@ -182,7 +248,7 @@ static gboolean apply_ui_event(gpointer data) {
   }
   /* Auto-hide only on the transition into connected (not every CONNECTED status update). */
   if (event->state == SA_CONN_CONNECTED && prev != SA_CONN_CONNECTED) {
-    hide_window(app);
+    hide_to_tray(app);
   } else if (event->state == SA_CONN_ERROR) {
     show_window(app);
   }
@@ -402,8 +468,40 @@ static gboolean on_delete_event(GtkWidget *widget, GdkEvent *event, gpointer use
   if (app->quitting) {
     return FALSE; /* allow destroy */
   }
-  hide_window(app);
-  return TRUE; /* keep running in tray */
+  /*
+   * X button:
+   *   connected     -> tray (keep running)
+   *   not connected -> quit
+   */
+  if (!app_is_connected(app)) {
+    do_quit(app);
+    return TRUE;
+  }
+  hide_to_tray(app);
+  return TRUE;
+}
+
+/* Title-bar minimize. */
+static gboolean on_window_state_event(GtkWidget *widget, GdkEventWindowState *event, gpointer user_data) {
+  app_ctx_t *app = (app_ctx_t *)user_data;
+  (void)widget;
+  if (app == NULL || app->quitting || app->window == NULL) {
+    return FALSE;
+  }
+  if ((event->changed_mask & GDK_WINDOW_STATE_ICONIFIED) == 0 ||
+      (event->new_window_state & GDK_WINDOW_STATE_ICONIFIED) == 0) {
+    return FALSE;
+  }
+  /*
+   * Minimize:
+   *   connected     -> tray
+   *   not connected -> normal taskbar minimize (do not intercept)
+   */
+  if (!app_is_connected(app)) {
+    return FALSE;
+  }
+  hide_to_tray(app);
+  return TRUE;
 }
 
 static void on_destroy(GtkWidget *widget, gpointer user_data) {
@@ -438,7 +536,7 @@ static void on_destroy(GtkWidget *widget, gpointer user_data) {
 #ifndef _WIN32
 static void on_tray_show(GtkMenuItem *item, gpointer user_data) {
   (void)item;
-  show_window((app_ctx_t *)user_data);
+  present_from_tray((app_ctx_t *)user_data);
 }
 
 static void on_tray_logout(GtkMenuItem *item, gpointer user_data) {
@@ -456,36 +554,39 @@ static void on_tray_popup(GtkStatusIcon *status_icon, guint button, guint activa
   (void)status_icon;
   (void)button;
   (void)activate_time;
+  sync_tray_for_session(app);
   gtk_menu_popup_at_pointer(GTK_MENU(app->tray_menu), NULL);
 }
 
 static void on_tray_activate(GtkStatusIcon *status_icon, gpointer user_data) {
   (void)status_icon;
-  show_window((app_ctx_t *)user_data);
+  present_from_tray((app_ctx_t *)user_data);
 }
 
 static void setup_tray(app_ctx_t *app) {
   GtkWidget *item_show;
-  GtkWidget *item_logout;
   GtkWidget *item_quit;
 
   G_GNUC_BEGIN_IGNORE_DEPRECATIONS
   app->tray_icon = gtk_status_icon_new_from_icon_name("network-transmit-receive");
   gtk_status_icon_set_tooltip_text(app->tray_icon, "Smart Automator Connect");
-  gtk_status_icon_set_visible(app->tray_icon, TRUE);
+  /* Visible only after a saved session — sync_tray_for_session enables it. */
+  gtk_status_icon_set_visible(app->tray_icon, FALSE);
   G_GNUC_END_IGNORE_DEPRECATIONS
 
   app->tray_menu = gtk_menu_new();
   item_show = gtk_menu_item_new_with_label("Show window");
-  item_logout = gtk_menu_item_new_with_label("Log out");
+  app->tray_logout_item = gtk_menu_item_new_with_label("Log out");
   item_quit = gtk_menu_item_new_with_label("Quit");
   g_signal_connect(item_show, "activate", G_CALLBACK(on_tray_show), app);
-  g_signal_connect(item_logout, "activate", G_CALLBACK(on_tray_logout), app);
+  g_signal_connect(app->tray_logout_item, "activate", G_CALLBACK(on_tray_logout), app);
   g_signal_connect(item_quit, "activate", G_CALLBACK(on_tray_quit), app);
   gtk_menu_shell_append(GTK_MENU_SHELL(app->tray_menu), item_show);
-  gtk_menu_shell_append(GTK_MENU_SHELL(app->tray_menu), item_logout);
+  gtk_menu_shell_append(GTK_MENU_SHELL(app->tray_menu), app->tray_logout_item);
   gtk_menu_shell_append(GTK_MENU_SHELL(app->tray_menu), item_quit);
   gtk_widget_show_all(app->tray_menu);
+  gtk_widget_set_sensitive(app->tray_logout_item, FALSE);
+  gtk_widget_set_visible(app->tray_logout_item, FALSE);
 
   G_GNUC_BEGIN_IGNORE_DEPRECATIONS
   g_signal_connect(app->tray_icon, "activate", G_CALLBACK(on_tray_activate), app);
@@ -509,7 +610,9 @@ static void win_show_tray_menu(HWND hwnd) {
   GetCursorPos(&pt);
   menu = CreatePopupMenu();
   AppendMenuW(menu, MF_STRING, SA_TRAY_SHOW, L"Show window");
-  AppendMenuW(menu, MF_STRING, SA_TRAY_LOGOUT, L"Log out");
+  if (g_win_tray_app != NULL && app_has_session(g_win_tray_app)) {
+    AppendMenuW(menu, MF_STRING, SA_TRAY_LOGOUT, L"Log out");
+  }
   AppendMenuW(menu, MF_STRING, SA_TRAY_QUIT, L"Quit");
   SetForegroundWindow(hwnd);
   cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hwnd, NULL);
@@ -518,7 +621,7 @@ static void win_show_tray_menu(HWND hwnd) {
     return;
   }
   if (cmd == SA_TRAY_SHOW) {
-    show_window(g_win_tray_app);
+    present_from_tray(g_win_tray_app);
   } else if (cmd == SA_TRAY_LOGOUT) {
     do_logout(g_win_tray_app);
   } else if (cmd == SA_TRAY_QUIT) {
@@ -530,7 +633,7 @@ static LRESULT CALLBACK tray_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
   app_ctx_t *app = g_win_tray_app;
   if (app != NULL && msg == app->tray_msg_id) {
     if (LOWORD(lParam) == WM_LBUTTONUP) {
-      show_window(app);
+      present_from_tray(app);
     } else if (LOWORD(lParam) == WM_RBUTTONUP) {
       win_show_tray_menu(hwnd);
     }
@@ -566,10 +669,8 @@ static int setup_tray(app_ctx_t *app) {
   icon = LoadIcon(NULL, IDI_APPLICATION);
   app->nid.hIcon = icon;
   wcsncpy(app->nid.szTip, L"Smart Automator Connect", sizeof(app->nid.szTip) / sizeof(wchar_t) - 1);
-  if (!Shell_NotifyIconW(NIM_ADD, &app->nid)) {
-    return -1;
-  }
-  app->tray_added = 1;
+  /* Do not NIM_ADD yet — sync_tray_for_session adds the icon only with a saved token. */
+  app->tray_added = 0;
   return 0;
 }
 #endif
@@ -593,6 +694,7 @@ int sa_app_run(int argc, char **argv) {
   gtk_window_set_title(GTK_WINDOW(app.window), "Smart Automator Connect");
   gtk_window_set_default_size(GTK_WINDOW(app.window), 420, 360);
   g_signal_connect(app.window, "delete-event", G_CALLBACK(on_delete_event), &app);
+  g_signal_connect(app.window, "window-state-event", G_CALLBACK(on_window_state_event), &app);
   g_signal_connect(app.window, "destroy", G_CALLBACK(on_destroy), &app);
   g_signal_connect(app.window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
 
@@ -626,6 +728,7 @@ int sa_app_run(int argc, char **argv) {
     if (apply_server_url_from_config(&app, NULL, 0) == 0) {
       sa_worker_session_save(&app.session);
     }
+    /* Saved token: status page only — never the username/password form. */
     show_status(&app);
     sa_runtime_connect(app.runtime, &app.session);
   } else {
@@ -633,6 +736,12 @@ int sa_app_run(int argc, char **argv) {
   }
 
   gtk_widget_show_all(app.window);
+  /* Re-apply page after show_all (can reset stack child visibility on some GTK builds). */
+  if (sa_worker_session_has_token(&app.session)) {
+    show_status(&app);
+  } else {
+    show_login(&app);
+  }
   /* If we already have a token we will auto-hide once WS connects; keep window
    * visible during login / connecting so errors are visible. */
   gtk_main();

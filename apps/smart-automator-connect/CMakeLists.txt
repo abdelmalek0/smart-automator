@@ -36,6 +36,26 @@ set_target_properties(smart-automator-connect PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
 
+# Windows GUI subsystem: no console/cmd window when launching the .exe.
+# Applies to MSYS2 clang64 / mingw64 (main() kept via crt) and MSVC.
+# Re-run cmake configure after this change (delete build/) — incremental
+# rebuild alone will not rewrite the PE subsystem.
+if(WIN32)
+  set_target_properties(smart-automator-connect PROPERTIES WIN32_EXECUTABLE TRUE)
+  if(MSVC)
+    target_link_options(smart-automator-connect PRIVATE /SUBSYSTEM:WINDOWS)
+  else()
+    # clang64 (lld) and MinGW both honor these; -mwindows alone can be dropped
+    # by a stale cache or a generator that ignores WIN32_EXECUTABLE.
+    target_link_options(
+      smart-automator-connect
+      PRIVATE
+      -mwindows
+      "LINKER:--subsystem,windows"
+    )
+  endif()
+endif()
+
 target_include_directories(smart-automator-connect PRIVATE src ${GTK3_INCLUDE_DIRS})
 
 target_link_libraries(
