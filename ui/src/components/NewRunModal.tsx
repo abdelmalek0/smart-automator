@@ -387,7 +387,7 @@ export default function NewRunModal({
                         onCheckedChange={setFreshProfile}
                       />
                       <Label htmlFor="fresh" className="font-normal">
-                        Isolated profile
+                        Fresh profile
                       </Label>
                     </div>
                   </div>

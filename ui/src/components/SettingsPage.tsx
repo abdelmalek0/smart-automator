@@ -324,7 +324,7 @@ export default function SettingsPage() {
                       value={
                         config.effective_chrome_profile
                         || (config.browser_session_mode === 'ephemeral'
-                          ? 'Ephemeral (discarded after each run)'
+                          ? 'Fresh profile (discarded after each run)'
                           : config.effective_chrome_user_data
                             || '—')
                       }
@@ -378,7 +378,7 @@ export default function SettingsPage() {
               </Select>
               <p className="text-xs text-muted-foreground">
                 {freshProfile
-                  ? 'Disabled while isolated profile is on — each run starts with a blank browser on the Connect machine.'
+                  ? 'Disabled while fresh profile is on — each run starts with a blank browser on the Connect machine.'
                   : !connectOnline
                     ? 'Profiles appear when Connect is online.'
                     : chromeProfiles.length === 0
@@ -399,7 +399,7 @@ export default function SettingsPage() {
                 }}
               />
               <div>
-                <Label htmlFor="fresh-profile" className="font-normal">Isolated Chrome profile</Label>
+                <Label htmlFor="fresh-profile" className="font-normal">Fresh profile</Label>
                 <p className="text-xs text-muted-foreground mt-0.5">
                   Throw away all browser state after each run on the Connect machine — on by default
                 </p>
@@ -509,7 +509,7 @@ export default function SettingsPage() {
                   <InfoRow label="Model" value={config.model} />
                   <InfoRow label="Base URL" value={config.base_url} />
                   <InfoRow label="Connect" value={config.connect_online ? 'Online' : 'Offline'} />
-                  <InfoRow label="Fresh Profile" value={config.fresh_profile ? 'Yes' : 'No'} />
+                  <InfoRow label="Fresh profile" value={config.fresh_profile ? 'Yes' : 'No'} />
                   <InfoRow
                     label="Session Mode"
                     value={sessionModeLabel(config.browser_session_mode)}
@@ -623,7 +623,7 @@ function sessionModeLabel(mode: BrowserSessionMode): string {
     case 'persistent':
       return 'Persistent (on-disk profile)'
     case 'ephemeral':
-      return 'Ephemeral (throwaway per run)'
+      return 'Fresh profile (discarded after each run)'
   }
 }
 

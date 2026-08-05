@@ -87,11 +87,13 @@ class WebsiteTaskUpdateRequest(BaseModel):
     @model_validator(mode="after")
     def _normalize_browser_overrides(self):
         if self.cdp_url is not None:
-            cdp, _fresh = normalize_browser_overrides(
+            cdp, fresh = normalize_browser_overrides(
                 cdp_url=self.cdp_url,
-                fresh_profile=self.fresh_profile if self.fresh_profile is not None else False,
+                fresh_profile=self.fresh_profile if self.fresh_profile is not None else True,
             )
             self.cdp_url = cdp or None
+            if self.fresh_profile is not None:
+                self.fresh_profile = fresh
         return self
 
 
@@ -108,11 +110,13 @@ class ConfigUpdate(BaseModel):
     @model_validator(mode="after")
     def _normalize_browser_overrides(self):
         if self.cdp_url is not None:
-            cdp, _fresh = normalize_browser_overrides(
+            cdp, fresh = normalize_browser_overrides(
                 cdp_url=self.cdp_url,
-                fresh_profile=self.fresh_profile if self.fresh_profile is not None else False,
+                fresh_profile=self.fresh_profile if self.fresh_profile is not None else True,
             )
             self.cdp_url = cdp
+            if self.fresh_profile is not None:
+                self.fresh_profile = fresh
         return self
 
 class PricingEntryModel(BaseModel):

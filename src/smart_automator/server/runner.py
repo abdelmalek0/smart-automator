@@ -388,7 +388,6 @@ def run_automation(run: RunState) -> None:
             config.fresh_profile = normalized_fresh
             config.chrome_user_data = chrome_user_data
             config.chrome_profile_directory = chrome_profile_directory
-            run.cdp_url = normalized_cdp
             run.fresh_profile = normalized_fresh
         elif local_browser_mode_enabled():
             effective_cdp = run.cdp_url or config.cdp_url

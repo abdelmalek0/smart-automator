@@ -172,7 +172,7 @@ def build_config_response(user_id: str | None = None) -> dict:
         effective_chrome_user_data = ""
         mirror_path = None
         if fresh_profile:
-            effective_chrome_profile = "Connect: isolated (fresh) profile"
+            effective_chrome_profile = "Connect: fresh profile"
         elif chrome_user_data:
             profile_name = _chrome_profile_display_name_from_worker(
                 user_id, chrome_user_data, chrome_profile_directory

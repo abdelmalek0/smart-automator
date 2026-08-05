@@ -114,7 +114,6 @@ export default function TestRow({
             <span className="mono">{task.max_steps} steps</span>
             {task.headless && <span>headless</span>}
             {task.fresh_profile !== false && <span>fresh profile</span>}
-            {task.cdp_url && <span className="mono truncate max-w-[12rem]">CDP</span>}
           </div>
         </div>
       </div>

@@ -182,7 +182,6 @@ def _render_run_config(data: dict[str, Any]) -> str:
         ("Website ID", data.get("website_id") or "—"),
         ("Headless", "yes" if data.get("headless") else "no"),
         ("Max steps", data.get("max_steps")),
-        ("CDP URL", data.get("cdp_url") or "—"),
         ("Fresh profile", "yes" if data.get("fresh_profile") else "no"),
         ("Started", _fmt_time(data.get("started_at"))),
         ("Finished", _fmt_time(data.get("finished_at"))),

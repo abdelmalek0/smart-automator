@@ -90,7 +90,7 @@ def normalize_browser_overrides(
 def browser_session_mode(
     *,
     cdp_url: str = "",
-    fresh_profile: bool = False,
+    fresh_profile: bool = True,
 ) -> str:
     if (cdp_url or "").strip():
         return "cdp"

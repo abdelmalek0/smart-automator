@@ -619,7 +619,7 @@ class WorkerRegistry:
         chrome_user_data: str,
         chrome_profile_directory: str,
     ) -> tuple[str, str]:
-        """Return dirs only if they match an advertised worker profile; else app-default."""
+        """Return Connect launch profile dirs from Settings; app-default when both empty."""
         worker = self.get(user_id)
         if worker is None:
             return "", ""
@@ -634,7 +634,12 @@ class WorkerRegistry:
                 return pud, pdir
             if user_data and pud == user_data and profile_dir == pdir:
                 return pud, pdir
-        return "", ""
+        log.warning(
+            "Settings chrome profile %s/%s not in Connect advertised profiles; passing through",
+            user_data or "(empty)",
+            profile_dir or "(empty)",
+        )
+        return user_data, profile_dir
 
     def request_browser_start(
         self,

@@ -310,6 +310,47 @@ def test_connect_tls_verify_and_safe_disconnect() -> None:
     assert "Reconnect" in app
 
 
+def test_resolve_profile_for_start_app_default_when_empty() -> None:
+    registry = WorkerRegistry()
+    loop = MagicMock()
+    worker = WorkerConnection(user_id="user-1", websocket=MagicMock(), loop=loop)
+    worker.profiles = [{"user_data_dir": "/home/user/.config/google-chrome", "profile_directory": "Default"}]
+    registry.register(worker)
+
+    assert registry.resolve_profile_for_start("user-1", chrome_user_data="", chrome_profile_directory="") == (
+        "",
+        "",
+    )
+
+
+def test_resolve_profile_for_start_matches_advertised_profile() -> None:
+    registry = WorkerRegistry()
+    loop = MagicMock()
+    worker = WorkerConnection(user_id="user-1", websocket=MagicMock(), loop=loop)
+    worker.profiles = [{"user_data_dir": "/home/user/.config/google-chrome", "profile_directory": "Profile 1"}]
+    registry.register(worker)
+
+    assert registry.resolve_profile_for_start(
+        "user-1",
+        chrome_user_data="/home/user/.config/google-chrome",
+        chrome_profile_directory="Profile 1",
+    ) == ("/home/user/.config/google-chrome", "Profile 1")
+
+
+def test_resolve_profile_for_start_passes_through_unmatched_settings() -> None:
+    registry = WorkerRegistry()
+    loop = MagicMock()
+    worker = WorkerConnection(user_id="user-1", websocket=MagicMock(), loop=loop)
+    worker.profiles = [{"user_data_dir": "/other/path", "profile_directory": "Default"}]
+    registry.register(worker)
+
+    assert registry.resolve_profile_for_start(
+        "user-1",
+        chrome_user_data="/home/user/.config/google-chrome",
+        chrome_profile_directory="Profile 2",
+    ) == ("/home/user/.config/google-chrome", "Profile 2")
+
+
 def test_win32_deadline_send_preserves_nonblock_intent() -> None:
     from pathlib import Path
 

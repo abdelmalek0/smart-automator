@@ -10,8 +10,7 @@ function baseDraft(run: RunSummary): RunDraft {
     website_task_id: run.website_task_id ?? undefined,
     headless: run.headless ?? false,
     max_steps: run.max_steps ?? 100,
-    cdp_url: run.cdp_url ?? undefined,
-    fresh_profile: run.cdp_url?.trim() ? false : (run.fresh_profile ?? true),
+    fresh_profile: run.fresh_profile ?? true,
   }
 }
 

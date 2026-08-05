@@ -42,6 +42,37 @@ describe('toTrainingDraft', () => {
     expect(draft.source_run_id).toBeUndefined()
     expect(draft.use_replay_script).toBe(false)
   })
+
+  it('preserves fresh_profile even when Connect tunnel cdp_url is set', () => {
+    const draft = toTrainingDraft(
+      mockRun({
+        run_id: 't1',
+        status: 'fail',
+        fresh_profile: true,
+        cdp_url: 'ws://127.0.0.1:18800/cdp/proxy/abc',
+      }),
+    )
+    expect(draft.fresh_profile).toBe(true)
+    expect(draft.cdp_url).toBeUndefined()
+  })
+
+  it('preserves fresh_profile false when prior run used a persistent profile', () => {
+    const draft = toTrainingDraft(
+      mockRun({
+        run_id: 't1',
+        status: 'fail',
+        fresh_profile: false,
+        cdp_url: 'ws://127.0.0.1:18800/cdp/proxy/abc',
+      }),
+    )
+    expect(draft.fresh_profile).toBe(false)
+    expect(draft.cdp_url).toBeUndefined()
+  })
+
+  it('defaults fresh_profile to true when missing', () => {
+    const draft = toTrainingDraft(mockRun({ run_id: 't1', status: 'fail' }))
+    expect(draft.fresh_profile).toBe(true)
+  })
 })
 
 describe('toAutomaticDraft', () => {

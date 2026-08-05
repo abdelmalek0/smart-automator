@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import {
   ChevronDown,
   ChevronUp,
@@ -6,7 +7,7 @@ import {
   Plus,
   Trash2,
 } from 'lucide-react'
-import { getRunReplay, updateRunReplay } from '@/api'
+import { getConfig, getRunReplay, updateRunReplay } from '@/api'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -111,6 +112,11 @@ export default function TestEditorDialog({
   onSaveTask,
 }: Props) {
   const isCreate = mode === 'create' || !task
+  const { data: config } = useQuery({
+    queryKey: ['config'],
+    queryFn: getConfig,
+    enabled: open && isCreate,
+  })
   const [name, setName] = useState('')
   const [prompt, setPrompt] = useState('')
   const [criteria, setCriteria] = useState('')
@@ -145,11 +151,11 @@ export default function TestEditorDialog({
       setCriteria('')
       setMaxSteps(100)
       setHeadless(false)
-      setFreshProfile(true)
+      setFreshProfile(config?.fresh_profile ?? true)
       setSteps([])
       setStepsError(null)
     }
-  }, [open, task, isCreate])
+  }, [open, task, isCreate, config?.fresh_profile])
 
   useEffect(() => {
     if (!open || !trainedRunId || isCreate) {

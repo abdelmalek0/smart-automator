@@ -21,7 +21,6 @@ export function buildStartRunPayload(
     success_criteria: task.success_criteria,
     headless: task.headless,
     max_steps: task.max_steps,
-    cdp_url: task.cdp_url,
     fresh_profile: task.fresh_profile ?? true,
     website_id: project.id,
     website_task_id: task.id,
