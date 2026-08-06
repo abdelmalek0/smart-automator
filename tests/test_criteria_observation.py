@@ -57,8 +57,8 @@ class TestAccessibleNamesSection(unittest.TestCase):
 
 class TestCriteriaObservationBudgets(unittest.TestCase):
     def test_verification_budgets_exceed_navigator_defaults(self):
-        self.assertGreater(CRITERIA_MAX_OBSERVATION_ELEMENTS, 80)
-        self.assertGreater(CRITERIA_MAX_OBSERVATION_CHARS, 12000)
+        self.assertGreater(CRITERIA_MAX_OBSERVATION_ELEMENTS, 120)
+        self.assertGreater(CRITERIA_MAX_OBSERVATION_CHARS, 16000)
 
     def test_build_browser_state_message_honors_max_overrides(self):
         children = [_button(i, f"item-{i}") for i in range(120)]
@@ -200,6 +200,9 @@ class TestBuildDomTreeAccessibleBypass(unittest.TestCase):
         self.assertIn("hasMeaningfulAccessibleIdentity(node)", script)
         # Hit-testing skipped for accessible nodes; viewport check retained.
         self.assertIn("isInExpandedViewport(node, viewportExpansion)", script)
+        self.assertIn("indexOffscreenElements", script)
+        self.assertIn("isOffscreenIndexEligible", script)
+        self.assertIn("findActiveBlockingDialog", script)
 
 
 if __name__ == "__main__":

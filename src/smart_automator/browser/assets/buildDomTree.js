@@ -3,6 +3,7 @@ window.buildDomTree = (
     showHighlightElements: true,
     focusHighlightIndex: -1,
     viewportExpansion: 0,
+    indexOffscreenElements: true,
     debugMode: false,
     startId: 0,
     startHighlightIndex: 0,
@@ -16,10 +17,13 @@ window.buildDomTree = (
     startId,
     debugMode,
     doHighlightElements = true,
+    indexOffscreenElements = true,
   } = args;
   // Build highlight geometry only when requested (visible or internal DOM capture).
 
   let highlightIndex = startHighlightIndex; // Reset highlight index
+  let activeBlockingDialog = null;
+  let activeBlockingDialogResolved = false;
 
   // Add caching mechanisms at the top level
   const DOM_CACHE = {
@@ -962,6 +966,71 @@ window.buildDomTree = (
     return false; // No rects were found in the viewport
   }
 
+  /**
+   * Finds the innermost visible in-viewport blocking dialog/modal, if any.
+   * Used to gate off-screen indexing so page-under-modal nodes are not indexed.
+   * @returns {HTMLElement | null}
+   */
+  function findActiveBlockingDialog() {
+    const selector = [
+      '[aria-modal="true"]',
+      '[role="dialog"]',
+      '[role="alertdialog"]',
+      'flt-semantics[aria-modal="true"]',
+      'flt-semantics[role="dialog"]',
+      'flt-semantics[role="alertdialog"]',
+    ].join(', ');
+
+    const expansion = viewportExpansion === -1 ? 0 : viewportExpansion;
+    const candidates = [];
+    for (const el of document.querySelectorAll(selector)) {
+      if (!(el instanceof HTMLElement)) continue;
+      if (!isElementVisible(el)) continue;
+      if (!isInExpandedViewport(el, expansion)) continue;
+      candidates.push(el);
+    }
+    if (!candidates.length) return null;
+
+    // Prefer innermost (deepest) dialog; among ties prefer topmost via hit-test.
+    let best = null;
+    let bestDepth = -1;
+    for (const el of candidates) {
+      let depth = 0;
+      let cur = el.parentElement;
+      while (cur) {
+        depth += 1;
+        cur = cur.parentElement;
+      }
+      const topmost = viewportExpansion === -1 || isTopElement(el);
+      if (depth > bestDepth || (depth === bestDepth && topmost)) {
+        bestDepth = depth;
+        best = el;
+      }
+    }
+    return best;
+  }
+
+  function getActiveBlockingDialog() {
+    if (!activeBlockingDialogResolved) {
+      activeBlockingDialog = findActiveBlockingDialog();
+      activeBlockingDialogResolved = true;
+    }
+    return activeBlockingDialog;
+  }
+
+  /**
+   * Whether an off-screen interactive may receive a highlight index.
+   * @param {HTMLElement} element
+   * @returns {boolean}
+   */
+  function isOffscreenIndexEligible(element) {
+    if (!indexOffscreenElements) return false;
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) return false;
+    const dialog = getActiveBlockingDialog();
+    if (!dialog) return true;
+    return dialog === element || dialog.contains(element);
+  }
+
   // /**
   //  * Gets the effective scroll of an element.
   //  *
@@ -1231,12 +1300,17 @@ window.buildDomTree = (
       // Check viewport status before assigning index and highlighting
       nodeData.isInViewport = isInExpandedViewport(node, viewportExpansion);
 
-      // When viewportExpansion is -1, all interactive elements should get a highlight index
-      // regardless of viewport status
-      if (nodeData.isInViewport || viewportExpansion === -1) {
+      // In-viewport (or expansion -1): always index when interactive.
+      // Off-screen: index only when enabled and actionable (modal gate).
+      const canIndexOffscreen =
+        !nodeData.isInViewport &&
+        viewportExpansion !== -1 &&
+        isOffscreenIndexEligible(node);
+      if (nodeData.isInViewport || viewportExpansion === -1 || canIndexOffscreen) {
         nodeData.highlightIndex = highlightIndex++;
 
-        if (doHighlightElements) {
+        // Only paint overlays for on-screen elements (off-screen paint is useless).
+        if (doHighlightElements && (nodeData.isInViewport || viewportExpansion === -1)) {
           if (focusHighlightIndex >= 0) {
             if (focusHighlightIndex === nodeData.highlightIndex) {
               highlightElement(node, nodeData.highlightIndex, parentIframe);
@@ -1244,8 +1318,8 @@ window.buildDomTree = (
           } else {
             highlightElement(node, nodeData.highlightIndex, parentIframe);
           }
-          return true; // Successfully highlighted
         }
+        return true; // Successfully indexed
       } else {
         // console.log(`Skipping highlight for ${nodeData.tagName} (outside viewport)`);
       }
@@ -1417,6 +1491,7 @@ window.buildDomTree = (
         // Special handling for ARIA menu containers - check interactivity even if not top element
         const role = node.getAttribute('role');
         const isMenuContainer = role === 'menu' || role === 'menubar' || role === 'listbox';
+        const inViewport = isInExpandedViewport(node, viewportExpansion);
 
         // Accessible identity (role / aria-label / Flutter semantics): skip flaky
         // elementFromPoint hit-testing — canvas overlays and overflow layers often
@@ -1424,12 +1499,23 @@ window.buildDomTree = (
         // Visibility and viewport checks still apply (see isInExpandedViewport below).
         if (hasMeaningfulAccessibleIdentity(node)) {
           nodeData.isTopElement =
-            viewportExpansion === -1 || isInExpandedViewport(node, viewportExpansion);
-        } else {
+            viewportExpansion === -1 || inViewport;
+        } else if (inViewport || viewportExpansion === -1) {
+          // Hit-test only for on-screen (or full-page expansion) candidates.
           nodeData.isTopElement = isTopElement(node);
+        } else {
+          // Off-screen: hit-test is meaningless; do not claim topmost.
+          nodeData.isTopElement = false;
         }
 
-        if (nodeData.isTopElement || isMenuContainer) {
+        // Off-screen interactives may still be indexed when enabled + modal-eligible.
+        const considerOffscreen =
+          indexOffscreenElements &&
+          !inViewport &&
+          viewportExpansion !== -1 &&
+          isOffscreenIndexEligible(node);
+
+        if (nodeData.isTopElement || isMenuContainer || considerOffscreen) {
           nodeData.isInteractive = isInteractiveElement(node);
           // Call the dedicated highlighting function
           nodeWasHighlighted = handleHighlighting(nodeData, node, parentIframe, isParentHighlighted);

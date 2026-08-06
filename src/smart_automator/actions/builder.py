@@ -558,6 +558,23 @@ class ActionBuilder:
                 return None
             return selector_map.get(index)
 
+        def optional_scroll_element(args: dict[str, Any], selector_map: dict[int, DOMElementNode]) -> DOMElementNode | None:
+            raw = args.get("index")
+            if raw is None or raw == "":
+                return None
+            try:
+                index = int(raw)
+            except (TypeError, ValueError):
+                return None
+            return selector_map.get(index)
+
+        def _scroll_result_label(region) -> str:
+            if region is None:
+                return "No scrollable region found"
+            if region.kind == "window":
+                return "page"
+            return f"container ({region.tag})"
+
         handlers: dict[str, Callable[[dict[str, Any], dict[int, DOMElementNode]], ActionResult]] = {}
 
         def done(args, _selector_map):
@@ -658,51 +675,98 @@ class ActionBuilder:
 
         def scroll_to_percent(args, selector_map):
             y_percent = int(args.get("yPercent", args.get("percent", 0)))
-            element = optional_element(args.get("index"), selector_map)
-            get_page().scroll_to_percent(y_percent, element)
-            return ActionResult(extracted_content=f"Scrolled to {y_percent}%", include_in_memory=True)
+            element = optional_scroll_element(args, selector_map)
+            region = get_page().scroll_to_percent(y_percent, element)
+            if region is None:
+                return ActionResult(
+                    extracted_content="No scrollable region found",
+                    include_in_memory=True,
+                )
+            label = _scroll_result_label(region)
+            return ActionResult(
+                extracted_content=f"Scrolled {label} to {y_percent}%",
+                include_in_memory=True,
+            )
 
         def scroll_to_top(args, selector_map):
-            element = optional_element(args.get("index"), selector_map)
+            element = optional_scroll_element(args, selector_map)
+            resolved = get_page().resolve_scroll_target(element)
+            if not resolved:
+                return ActionResult(
+                    extracted_content="No scrollable region found",
+                    include_in_memory=True,
+                )
+            region, _handle = resolved
+            if region.at_top:
+                return ActionResult(
+                    extracted_content=f"{_scroll_result_label(region)} already at top",
+                    include_in_memory=True,
+                )
             get_page().scroll_to_percent(0, element)
-            return ActionResult(extracted_content="Scrolled to top", include_in_memory=True)
+            return ActionResult(
+                extracted_content=f"Scrolled {_scroll_result_label(region)} to top",
+                include_in_memory=True,
+            )
 
         def scroll_to_bottom(args, selector_map):
-            element = optional_element(args.get("index"), selector_map)
+            element = optional_scroll_element(args, selector_map)
+            resolved = get_page().resolve_scroll_target(element)
+            if not resolved:
+                return ActionResult(
+                    extracted_content="No scrollable region found",
+                    include_in_memory=True,
+                )
+            region, _handle = resolved
+            if region.at_bottom:
+                return ActionResult(
+                    extracted_content=f"{_scroll_result_label(region)} already at bottom",
+                    include_in_memory=True,
+                )
             get_page().scroll_to_percent(100, element)
-            return ActionResult(extracted_content="Scrolled to bottom", include_in_memory=True)
+            return ActionResult(
+                extracted_content=f"Scrolled {_scroll_result_label(region)} to bottom",
+                include_in_memory=True,
+            )
 
         def previous_page(args, selector_map):
-            element = optional_element(args.get("index"), selector_map)
-            if element:
-                scroll_top, _, scroll_height = get_page().get_element_scroll_info(element)
-                if scroll_top == 0:
-                    return ActionResult(
-                        extracted_content=f"Element {args.get('index')} already at top",
-                        include_in_memory=True,
-                    )
-            else:
-                scroll_y, viewport_h, _ = get_page().get_scroll_info()
-                if scroll_y == 0:
-                    return ActionResult(extracted_content="Page already at top", include_in_memory=True)
+            element = optional_scroll_element(args, selector_map)
+            resolved = get_page().resolve_scroll_target(element)
+            if not resolved:
+                return ActionResult(
+                    extracted_content="No scrollable region found",
+                    include_in_memory=True,
+                )
+            region, _handle = resolved
+            if region.at_top:
+                return ActionResult(
+                    extracted_content=f"{_scroll_result_label(region)} already at top",
+                    include_in_memory=True,
+                )
             get_page().scroll_to_previous_page(element)
-            return ActionResult(extracted_content="Scrolled to previous page", include_in_memory=True)
+            return ActionResult(
+                extracted_content=f"Scrolled {_scroll_result_label(region)} to previous page",
+                include_in_memory=True,
+            )
 
         def next_page(args, selector_map):
-            element = optional_element(args.get("index"), selector_map)
-            if element:
-                scroll_top, client_h, scroll_height = get_page().get_element_scroll_info(element)
-                if scroll_top + client_h >= scroll_height:
-                    return ActionResult(
-                        extracted_content=f"Element {args.get('index')} already at bottom",
-                        include_in_memory=True,
-                    )
-            else:
-                scroll_y, viewport_h, scroll_height = get_page().get_scroll_info()
-                if scroll_y + viewport_h >= scroll_height:
-                    return ActionResult(extracted_content="Page already at bottom", include_in_memory=True)
+            element = optional_scroll_element(args, selector_map)
+            resolved = get_page().resolve_scroll_target(element)
+            if not resolved:
+                return ActionResult(
+                    extracted_content="No scrollable region found",
+                    include_in_memory=True,
+                )
+            region, _handle = resolved
+            if region.at_bottom:
+                return ActionResult(
+                    extracted_content=f"{_scroll_result_label(region)} already at bottom",
+                    include_in_memory=True,
+                )
             get_page().scroll_to_next_page(element)
-            return ActionResult(extracted_content="Scrolled to next page", include_in_memory=True)
+            return ActionResult(
+                extracted_content=f"Scrolled {_scroll_result_label(region)} to next page",
+                include_in_memory=True,
+            )
 
         def scroll_to_text(args, _selector_map):
             text = args["text"]

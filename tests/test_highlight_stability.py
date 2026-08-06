@@ -27,6 +27,17 @@ def _dom_state(
     return DOMState(element_tree=tree, selector_map=selector_map)
 
 
+def _stub_page() -> Page:
+    page = Page.__new__(Page)
+    page._page = MagicMock()
+    page._viewport_expansion = 0
+    page._index_offscreen_elements = True
+    page._remote_cdp = False
+    page._selector_map = {}
+    page._cached_state = None
+    return page
+
+
 class TestActionWillNavigate(unittest.TestCase):
     def test_go_to_url_same_path_skips(self):
         action = Action(name="go_to_url", args={"url": "https://example.com/"})
@@ -43,11 +54,7 @@ class TestActionWillNavigate(unittest.TestCase):
 
 class TestGetDomStateHighlightStability(unittest.TestCase):
     def test_skips_redraw_when_signature_unchanged(self):
-        page = Page.__new__(Page)
-        page._page = MagicMock()
-        page._viewport_expansion = 0
-        page._selector_map = {}
-        page._cached_state = None
+        page = _stub_page()
         dom_state = _dom_state()
         signature = ("https://example.com", "Example", frozenset({"button:/body/button[1]"}))
         page._last_highlight_signature = signature
@@ -69,16 +76,13 @@ class TestGetDomStateHighlightStability(unittest.TestCase):
             show_highlights=True,
             focus_element=-1,
             viewport_expansion=0,
+            index_offscreen_elements=True,
             do_highlight_elements=False,
         )
         remove_highlights.assert_not_called()
 
     def test_redraws_when_branch_hashes_shrink(self):
-        page = Page.__new__(Page)
-        page._page = MagicMock()
-        page._viewport_expansion = 0
-        page._selector_map = {}
-        page._cached_state = None
+        page = _stub_page()
         dom_state = _dom_state()
         page._last_highlight_signature = (
             "https://example.com",
@@ -104,11 +108,7 @@ class TestGetDomStateHighlightStability(unittest.TestCase):
         remove_highlights.assert_called_once_with(page._page)
 
     def test_redraws_when_new_interactive_elements_appear(self):
-        page = Page.__new__(Page)
-        page._page = MagicMock()
-        page._viewport_expansion = 0
-        page._selector_map = {}
-        page._cached_state = None
+        page = _stub_page()
         extra = DOMElementNode(
             tag_name="button",
             xpath="/body/button[2]",
@@ -140,11 +140,7 @@ class TestGetDomStateHighlightStability(unittest.TestCase):
         remove_highlights.assert_called_once_with(page._page)
 
     def test_redraws_when_signature_changed(self):
-        page = Page.__new__(Page)
-        page._page = MagicMock()
-        page._viewport_expansion = 0
-        page._selector_map = {}
-        page._cached_state = None
+        page = _stub_page()
         dom_state = _dom_state()
         page._last_highlight_signature = (
             "https://example.com",
@@ -171,11 +167,7 @@ class TestGetDomStateHighlightStability(unittest.TestCase):
         self.assertEqual(page._last_highlight_signature[1], "Example")
 
     def test_probe_only_snapshot_does_not_remove_highlights(self):
-        page = Page.__new__(Page)
-        page._page = MagicMock()
-        page._viewport_expansion = 0
-        page._selector_map = {}
-        page._cached_state = None
+        page = _stub_page()
         dom_state = _dom_state()
         page._last_highlight_signature = (
             "https://example.com",

@@ -26,6 +26,7 @@ class PageSnapshot:
     tab_ids: tuple[int, ...] = ()
     dom_signature: int = 0
     interactive_count: int = 0
+    scroll_fingerprint: tuple[tuple[str, int], ...] = ()
 
     def page_changed(self, other: PageSnapshot) -> bool:
         return self.url != other.url or self.title != other.title
@@ -37,7 +38,17 @@ class PageSnapshot:
         return self.tab_ids != other.tab_ids
 
     def scroll_changed(self, other: PageSnapshot, *, tolerance: int = 2) -> bool:
-        return abs(self.scroll_y - other.scroll_y) > tolerance
+        if abs(self.scroll_y - other.scroll_y) > tolerance:
+            return True
+        before = dict(self.scroll_fingerprint)
+        after = dict(other.scroll_fingerprint)
+        keys = set(before) | set(after)
+        if not keys:
+            return False
+        for key in keys:
+            if abs(int(before.get(key, 0)) - int(after.get(key, 0))) > tolerance:
+                return True
+        return False
 
 
 @dataclass
@@ -239,7 +250,12 @@ def apply_verification(
         "next_page",
         "scroll_to_text",
     }:
-        if before.scroll_changed(after) or "already" in (result.extracted_content or "").lower():
+        content = (result.extracted_content or "").lower()
+        if (
+            before.scroll_changed(after)
+            or "already" in content
+            or "no scrollable region" in content
+        ):
             result.verification_status = VERIFICATION_VERIFIED
             result.verification_evidence = "scroll position updated or at boundary"
         else:

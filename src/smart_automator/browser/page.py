@@ -19,7 +19,7 @@ from .dom import (
 )
 from .history import is_file_uploader
 from .util import is_url_allowed
-from .views import URLNotAllowedError
+from .views import ScrollRegion, URLNotAllowedError
 
 
 _RELEVANT_RESOURCE_TYPES = frozenset({
@@ -36,6 +36,140 @@ _IGNORED_URL_PATTERNS = (
     "heartbeat", "ping", "alive", "webrtc", "rtmp://", "wss://",
     "cloudfront.net", "fastly.net",
 )
+
+_DISCOVER_SCROLLABLE_CONTAINERS_JS = """(limit) => {
+    const HIGHLIGHT_ID = 'playwright-highlight-container';
+    const isScrollable = (el) => {
+        if (!(el instanceof HTMLElement)) return false;
+        if (el.id === HIGHLIGHT_ID) return false;
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+            return false;
+        }
+        if (el.clientHeight < 40 || el.clientWidth < 40) return false;
+        const overflowAmount = el.scrollHeight - el.clientHeight;
+        if (overflowAmount <= 2) return false;
+        const oy = style.overflowY || style.overflow;
+        return (
+            oy === 'auto' ||
+            oy === 'scroll' ||
+            oy === 'overlay' ||
+            oy === 'hidden'
+        );
+    };
+    const intersectsViewport = (el) => {
+        const rect = el.getBoundingClientRect();
+        const vh = window.innerHeight || document.documentElement.clientHeight;
+        const vw = window.innerWidth || document.documentElement.clientWidth;
+        if (rect.width <= 0 || rect.height <= 0) return false;
+        return rect.bottom > 0 && rect.right > 0 && rect.top < vh && rect.left < vw;
+    };
+    const visibleFraction = (el) => {
+        const rect = el.getBoundingClientRect();
+        const vh = window.innerHeight || document.documentElement.clientHeight;
+        const vw = window.innerWidth || document.documentElement.clientWidth;
+        const visibleH = Math.max(0, Math.min(rect.bottom, vh) - Math.max(rect.top, 0));
+        const visibleW = Math.max(0, Math.min(rect.right, vw) - Math.max(rect.left, 0));
+        const area = Math.max(rect.width * rect.height, 1);
+        return (visibleH * visibleW) / area;
+    };
+    const xpathFor = (el) => {
+        const segments = [];
+        let current = el;
+        while (current && current.nodeType === Node.ELEMENT_NODE) {
+            let index = 1;
+            let sibling = current.previousElementSibling;
+            while (sibling) {
+                if (sibling.tagName === current.tagName) index += 1;
+                sibling = sibling.previousElementSibling;
+            }
+            const tag = current.tagName.toLowerCase();
+            segments.unshift(index > 1 ? `${tag}[${index}]` : tag);
+            current = current.parentElement;
+        }
+        return segments.join('/');
+    };
+
+    const scored = [];
+    for (const el of document.querySelectorAll('*')) {
+        if (!isScrollable(el) || !intersectsViewport(el)) continue;
+        const overflowAmount = el.scrollHeight - el.clientHeight;
+        const score = overflowAmount * visibleFraction(el);
+        scored.push({
+            el,
+            score,
+            scrollTop: el.scrollTop,
+            clientHeight: el.clientHeight,
+            scrollHeight: el.scrollHeight,
+            tag: el.tagName.toLowerCase(),
+            xpath: xpathFor(el),
+        });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    const top = scored.slice(0, Math.max(1, limit || 5));
+    // Prefer outer panes: skip a candidate contained by an already-selected ancestor.
+    const selected = [];
+    for (const item of top) {
+        if (selected.some((s) => s.el.contains(item.el))) {
+            continue;
+        }
+        selected.push(item);
+    }
+    return selected.map((item) => ({
+        key: item.xpath,
+        kind: 'container',
+        tag: item.tag,
+        xpath: item.xpath,
+        scroll_top: Math.round(item.scrollTop),
+        client_height: Math.round(item.clientHeight),
+        scroll_height: Math.round(item.scrollHeight),
+    }));
+}"""
+
+_WINDOW_OVERFLOW_JS = """() => {
+    const scrollHeight = Math.max(
+        document.documentElement?.scrollHeight ?? 0,
+        document.body?.scrollHeight ?? 0,
+    );
+    const viewportHeight = window.visualViewport?.height || window.innerHeight || 0;
+    const scrollY = window.scrollY || document.documentElement.scrollTop || 0;
+    return {
+        scroll_top: Math.round(scrollY),
+        client_height: Math.round(viewportHeight),
+        scroll_height: Math.round(scrollHeight),
+        overflow: Math.max(scrollHeight - viewportHeight, 0),
+    };
+}"""
+
+_FIND_NEAREST_SCROLLABLE_JS = """(el) => {
+    const isScrollable = (node) => {
+        if (!(node instanceof HTMLElement)) return false;
+        if (node.id === 'playwright-highlight-container') return false;
+        const style = window.getComputedStyle(node);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+            return false;
+        }
+        if (node.clientHeight < 40 || node.clientWidth < 40) return false;
+        const overflowAmount = node.scrollHeight - node.clientHeight;
+        if (overflowAmount <= 2) return false;
+        const oy = style.overflowY || style.overflow;
+        return (
+            oy === 'auto' ||
+            oy === 'scroll' ||
+            oy === 'overlay' ||
+            oy === 'hidden'
+        );
+    };
+    let current = el;
+    let depth = 0;
+    while (current && depth < 40) {
+        if (isScrollable(current)) return current;
+        current = current.parentElement;
+        depth += 1;
+    }
+    return null;
+}"""
+
 
 _ANTI_DETECTION_SCRIPT = """
 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -145,6 +279,7 @@ class Page:
         maximum_wait_page_load_time: float = 5.0,
         include_dynamic_attributes: bool = True,
         viewport_expansion: int = 0,
+        index_offscreen_elements: bool = True,
         allowed_urls: list[str] | None = None,
         denied_urls: list[str] | None = None,
         home_page_url: str = "about:blank",
@@ -159,6 +294,7 @@ class Page:
         self._maximum_wait_page_load_time = maximum_wait_page_load_time
         self._include_dynamic_attributes = include_dynamic_attributes
         self._viewport_expansion = viewport_expansion
+        self._index_offscreen_elements = index_offscreen_elements
         self._allowed_urls = allowed_urls or []
         self._denied_urls = denied_urls or []
         self._home_page_url = home_page_url
@@ -430,6 +566,7 @@ class Page:
                     show_highlights=True,
                     focus_element=focus_element,
                     viewport_expansion=self._viewport_expansion,
+                    index_offscreen_elements=self._index_offscreen_elements,
                     do_highlight_elements=False,
                 )
                 signature = self._page_signature(state_probe)
@@ -443,6 +580,7 @@ class Page:
                 show_highlights=True,
                 focus_element=focus_element,
                 viewport_expansion=self._viewport_expansion,
+                index_offscreen_elements=self._index_offscreen_elements,
                 do_highlight_elements=True,
             )
             self._last_highlight_signature = self._page_signature(state)
@@ -455,6 +593,7 @@ class Page:
             show_highlights=show_highlights,
             focus_element=focus_element,
             viewport_expansion=self._viewport_expansion,
+            index_offscreen_elements=self._index_offscreen_elements,
             do_highlight_elements=False,
         )
         signature = self._page_signature(state_probe)
@@ -476,6 +615,7 @@ class Page:
                 show_highlights=show_highlights,
                 focus_element=focus_element,
                 viewport_expansion=self._viewport_expansion,
+                index_offscreen_elements=self._index_offscreen_elements,
                 do_highlight_elements=True,
             )
             self._last_highlight_signature = self._page_signature(state)
@@ -565,8 +705,10 @@ class Page:
             self._page,
             show_highlights=False,
             viewport_expansion=self._viewport_expansion,
+            index_offscreen_elements=self._index_offscreen_elements,
         )
         signature = hash(frozenset(calc_branch_path_hash_set(dom)))
+        fingerprint = self.get_scroll_fingerprint()
         return PageSnapshot(
             url=self.url(),
             title=self.title(),
@@ -574,62 +716,226 @@ class Page:
             tab_ids=tuple(sorted(tab_ids)),
             dom_signature=signature,
             interactive_count=len(dom.selector_map),
+            scroll_fingerprint=fingerprint,
         )
+
+    def discover_scrollable_containers(self, limit: int = 5) -> list[ScrollRegion]:
+        raw = self._evaluate_on_page(_DISCOVER_SCROLLABLE_CONTAINERS_JS, limit)
+        if not isinstance(raw, list):
+            return []
+        regions: list[ScrollRegion] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            xpath = str(item.get("xpath") or "")
+            key = str(item.get("key") or xpath)
+            if not key:
+                continue
+            regions.append(
+                ScrollRegion(
+                    key=key,
+                    kind="container",
+                    tag=str(item.get("tag") or "div"),
+                    xpath=xpath,
+                    scroll_top=int(item.get("scroll_top", 0)),
+                    client_height=int(item.get("client_height", 0)),
+                    scroll_height=int(item.get("scroll_height", 0)),
+                )
+            )
+        return regions
+
+    def get_window_scroll_region(self) -> ScrollRegion:
+        info = self._evaluate_on_page(_WINDOW_OVERFLOW_JS)
+        if not isinstance(info, dict):
+            scroll_y, viewport_h, scroll_h = self.get_scroll_info()
+            return ScrollRegion(
+                key="window",
+                kind="window",
+                tag="window",
+                xpath="",
+                scroll_top=scroll_y,
+                client_height=viewport_h,
+                scroll_height=scroll_h,
+            )
+        return ScrollRegion(
+            key="window",
+            kind="window",
+            tag="window",
+            xpath="",
+            scroll_top=int(info.get("scroll_top", 0)),
+            client_height=int(info.get("client_height", 0)),
+            scroll_height=int(info.get("scroll_height", 0)),
+        )
+
+    def list_scroll_regions(self, limit: int = 5) -> list[ScrollRegion]:
+        """Window region first (for fingerprint), then discovered containers."""
+        window_region = self.get_window_scroll_region()
+        containers = self.discover_scrollable_containers(limit=limit)
+        return [window_region, *containers]
+
+    def get_scroll_fingerprint(self, limit: int = 5) -> tuple[tuple[str, int], ...]:
+        return tuple((region.key, region.scroll_top) for region in self.list_scroll_regions(limit=limit))
+
+    def get_primary_scroll_region(self) -> ScrollRegion | None:
+        window_region = self.get_window_scroll_region()
+        if window_region.overflow > 2:
+            return window_region
+        containers = self.discover_scrollable_containers(limit=5)
+        if not containers:
+            return None
+        return max(containers, key=lambda region: region.overflow)
 
     def _find_nearest_scrollable_element(self, handle: ElementHandle) -> ElementHandle | None:
-        is_scrollable = handle.evaluate(
-            """el => {
-                if (!(el instanceof HTMLElement)) return false;
-                const style = window.getComputedStyle(el);
-                const hasVerticalScrollbar = el.scrollHeight > el.clientHeight;
-                const canScrollVertically =
-                    style.overflowY === 'scroll' ||
-                    style.overflowY === 'auto' ||
-                    style.overflow === 'scroll' ||
-                    style.overflow === 'auto';
-                return hasVerticalScrollbar && canScrollVertically;
-            }"""
-        )
-        if is_scrollable:
-            return handle
+        try:
+            found = handle.evaluate_handle(_FIND_NEAREST_SCROLLABLE_JS)
+        except Exception:
+            return None
+        try:
+            element = found.as_element()
+        except Exception:
+            return None
+        return element
 
-        parent_handle = handle.evaluate_handle("el => el.parentElement")
-        depth = 0
-        while parent_handle and depth < 20:
-            parent = parent_handle.as_element()
-            if parent is None:
-                break
-            if parent.evaluate(
-                """el => {
-                    if (!(el instanceof HTMLElement)) return false;
-                    const style = window.getComputedStyle(el);
-                    const hasVerticalScrollbar = el.scrollHeight > el.clientHeight;
-                    const canScrollVertically =
-                        style.overflowY === 'scroll' ||
-                        style.overflowY === 'auto' ||
-                        style.overflow === 'scroll' ||
-                        style.overflow === 'auto';
-                    return hasVerticalScrollbar && canScrollVertically;
-                }"""
-            ):
-                return parent
-            parent_handle = parent.evaluate_handle("el => el.parentElement")
-            depth += 1
-        return handle
+    def _query_scroll_region_handle(self, region: ScrollRegion) -> ElementHandle | None:
+        if region.kind == "window" or not region.xpath:
+            return None
+        xpath = region.xpath if region.xpath.startswith("/") else f"/{region.xpath}"
+        try:
+            return self._page.query_selector(f"xpath={xpath}")
+        except Exception:
+            return None
+
+    def resolve_scroll_target(
+        self,
+        element: DOMElementNode | None = None,
+    ) -> tuple[ScrollRegion, ElementHandle | None] | None:
+        """Return (region, handle). handle is None for window targets."""
+        if element is not None:
+            handle = self._locate_element(element)
+            if handle:
+                scrollable = self._find_nearest_scrollable_element(handle)
+                if scrollable is not None:
+                    info = scrollable.evaluate(
+                        """el => {
+                            const segments = [];
+                            let current = el;
+                            while (current && current.nodeType === 1) {
+                                let index = 1;
+                                let sibling = current.previousElementSibling;
+                                while (sibling) {
+                                    if (sibling.tagName === current.tagName) index += 1;
+                                    sibling = sibling.previousElementSibling;
+                                }
+                                const tag = current.tagName.toLowerCase();
+                                segments.unshift(index > 1 ? `${tag}[${index}]` : tag);
+                                current = current.parentElement;
+                            }
+                            return {
+                                tag: el.tagName.toLowerCase(),
+                                xpath: segments.join('/'),
+                                scroll_top: Math.round(el.scrollTop),
+                                client_height: Math.round(el.clientHeight),
+                                scroll_height: Math.round(el.scrollHeight),
+                            };
+                        }"""
+                    )
+                    xpath = str(info.get("xpath") or "")
+                    region = ScrollRegion(
+                        key=xpath or str(info.get("tag") or "container"),
+                        kind="container",
+                        tag=str(info.get("tag") or "div"),
+                        xpath=xpath,
+                        scroll_top=int(info.get("scroll_top", 0)),
+                        client_height=int(info.get("client_height", 0)),
+                        scroll_height=int(info.get("scroll_height", 0)),
+                    )
+                    return region, scrollable
+            primary = self.get_primary_scroll_region()
+            if primary is None:
+                return None
+            if primary.kind == "window":
+                return primary, None
+            return primary, self._query_scroll_region_handle(primary)
+
+        primary = self.get_primary_scroll_region()
+        if primary is None:
+            return None
+        if primary.kind == "window":
+            return primary, None
+        return primary, self._query_scroll_region_handle(primary)
 
     def get_element_scroll_info(self, element: DOMElementNode) -> tuple[int, int, int]:
-        handle = self._locate_element(element)
-        if not handle:
+        resolved = self.resolve_scroll_target(element)
+        if not resolved:
             return 0, 0, 0
-        scrollable = self._find_nearest_scrollable_element(handle)
-        if not scrollable:
-            return 0, 0, 0
-        info = scrollable.evaluate("""el => ({
-            scrollTop: el.scrollTop,
-            clientHeight: el.clientHeight,
-            scrollHeight: el.scrollHeight,
-        })""")
-        return int(info["scrollTop"]), int(info["clientHeight"]), int(info["scrollHeight"])
+        region, _handle = resolved
+        return region.scroll_top, region.client_height, region.scroll_height
+
+    def _apply_scroll_percent(self, region: ScrollRegion, handle: ElementHandle | None, percent: int) -> None:
+        pct = max(0, min(100, int(percent)))
+        if region.kind == "window" or handle is None:
+            self._page.evaluate(
+                """(pct) => {
+                    const h = Math.max(
+                        document.documentElement.scrollHeight,
+                        document.body.scrollHeight
+                    ) - (window.visualViewport?.height || window.innerHeight);
+                    window.scrollTo({ top: Math.max(h, 0) * pct / 100, behavior: 'auto' });
+                }""",
+                pct,
+            )
+            return
+        handle.evaluate(
+            """(el, pct) => {
+                const maxScroll = Math.max(el.scrollHeight - el.clientHeight, 0);
+                el.scrollTo({ top: maxScroll * pct / 100, behavior: 'auto' });
+            }""",
+            pct,
+        )
+
+    def _apply_scroll_by_page(self, region: ScrollRegion, handle: ElementHandle | None, direction: int) -> None:
+        if region.kind == "window" or handle is None:
+            self._page.evaluate(
+                """(dir) => {
+                    const h = window.visualViewport?.height || window.innerHeight;
+                    window.scrollBy({ top: dir * h, behavior: 'auto' });
+                }""",
+                direction,
+            )
+            return
+        handle.evaluate(
+            """(el, dir) => {
+                el.scrollBy({ top: dir * el.clientHeight, behavior: 'auto' });
+            }""",
+            direction,
+        )
+
+    def scroll_to_percent(self, percent: int, element: DOMElementNode | None = None) -> ScrollRegion | None:
+        resolved = self.resolve_scroll_target(element)
+        if not resolved:
+            return None
+        region, handle = resolved
+        self._apply_scroll_percent(region, handle, percent)
+        self._cached_state = None
+        return region
+
+    def scroll_to_previous_page(self, element: DOMElementNode | None = None) -> ScrollRegion | None:
+        resolved = self.resolve_scroll_target(element)
+        if not resolved:
+            return None
+        region, handle = resolved
+        self._apply_scroll_by_page(region, handle, -1)
+        self._cached_state = None
+        return region
+
+    def scroll_to_next_page(self, element: DOMElementNode | None = None) -> ScrollRegion | None:
+        resolved = self.resolve_scroll_target(element)
+        if not resolved:
+            return None
+        region, handle = resolved
+        self._apply_scroll_by_page(region, handle, 1)
+        self._cached_state = None
+        return region
 
     def _wait_for_element_stability(self, handle: ElementHandle, timeout: float = 1.0) -> None:
         start = time.monotonic()
@@ -650,10 +956,9 @@ class Page:
                 return
             last_rect = current_rect
 
-    def _scroll_into_view_if_needed(self, handle: ElementHandle, timeout: float = 1.0) -> None:
-        start = time.monotonic()
-        while time.monotonic() - start < timeout:
-            is_visible = handle.evaluate(
+    def _element_intersects_viewport(self, handle: ElementHandle) -> bool:
+        return bool(
+            handle.evaluate(
                 """el => {
                     const rect = el.getBoundingClientRect();
                     if (rect.width === 0 || rect.height === 0) return false;
@@ -661,21 +966,97 @@ class Page:
                     if (style.visibility === 'hidden' || style.display === 'none' || style.opacity === '0') {
                         return false;
                     }
-                    const inViewport =
-                        rect.top >= 0 &&
-                        rect.left >= 0 &&
-                        rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) &&
-                        rect.right <= (window.innerWidth || document.documentElement.clientWidth);
-                    if (!inViewport) {
-                        el.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'center' });
-                        return false;
-                    }
-                    return true;
+                    const vh = window.innerHeight || document.documentElement.clientHeight;
+                    const vw = window.innerWidth || document.documentElement.clientWidth;
+                    return (
+                        rect.bottom > 0 &&
+                        rect.right > 0 &&
+                        rect.top < vh &&
+                        rect.left < vw
+                    );
                 }"""
             )
-            if is_visible:
-                return
+        )
+
+    def _scroll_into_view_if_needed(
+        self,
+        handle: ElementHandle,
+        timeout: float = 2.0,
+        *,
+        raise_on_failure: bool = False,
+    ) -> bool:
+        """Bring element into the viewport; returns True if intersecting when done."""
+        start = time.monotonic()
+        attempted_ancestor = False
+        while time.monotonic() - start < timeout:
+            if self._element_intersects_viewport(handle):
+                fully_in = handle.evaluate(
+                    """el => {
+                        const rect = el.getBoundingClientRect();
+                        const vh = window.innerHeight || document.documentElement.clientHeight;
+                        const vw = window.innerWidth || document.documentElement.clientWidth;
+                        return (
+                            rect.top >= 0 &&
+                            rect.left >= 0 &&
+                            rect.bottom <= vh &&
+                            rect.right <= vw
+                        );
+                    }"""
+                )
+                if fully_in:
+                    return True
+                handle.evaluate(
+                    "el => el.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'center' })"
+                )
+                time.sleep(0.05)
+                if self._element_intersects_viewport(handle):
+                    return True
+
+            handle.evaluate(
+                "el => el.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'center' })"
+            )
             time.sleep(0.1)
+            if self._element_intersects_viewport(handle):
+                return True
+
+            if not attempted_ancestor:
+                attempted_ancestor = True
+                handle.evaluate(
+                    """el => {
+                        if (!(el instanceof HTMLElement)) return;
+                        let cur = el.parentElement;
+                        while (cur) {
+                            if (!(cur instanceof HTMLElement)) break;
+                            const style = window.getComputedStyle(cur);
+                            const overflowAmount = cur.scrollHeight - cur.clientHeight;
+                            const oy = style.overflowY || style.overflow;
+                            const canScroll =
+                                overflowAmount > 2 &&
+                                (oy === 'scroll' ||
+                                    oy === 'auto' ||
+                                    oy === 'overlay' ||
+                                    oy === 'hidden');
+                            if (canScroll) {
+                                const cRect = cur.getBoundingClientRect();
+                                const eRect = el.getBoundingClientRect();
+                                const delta =
+                                    (eRect.top + eRect.height / 2) -
+                                    (cRect.top + cRect.height / 2);
+                                cur.scrollTop += delta;
+                                break;
+                            }
+                            cur = cur.parentElement;
+                        }
+                        el.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'center' });
+                    }"""
+                )
+                time.sleep(0.1)
+
+        if self._element_intersects_viewport(handle):
+            return True
+        if raise_on_failure:
+            raise ValueError("Could not scroll element into view for interaction")
+        return False
 
     def click_element(self, element: DOMElementNode):
         if is_file_uploader(element):
@@ -685,7 +1066,7 @@ class Page:
         handle = self._locate_element_with_retry(element)
         if not handle:
             raise ValueError(self._format_element_not_found_error(element))
-        self._scroll_into_view_if_needed(handle)
+        self._scroll_into_view_if_needed(handle, raise_on_failure=True)
         try:
             handle.click(timeout=2000)
             self._maybe_wait_after_interaction()
@@ -705,7 +1086,7 @@ class Page:
         try:
             self._wait_for_element_stability(handle, 1.5)
             if not handle.is_hidden():
-                self._scroll_into_view_if_needed(handle, 1.5)
+                self._scroll_into_view_if_needed(handle, 2.0, raise_on_failure=False)
         except Exception:
             pass
 
@@ -768,65 +1149,6 @@ class Page:
         for part in reversed(modifiers):
             self._page.keyboard.up(key_map.get(part.lower(), part))
         self._maybe_wait_after_interaction()
-        self._cached_state = None
-
-    def _scroll_element(self, handle: ElementHandle, js: str):
-        scrollable = self._find_nearest_scrollable_element(handle)
-        if scrollable:
-            scrollable.evaluate(js)
-
-    def scroll_to_percent(self, percent: int, element: DOMElementNode | None = None):
-        if element:
-            handle = self._locate_element(element)
-            if handle:
-                self._scroll_element(
-                    handle,
-                    f"el => {{ el.scrollTo({{ top: (el.scrollHeight - el.clientHeight) * {percent} / 100, behavior: 'smooth' }}); }}",
-                )
-        else:
-            self._page.evaluate(
-                f"""() => {{
-                    const h = Math.max(
-                        document.documentElement.scrollHeight,
-                        document.body.scrollHeight
-                    ) - (window.visualViewport?.height || window.innerHeight);
-                    window.scrollTo({{ top: h * {percent} / 100, behavior: 'smooth' }});
-                }}"""
-            )
-        self._cached_state = None
-
-    def scroll_to_previous_page(self, element: DOMElementNode | None = None):
-        if element:
-            handle = self._locate_element(element)
-            if handle:
-                self._scroll_element(
-                    handle,
-                    "el => { el.scrollBy({ top: -el.clientHeight, behavior: 'smooth' }); }",
-                )
-        else:
-            self._page.evaluate(
-                """() => {
-                    const h = window.visualViewport?.height || window.innerHeight;
-                    window.scrollBy({ top: -h, behavior: 'smooth' });
-                }"""
-            )
-        self._cached_state = None
-
-    def scroll_to_next_page(self, element: DOMElementNode | None = None):
-        if element:
-            handle = self._locate_element(element)
-            if handle:
-                self._scroll_element(
-                    handle,
-                    "el => { el.scrollBy({ top: el.clientHeight, behavior: 'smooth' }); }",
-                )
-        else:
-            self._page.evaluate(
-                """() => {
-                    const h = window.visualViewport?.height || window.innerHeight;
-                    window.scrollBy({ top: h, behavior: 'smooth' });
-                }"""
-            )
         self._cached_state = None
 
     def scroll_to_text(self, text: str, nth: int = 1) -> bool:

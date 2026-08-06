@@ -54,9 +54,12 @@ def _priority_score(node: DOMElementNode) -> int:
 def _collect_clickable_lines(
     root: DOMElementNode,
     include_attributes: list[str],
-) -> list[tuple[int, int, str]]:
-    """Return (priority, highlight_index, line) for each clickable element."""
-    collected: list[tuple[int, int, str]] = []
+) -> list[tuple[int, int, bool, str]]:
+    """Return (priority, highlight_index, is_in_viewport, line) for clickables.
+
+    Text-only lines use highlight_index=-1 and is_in_viewport=True.
+    """
+    collected: list[tuple[int, int, bool, str]] = []
 
     def process_node(node: DOMBaseNode, depth: int):
         next_depth = depth
@@ -116,8 +119,10 @@ def _collect_clickable_lines(
                 elif not attr_parts:
                     line += " "
                 line += " />"
+                if not node.is_in_viewport:
+                    line += " (offscreen)"
                 priority = _priority_score(node)
-                collected.append((priority, node.highlight_index, line))
+                collected.append((priority, node.highlight_index, node.is_in_viewport, line))
 
             for child in node.children:
                 process_node(child, next_depth)
@@ -126,7 +131,7 @@ def _collect_clickable_lines(
             if node.has_parent_with_highlight_index():
                 return
             if node.parent and node.parent.is_visible and node.parent.is_top_element:
-                collected.append((0, -1, f"{depth_str}{node.text}"))
+                collected.append((0, -1, True, f"{depth_str}{node.text}"))
 
     process_node(root, 0)
     return collected
@@ -152,13 +157,13 @@ def _collect_clickable_labels(root: DOMElementNode) -> set[str]:
 
 
 def _filter_visible_text_lines(
-    text_lines: list[tuple[int, int, str]],
+    text_lines: list[tuple[int, int, bool, str]],
     clickable_labels: set[str],
 ) -> list[str]:
     seen: set[str] = set()
     filtered: list[str] = []
 
-    for _, _, line in text_lines:
+    for _, _, _, line in text_lines:
         normalized = _normalize_visible_text(line.strip("\t"))
         if len(normalized) < _MIN_VISIBLE_TEXT_LEN:
             continue
@@ -209,29 +214,48 @@ def _render_visible_text_section(
     return rendered, shown
 
 
+def _select_elements_viewport_first(
+    element_lines: list[tuple[int, int, bool, str]],
+    *,
+    max_elements: int,
+) -> list[tuple[int, int, bool, str]]:
+    """Prefer in-viewport elements, then fill remaining budget with off-screen."""
+    in_viewport = [item for item in element_lines if item[2]]
+    offscreen = [item for item in element_lines if not item[2]]
+    in_viewport.sort(key=lambda item: (-item[0], item[1]))
+    offscreen.sort(key=lambda item: (-item[0], item[1]))
+
+    selected = in_viewport[:max_elements]
+    remaining = max_elements - len(selected)
+    if remaining > 0:
+        selected.extend(offscreen[:remaining])
+    selected.sort(key=lambda item: item[1])
+    return selected
+
+
 def bounded_clickable_elements_to_string(
     root: DOMElementNode,
     include_attributes: list[str],
     *,
-    max_elements: int = 80,
-    max_chars: int = 12000,
+    max_elements: int = 120,
+    max_chars: int = 16000,
 ) -> tuple[str, int, int]:
     """Render clickable DOM with priority cap and visible static text. Returns (text, shown_count, total_count)."""
     lines = _collect_clickable_lines(root, include_attributes)
     element_lines = [item for item in lines if item[1] >= 0]
     text_lines = [item for item in lines if item[1] < 0]
     total_count = len(element_lines)
+    offscreen_total = sum(1 for item in element_lines if not item[2])
 
     rendered: list[str] = []
     char_budget = max_chars
     shown = 0
 
     if total_count > 0:
-        element_lines.sort(key=lambda item: (-item[0], item[1]))
-        selected = element_lines[:max_elements]
-        selected.sort(key=lambda item: item[1])
+        selected = _select_elements_viewport_first(element_lines, max_elements=max_elements)
+        offscreen_shown = 0
 
-        for _, _, line in selected:
+        for _, _, in_vp, line in selected:
             if char_budget <= 0:
                 break
             if len(line) > char_budget:
@@ -239,14 +263,24 @@ def bounded_clickable_elements_to_string(
             rendered.append(line)
             char_budget -= len(line) + 1
             shown += 1
+            if not in_vp:
+                offscreen_shown += 1
 
         if shown < total_count:
             omitted = total_count - shown
+            offscreen_omitted = max(offscreen_total - offscreen_shown, 0)
             index_range = f"[{selected[0][1]}..{selected[-1][1]}]" if selected else "[]"
-            rendered.append(
+            note = (
                 f"... truncated {omitted} of {total_count} elements; "
-                f"shown indexes {index_range}. Use scroll actions to reveal more."
+                f"shown indexes {index_range}."
             )
+            if offscreen_omitted:
+                note += f" {offscreen_omitted} offscreen interactives omitted."
+            note += (
+                " Use scroll actions if the needed control is not listed "
+                "(truncated or not yet mounted)."
+            )
+            rendered.append(note)
 
     clickable_labels = _collect_clickable_labels(root)
     filtered_text = _filter_visible_text_lines(text_lines, clickable_labels)

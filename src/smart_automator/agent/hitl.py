@@ -156,10 +156,94 @@ _HUMAN_CAPTURE_SCRIPT = """
     }
   }, true);
 
+  let pendingScroll = null;
+  let scrollTimer = null;
+  const SCROLL_DEBOUNCE_MS = 400;
+
+  function resolveScrollTarget(eventTarget) {
+    if (
+      !eventTarget ||
+      eventTarget === document ||
+      eventTarget === document.documentElement ||
+      eventTarget === document.body
+    ) {
+      return { kind: 'window', element: document.documentElement };
+    }
+    if (eventTarget instanceof HTMLElement) {
+      return { kind: 'element', element: eventTarget };
+    }
+    return { kind: 'window', element: document.documentElement };
+  }
+
+  function computeScrollPercent(kind, el) {
+    if (kind === 'window') {
+      const scrollY = window.scrollY || document.documentElement.scrollTop || 0;
+      const scrollHeight = Math.max(
+        document.documentElement.scrollHeight || 0,
+        document.body ? document.body.scrollHeight : 0,
+      );
+      const scrollable = Math.max(scrollHeight - (window.innerHeight || 0), 1);
+      return Math.max(0, Math.min(100, Math.round((scrollY / scrollable) * 100)));
+    }
+    const scrollable = Math.max(el.scrollHeight - el.clientHeight, 1);
+    return Math.max(0, Math.min(100, Math.round((el.scrollTop / scrollable) * 100)));
+  }
+
+  function flushScroll() {
+    if (!pendingScroll) return;
+    const { kind, element, percent } = pendingScroll;
+    pendingScroll = null;
+    if (kind === 'window') {
+      try {
+        window._saHumanAction({
+          eventType: 'scroll',
+          scrollKind: 'window',
+          percent,
+          tagName: 'html',
+          xpath: '',
+          attributes: {},
+          label: '',
+        });
+      } catch (err) {
+        console.debug('HITL scroll capture failed', err);
+      }
+      return;
+    }
+    report('scroll', element, { percent, scrollKind: 'element' });
+  }
+
+  document.addEventListener(
+    'scroll',
+    (event) => {
+      const resolved = resolveScrollTarget(event.target);
+      const percent = computeScrollPercent(resolved.kind, resolved.element);
+      pendingScroll = {
+        kind: resolved.kind,
+        element: resolved.element,
+        percent,
+      };
+      if (scrollTimer) clearTimeout(scrollTimer);
+      scrollTimer = setTimeout(() => {
+        scrollTimer = null;
+        flushScroll();
+      }, SCROLL_DEBOUNCE_MS);
+    },
+    true,
+  );
+
+  window.__saFlushPendingScrolls = () => {
+    if (scrollTimer) {
+      clearTimeout(scrollTimer);
+      scrollTimer = null;
+    }
+    flushScroll();
+  };
+
   window.__saFlushPendingInputs = () => {
     for (const xpath of Array.from(pendingInputs.keys())) {
       flushInput(xpath);
     }
+    if (window.__saFlushPendingScrolls) window.__saFlushPendingScrolls();
   };
 })();
 """
@@ -357,6 +441,8 @@ class HumanActionRecorder:
                 self._record_select(payload)
             elif event_type == "keydown":
                 self._record_keys(payload)
+            elif event_type == "scroll":
+                self._record_scroll(payload)
 
     def _element_label(self, payload: dict[str, Any]) -> str:
         label = str(payload.get("label", "") or "").strip()
@@ -480,6 +566,61 @@ class HumanActionRecorder:
             action_name="send_keys",
         )
         self._append_record("send_keys", args, result)
+
+    def _record_scroll(self, payload: dict[str, Any]) -> None:
+        try:
+            percent = int(payload.get("percent", 0))
+        except (TypeError, ValueError):
+            percent = 0
+        percent = max(0, min(100, percent))
+        scroll_kind = str(payload.get("scrollKind", "window") or "window")
+        element: DOMHistoryElement | None = None
+        if scroll_kind == "element":
+            element = self._element_from_payload(payload)
+            xpath = (element.xpath or "").strip()
+            # Treat empty/root document paths as window scroll.
+            if not xpath or xpath in {"html", "/html", "html[1]", "/html[1]"}:
+                element = None
+                args = {"yPercent": percent, "percent": percent}
+            else:
+                args = self._dom_action_args(element, yPercent=percent, percent=percent)
+        else:
+            args = {"yPercent": percent, "percent": percent}
+
+        # Coalesce consecutive scrolls on the same container into the latest percent.
+        if self._recorded:
+            last_name, last_args, _last_result = self._recorded[-1]
+            if last_name == "scroll_to_percent":
+                same_target = last_args.get("xpath") == args.get("xpath") and last_args.get(
+                    "css_selector"
+                ) == args.get("css_selector")
+                if same_target:
+                    if int(last_args.get("percent", last_args.get("yPercent", -1))) == percent:
+                        return
+                    result = ActionResult(
+                        success=True,
+                        extracted_content=f"Human scrolled to {percent}%",
+                        include_in_memory=True,
+                        action_name="scroll_to_percent",
+                        interacted_element=element,
+                    )
+                    result.action_index = len(self._recorded)
+                    self._recorded[-1] = ("scroll_to_percent", args, result)
+                    if self._on_action:
+                        try:
+                            self._on_action(result, "scroll_to_percent", args)
+                        except Exception:
+                            log.debug("HITL on_action callback failed", exc_info=True)
+                    return
+
+        result = ActionResult(
+            success=True,
+            extracted_content=f"Human scrolled to {percent}%",
+            include_in_memory=True,
+            action_name="scroll_to_percent",
+            interacted_element=element,
+        )
+        self._append_record("scroll_to_percent", args, result, element)
 
 
 class HitlController:
@@ -801,6 +942,9 @@ class HitlController:
             details.append(f"url={display_args['url']!r}")
         if display_args.get("keys"):
             details.append(f"keys={display_args['keys']!r}")
+        if display_args.get("percent") is not None or display_args.get("yPercent") is not None:
+            pct = display_args.get("percent", display_args.get("yPercent"))
+            details.append(f"percent={pct}")
         attrs = dict(display_args.get("attributes") or {})
         for key in ("aria-label", "title"):
             value = attrs.get(key)

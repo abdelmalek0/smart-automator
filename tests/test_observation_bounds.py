@@ -127,6 +127,39 @@ class TestObservationBounds(unittest.TestCase):
         self.assertEqual(total, 40)
         self.assertNotIn("Order confirmation visible on page", text)
 
+    def test_offscreen_marker_and_viewport_first_fill(self):
+        viewport = [_button(i, f"vp-{i}") for i in range(3)]
+        offscreen = [
+            DOMElementNode(
+                tag_name="button",
+                xpath=f"/button[{i}]",
+                attributes={"aria-label": f"off-{i}"},
+                highlight_index=i,
+                is_in_viewport=False,
+                is_visible=True,
+                is_interactive=True,
+                is_top_element=False,
+            )
+            for i in range(3, 8)
+        ]
+        root = DOMElementNode(tag_name="body", xpath="/body", children=[*viewport, *offscreen])
+        text, shown, total = bounded_clickable_elements_to_string(
+            root,
+            ["aria-label"],
+            max_elements=4,
+            max_chars=50000,
+        )
+        self.assertEqual(total, 8)
+        self.assertEqual(shown, 4)
+        self.assertIn("[0]", text)
+        self.assertIn("[1]", text)
+        self.assertIn("[2]", text)
+        self.assertIn("(offscreen)", text)
+        # One offscreen slot after three viewport items
+        self.assertIn("[3]", text)
+        self.assertNotIn("[4]", text)
+        self.assertIn("offscreen interactives omitted", text)
+
 
 if __name__ == "__main__":
     unittest.main()

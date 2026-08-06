@@ -32,6 +32,9 @@ You automate browser tasks from <nano_user_request>. Output flat JSON only — n
 Rules:
 - `action` must be a non-empty array. Never return `"action": []`.
 - Use only element indexes [N] from the current Interactive Elements list.
+- `(offscreen)` indexes are valid — interacting with them scrolls them into view.
+- If the needed control is not listed (truncated or not mounted), use scroll_to_text / next_page / scroll_to_percent before inventing indexes.
+- Scroll actions target the document when it overflows, otherwise the primary in-viewport overflow region automatically. Pass `index` of an element inside a region to scroll that region specifically.
 - Max {max_actions} actions per step, executed in order; sequence may stop after navigation.
 - Multi-field forms: if multiple empty inputs are listed, chain input_text for every required empty field, then click submit/confirm in the same step.
 - PIN keypads: click each digit by index, then click Enter/OK/Submit.
@@ -148,6 +151,24 @@ def build_browser_state_message(
             f"window.visualViewport.height: {browser_state.visual_viewport_height}, "
             f"visual viewport height as percentage of scrollable distance: {scroll_pct}%\n"
         )
+        container_regions = [
+            region for region in browser_state.scroll_regions if region.kind == "container"
+        ]
+        if container_regions:
+            lines = ["[Scrollable regions]"]
+            for region in container_regions:
+                position = (
+                    "at top"
+                    if region.at_top
+                    else "at bottom"
+                    if region.at_bottom
+                    else f"scroll={region.percent}%"
+                )
+                lines.append(
+                    f"- container {region.tag} xpath={region.xpath} "
+                    f"{position} ({region.scroll_top}/{region.overflow})"
+                )
+            scroll_info += "\n".join(lines) + "\n"
         index_note = ""
         if browser_state.selector_map:
             indices = sorted(browser_state.selector_map.keys())
@@ -163,12 +184,13 @@ def build_browser_state_message(
             "[Start of page]\n"
             f"{elements_text}\n"
             "[End of page]\n"
-            "Note: indexed [N] elements are actionable. [Visible text] is read-only page copy "
+            "Note: indexed [N] elements are actionable (including `(offscreen)` — click/input scrolls into view). "
+            "[Visible text] is read-only page copy "
             "for progress and success checks — not clickable.\n"
         )
     else:
         formatted_elements = (
-            "empty page (no interactive elements in viewport yet — "
+            "empty page (no interactive elements listed yet — "
             "the page may still be loading after a recent click or navigation; "
             "prefer wait on the next step before using go_to_url to reload)"
         )
@@ -217,7 +239,7 @@ The following is one-time information - if you need to remember it write it to m
 Current tab: {current_tab}
 Other available tabs:
 {chr(10).join(other_tabs) if other_tabs else "  (none)"}
-Interactive elements from top layer of the current page inside the viewport:
+Interactive elements from top layer of the current page:
 {formatted_elements}{criteria_section}{step_info}
 {action_results_desc}
 """

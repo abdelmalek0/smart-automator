@@ -328,6 +328,7 @@ def _run_build_dom_tree_raw(
     start_highlight_index: int,
     start_id: int,
     debug_mode: bool,
+    index_offscreen_elements: bool = True,
 ) -> dict[str, Any] | None:
     ensure_build_dom_tree_script_on_frame(frame)
     try:
@@ -338,6 +339,7 @@ def _run_build_dom_tree_raw(
                 "doHighlightElements": do_highlight_elements,
                 "focusHighlightIndex": focus_element,
                 "viewportExpansion": viewport_expansion,
+                "indexOffscreenElements": index_offscreen_elements,
                 "startHighlightIndex": start_highlight_index,
                 "startId": start_id,
                 "debugMode": debug_mode,
@@ -459,6 +461,7 @@ def _construct_frame_tree(
     debug_mode: bool,
     starting_node_id: int,
     starting_highlight_index: int,
+    index_offscreen_elements: bool = True,
 ) -> tuple[int, int, dict[str, Any]]:
     parent_iframes_failed = _visible_iframes_failed_loading(parent_frame_page)
     failed_frames = [
@@ -480,6 +483,7 @@ def _construct_frame_tree(
             start_highlight_index=max_highlight_index + 1,
             start_id=max_node_id + 1,
             debug_mode=debug_mode,
+            index_offscreen_elements=index_offscreen_elements,
         )
         if not sub_frame_page or not sub_frame_page.get("map") or not sub_frame_page.get("rootId"):
             continue
@@ -514,6 +518,7 @@ def _construct_frame_tree(
                 debug_mode=debug_mode,
                 starting_node_id=max_node_id,
                 starting_highlight_index=max_highlight_index,
+                index_offscreen_elements=index_offscreen_elements,
             )
 
     return max_node_id, max_highlight_index, parent_frame_page
@@ -575,6 +580,7 @@ def build_dom_tree(
     start_id: int = 0,
     debug_mode: bool = False,
     do_highlight_elements: bool | None = None,
+    index_offscreen_elements: bool = True,
 ) -> DOMState:
     ensure_build_dom_tree_script(page)
     if do_highlight_elements is None:
@@ -589,6 +595,7 @@ def build_dom_tree(
         start_highlight_index=start_highlight_index,
         start_id=start_id,
         debug_mode=debug_mode,
+        index_offscreen_elements=index_offscreen_elements,
     )
     if not main_frame_result or not main_frame_result.get("map") or not main_frame_result.get("rootId"):
         empty_tree = DOMElementNode(tag_name="body", xpath="/body")
@@ -615,6 +622,7 @@ def build_dom_tree(
                 debug_mode=debug_mode,
                 starting_node_id=_get_max_id(main_frame_result),
                 starting_highlight_index=_get_max_highlight_index(main_frame_result),
+                index_offscreen_elements=index_offscreen_elements,
             )
 
     return _deserialize_dom_tree(main_frame_result)

@@ -110,6 +110,7 @@ class BrowserContext:
             maximum_wait_page_load_time=self._config.maximum_wait_page_load_time,
             include_dynamic_attributes=self._config.include_dynamic_attributes,
             viewport_expansion=self._config.viewport_expansion,
+            index_offscreen_elements=self._config.index_offscreen_elements,
             allowed_urls=self._config.allowed_urls,
             denied_urls=self._config.denied_urls,
             home_page_url=self._config.home_page_url,
@@ -190,6 +191,7 @@ class BrowserContext:
         self._previous_branch_hashes = calc_branch_path_hash_set(dom_state)
         scroll_y, viewport_h, scroll_h = page.get_scroll_info()
         screenshot = page.take_screenshot() if use_vision else None
+        scroll_regions = page.list_scroll_regions(limit=5)
         return BrowserState.from_dom_state(
             dom_state=dom_state,
             tab_id=page.page_id,
@@ -200,6 +202,7 @@ class BrowserContext:
             scroll_height=scroll_h,
             visual_viewport_height=viewport_h,
             screenshot=screenshot,
+            scroll_regions=scroll_regions,
         )
 
     def get_cached_state(self) -> BrowserState:
@@ -208,6 +211,7 @@ class BrowserContext:
         if dom_state is None:
             return self.get_state()
         scroll_y, viewport_h, scroll_h = page.get_scroll_info()
+        scroll_regions = page.list_scroll_regions(limit=5)
         return BrowserState.from_dom_state(
             dom_state=dom_state,
             tab_id=page.page_id,
@@ -217,6 +221,7 @@ class BrowserContext:
             scroll_y=scroll_y,
             scroll_height=scroll_h,
             visual_viewport_height=viewport_h,
+            scroll_regions=scroll_regions,
         )
 
     def remove_highlight(self):
