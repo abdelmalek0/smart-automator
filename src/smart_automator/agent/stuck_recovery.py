@@ -88,6 +88,8 @@ def update_page_progress(
         context.stale_steps_on_same_page = 0
         context.stuck_episode_active = False
         context.critic_runs_this_episode = 0
+        context.consecutive_unvalidated_done = 0
+        context.awaiting_done_recovery = False
     else:
         if context.last_page_url == url and context.last_page_title == title:
             context.stale_steps_on_same_page += 1
@@ -162,7 +164,9 @@ def should_block_navigator_done(context: AgentContext) -> bool:
 def build_premature_done_rejection_hint(plan_result: dict | None) -> str:
     lines = [
         "Navigator claimed the task was complete, but the planner has NOT confirmed completion.",
+        "Perform the planner's concrete next steps on the CURRENT page — do not idle with wait.",
         "Do NOT call done again until the CURRENT page state visibly shows the task is finished.",
+        "A second failed confirmation, or idle wait after done is blocked, ends the run with a criteria grade (pass or fail).",
         "Re-read the indexed interactive elements — do not rely on memory alone.",
         'Respond with flat JSON and a non-empty action array (click_element, input_text, wait, etc.).',
     ]

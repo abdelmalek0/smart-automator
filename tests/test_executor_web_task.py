@@ -16,6 +16,13 @@ class TestExecutorWebTask(unittest.TestCase):
         config.planning_interval = 1
         config.include_attributes = []
         config.action_delay_seconds = 0
+        config.max_unvalidated_dones = 2
+        config.max_observation_elements = 10
+        config.max_observation_chars = 1000
+        config.hitl_timeout_minutes = 10
+        config.replay_action_retry_wait_seconds = 0
+        config.replay_show_highlights = False
+        config.headless = True
         return Executor("What is 2+2?", browser_context, llm, config)
 
     def test_non_web_task_returns_final_answer_without_navigation(self):

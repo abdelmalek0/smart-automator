@@ -27,6 +27,7 @@ class AgentOptions:
     max_observation_elements: int = 120
     max_observation_chars: int = 16000
     hitl_timeout_seconds: float = 600.0
+    max_unvalidated_dones: int = 2
 
 
 @dataclass
@@ -130,6 +131,9 @@ class AgentContext:
         self.stuck_episode_active = False
         self.critic_runs_this_episode = 0
         self.consecutive_unvalidated_done = 0
+        self.awaiting_done_recovery = False
+        self.criteria_verdict: dict | None = None
+        self.terminal_status: str | None = None
         self.failed_actions: list[FailedActionRecord] = []
         from .history import AgentStepHistory
 

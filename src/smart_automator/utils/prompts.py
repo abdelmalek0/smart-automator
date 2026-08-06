@@ -90,8 +90,9 @@ When determining if a task is "done":
 1. Read the task description carefully and compare against the CURRENT browser state shown
 2. Verify all aspects of the task have been completed successfully on the current page — not from navigator memory alone
 3. Verify success criteria are visibly met on the current page before setting done=true
-4. If the navigator called done but the page still needs work, set done=false and give concrete next_steps
-5. If sign in is required and credentials are missing from the task, mark as done and ask user to sign in
+4. If the navigator called done and the CURRENT page already shows the task outcomes and success criteria, prefer done=true — do not invent extra steps from criteria wording alone
+5. If the navigator called done but the page still needs work, set done=false and give concrete next_steps
+6. If sign in is required and credentials are missing from the task, mark as done and ask user to sign in
 
 # RESPONSE FORMAT: Always respond with valid JSON:
 {{

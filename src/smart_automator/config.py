@@ -41,6 +41,7 @@ class Config(BaseModel):
     planning_interval: int = 3
     max_actions_per_step: int = 5
     max_failures: int = 5
+    max_unvalidated_dones: int = 2
     max_input_tokens: int = 64000
     max_observation_elements: int = 120
     max_observation_chars: int = 16000
@@ -134,6 +135,7 @@ def load_config() -> Config:
         planning_interval=int(os.getenv("PLANNING_INTERVAL", "3")),
         max_actions_per_step=int(os.getenv("MAX_ACTIONS_PER_STEP", "5")),
         max_failures=int(os.getenv("MAX_FAILURES", "5")),
+        max_unvalidated_dones=int(os.getenv("MAX_UNVALIDATED_DONES", "2")),
         max_input_tokens=int(os.getenv("MAX_INPUT_TOKENS", "64000")),
         max_observation_elements=int(os.getenv("MAX_OBSERVATION_ELEMENTS", "120")),
         max_observation_chars=int(os.getenv("MAX_OBSERVATION_CHARS", "16000")),

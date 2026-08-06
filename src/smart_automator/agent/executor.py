@@ -9,6 +9,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from ..actions.builder import ActionBuilder
+from ..agents.criteria_checker import CriteriaCheckerAgent
 from ..agents.hitl_debrief import HitlDebriefAgent
 from ..agents.errors import (
     ChatModelAuthError,
@@ -34,7 +35,6 @@ from ..agent.stuck_recovery import (
     build_premature_done_rejection_hint,
     build_stuck_recovery_hint,
     detect_stuck_signals,
-    should_block_navigator_done,
     update_page_progress,
 )
 from ..server.step_mapper import build_step_start, planner_to_plan
@@ -141,6 +141,7 @@ class Executor:
             max_observation_elements=config.max_observation_elements,
             max_observation_chars=config.max_observation_chars,
             hitl_timeout_seconds=float(config.hitl_timeout_minutes) * 60.0,
+            max_unvalidated_dones=config.max_unvalidated_dones,
         )
         self._context = AgentContext(
             task_id=str(uuid.uuid4()),
@@ -151,6 +152,7 @@ class Executor:
         self._context.success_criteria = self._success_criteria
         self._context.hitl_enabled = not config.headless
         self._last_error: str | None = None
+        self._last_nav_result: dict | None = None
         self._hitl = HitlController(self._context, emit=self._emit)
 
         self._llm.set_cancel_event(self._context.cancel_event)
@@ -272,7 +274,6 @@ class Executor:
         context = self._context
         context.n_steps = 0
         latest_plan = None
-        navigator_done = False
         step = 0
 
         try:
@@ -291,10 +292,8 @@ class Executor:
                     context.force_replan_after_hitl
                     or context.pending_hitl_handoff is not None
                     or context.n_steps % context.options.planning_interval == 0
-                    or navigator_done
                 )
                 if should_plan:
-                    navigator_done = False
                     if context.pending_hitl_handoff:
                         self._run_hitl_debrief()
                     if context.force_replan_after_hitl:
@@ -308,7 +307,11 @@ class Executor:
                     if self._is_non_web_task_complete(latest_plan):
                         return context.final_answer
                     if self._check_task_completion(latest_plan):
-                        return context.final_answer
+                        plan_result = latest_plan.get("result") if latest_plan else None
+                        answer = ""
+                        if plan_result:
+                            answer = str(plan_result.get("final_answer") or "")
+                        return self._finalize_with_criteria(answer or context.final_answer or "")
                     if self._should_skip_navigation(latest_plan):
                         continue
 
@@ -316,23 +319,37 @@ class Executor:
                 if self._should_stop():
                     break
 
-                navigator_requested_done = False
                 nav_outcome = self._navigate()
                 if nav_outcome == "complete":
-                    return context.final_answer
+                    return self._finalize_with_criteria(context.final_answer or "")
                 if nav_outcome == "interrupted":
                     if self._should_stop():
                         break
                     continue
                 if nav_outcome == "requested_done":
-                    navigator_requested_done = True
                     latest_plan = self._run_planner()
                     if self._check_task_completion(latest_plan):
-                        return context.final_answer
+                        plan_result = latest_plan.get("result") if latest_plan else None
+                        answer = ""
+                        if plan_result:
+                            answer = str(plan_result.get("final_answer") or "")
+                        return self._finalize_with_criteria(
+                            answer or self._nav_done_answer() or context.final_answer or ""
+                        )
                     self._reject_premature_done(latest_plan)
+                    if (
+                        context.consecutive_unvalidated_done
+                        >= context.options.max_unvalidated_dones
+                    ):
+                        return self._finalize_with_criteria(
+                            self._nav_done_answer() or context.final_answer or ""
+                        )
+                    continue
+                if self._should_escalate_done_recovery():
+                    return self._finalize_with_criteria(context.final_answer or "")
 
             if latest_plan and latest_plan.get("result", {}).get("done"):
-                return context.final_answer
+                return self._finalize_with_criteria(context.final_answer or "")
             if step >= context.options.max_steps - 1 and not context.stopped:
                 raise MaxStepsReachedError("Maximum execution steps reached")
             if context.stopped:
@@ -441,6 +458,60 @@ class Executor:
         self._emit_tokens()
         context.pending_hitl_handoff = None
 
+    def _finalize_with_criteria(self, final_answer: str) -> str:
+        context = self._context
+        checker = CriteriaCheckerAgent(self._llm)
+        state_message = CriteriaCheckerAgent.build_state_message(context)
+        verdict = checker.check(
+            task=self._task,
+            success_criteria=context.success_criteria,
+            state_message=state_message,
+            final_answer=final_answer or context.final_answer or "",
+        )
+        preview = state_message.strip()
+        if len(preview) > 4000:
+            preview = preview[:4000] + "\n... [truncated]"
+        if preview:
+            verdict["observation_preview"] = preview
+
+        context.criteria_verdict = verdict
+        passed = bool(verdict.get("passed"))
+        context.terminal_status = "pass" if passed else "fail"
+
+        answer = (final_answer or "").strip()
+        if not answer:
+            answer = str(verdict.get("reason") or "").strip()
+        if not answer:
+            answer = str(verdict.get("evidence") or "").strip()
+        if not answer:
+            answer = "Success criteria met." if passed else "Success criteria not met."
+        context.final_answer = answer
+
+        context.consecutive_unvalidated_done = 0
+        context.stuck_episode_active = False
+        context.awaiting_done_recovery = False
+        return context.final_answer
+
+    def _nav_done_answer(self) -> str:
+        result = self._last_nav_result or {}
+        for action_result in reversed(result.get("action_results") or []):
+            if getattr(action_result, "is_done", False):
+                text = getattr(action_result, "extracted_content", None) or ""
+                if text:
+                    return str(text)
+        return ""
+
+    def _should_escalate_done_recovery(self) -> bool:
+        if not self._context.awaiting_done_recovery:
+            return False
+        result = self._last_nav_result or {}
+        if not result.get("done_blocked"):
+            return False
+        if result.get("only_wait_actions") or result.get("auto_wait"):
+            return True
+        action_results = result.get("action_results") or []
+        return not action_results
+
     def _check_task_completion(self, plan_output: dict | None) -> bool:
         result = plan_output.get("result") if plan_output else None
         if result and result.get("done"):
@@ -448,6 +519,7 @@ class Executor:
                 self._context.final_answer = result["final_answer"]
             self._context.consecutive_unvalidated_done = 0
             self._context.stuck_episode_active = False
+            self._context.awaiting_done_recovery = False
             return True
         return False
 
@@ -467,6 +539,7 @@ class Executor:
     def _reject_premature_done(self, plan_output: dict | None) -> None:
         self._context.consecutive_unvalidated_done += 1
         self._context.stuck_episode_active = True
+        self._context.awaiting_done_recovery = True
         plan_result = plan_output.get("result") if plan_output else None
         self._context.message_manager.add_message_with_tokens({
             "role": "user",
@@ -645,6 +718,7 @@ class Executor:
 
     def _navigate(self) -> str | None:
         context = self._context
+        self._last_nav_result = None
         try:
             context.check_cancelled()
             if context.paused or context.stopped:
@@ -727,14 +801,18 @@ class Executor:
                 )
 
             context.consecutive_failures = 0
+            self._last_nav_result = result or None
+
+            # Done confirmation owns planner confirm/reject; skip stuck recovery so we
+            # do not double-plan or drop the reject / finalize path.
+            if result and result.get("requested_done"):
+                return "requested_done"
 
             if result and self._handle_stuck_recovery(result):
                 if self._context.final_answer:
                     return "complete"
                 return None
 
-            if result.get("requested_done"):
-                return "requested_done"
             return None
         except URLNotAllowedError:
             raise

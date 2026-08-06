@@ -192,6 +192,24 @@ def _apply_criteria_verdict(
     llm,
 ) -> None:
     context = executor.context
+    existing = context.criteria_verdict
+    if isinstance(existing, dict) and "passed" in existing:
+        verdict = dict(existing)
+        run.criteria_verdict = verdict
+        if verdict.get("passed"):
+            summary = (
+                verdict.get("reason")
+                or verdict.get("evidence")
+                or context.final_answer
+                or "Success criteria met."
+            )
+            _set_terminal_status(run, "pass", str(summary))
+            return
+
+        summary = verdict.get("reason") or verdict.get("evidence") or "Success criteria not met."
+        _set_terminal_status(run, "fail", str(summary))
+        return
+
     checker = CriteriaCheckerAgent(llm)
     state_message = CriteriaCheckerAgent.build_state_message(context)
     verdict = checker.check(

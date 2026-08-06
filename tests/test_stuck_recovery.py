@@ -169,6 +169,26 @@ class StuckRecoveryTests(unittest.TestCase):
         context.consecutive_unvalidated_done = 1
         self.assertTrue(should_block_navigator_done(context))
 
+    def test_progress_clears_unvalidated_done_block(self):
+        context = _make_context()
+        context.last_page_url = "https://example.com/a"
+        context.last_page_title = "A"
+        context.consecutive_unvalidated_done = 1
+        context.awaiting_done_recovery = True
+        context.stuck_episode_active = True
+        update_page_progress(
+            context,
+            url="https://example.com/b",
+            title="B",
+            action_errors=False,
+            auto_wait=False,
+            submit_hint_fired=False,
+            only_wait_actions=False,
+        )
+        self.assertEqual(context.consecutive_unvalidated_done, 0)
+        self.assertFalse(context.awaiting_done_recovery)
+        self.assertFalse(should_block_navigator_done(context))
+
 
 if __name__ == "__main__":
     unittest.main()

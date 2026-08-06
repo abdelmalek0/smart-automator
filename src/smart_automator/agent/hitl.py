@@ -777,6 +777,7 @@ class HitlController:
         context.stuck_recovery_attempts = 0
         context.critic_runs_this_episode = 0
         context.consecutive_unvalidated_done = 0
+        context.awaiting_done_recovery = False
         context.consecutive_no_action_steps = 0
         context.resume()
 
