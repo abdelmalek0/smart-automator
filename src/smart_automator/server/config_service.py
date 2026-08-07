@@ -28,6 +28,7 @@ from ..server.provider_utils import (
     UI_PROVIDERS,
     coerce_provider_base_url,
     coerce_provider_model,
+    coerce_ui_provider,
     default_base_url,
     default_model_for_provider,
     format_llm_connection_error,
@@ -41,6 +42,7 @@ from ..server.provider_utils import (
     runtime_provider,
 )
 from ..storage.llm_settings import LlmSettingsStore
+from ..storage.user_llm import UserLlmPrefs, UserLlmStore
 
 log = logging.getLogger(__name__)
 
@@ -144,18 +146,114 @@ def _active_base_url(config: Config, ui_provider: str, *, catalog_base_url: str)
     return default_base_url(canonical)
 
 
+def _clear_provider_api_keys(config: Config) -> None:
+    config.groq_api_key = ""
+    config.google_api_key = ""
+    config.openrouter_api_key = ""
+    config.ollama_cloud_api_key = ""
+    config.ollama_api_key = ""
+
+
+def _apply_api_key_to_config(config: Config, ui_provider: str, api_key: str) -> None:
+    token = (api_key or "").strip()
+    if not token:
+        return
+    key_env = provider_api_key_env_name(ui_provider)
+    if key_env == "GROQ_API_KEY":
+        config.groq_api_key = token
+    elif key_env == "GOOGLE_API_KEY":
+        config.google_api_key = token
+    elif key_env == "OPENROUTER_API_KEY":
+        config.openrouter_api_key = token
+    elif key_env == "OLLAMA_CLOUD_API_KEY":
+        config.ollama_cloud_api_key = token
+        config.ollama_api_key = token
+
+
+def _apply_user_llm_to_config(config: Config, prefs: UserLlmPrefs) -> Config:
+    """Overlay per-user provider/model/keys onto a Config built from env/catalog."""
+    settings = LlmSettingsStore().ensure_loaded()
+    ui_provider = coerce_ui_provider(prefs.provider)
+    catalog = settings.get_provider(ui_provider)
+    model = prefs.selected_model(ui_provider)
+    model = coerce_provider_model(ui_provider, model, base_url=catalog.base_url)
+    runtime = runtime_provider(ui_provider)
+
+    config.llm_provider = runtime
+    config.active_provider = ui_provider
+    config.active_model = model
+
+    # Per-user mode must not inherit shared .env API keys.
+    _clear_provider_api_keys(config)
+    for name in UI_PROVIDERS:
+        key = prefs.api_key_for(name)
+        if key:
+            _apply_api_key_to_config(config, name, key)
+
+    if runtime == "groq":
+        config.groq_model = model
+        config.openai_base_url = catalog.base_url or default_base_url("groq")
+    elif runtime == "google":
+        config.google_model = model
+        config.openai_base_url = catalog.base_url or default_base_url("google")
+    elif runtime == "openrouter":
+        config.openrouter_model = model
+        config.openai_base_url = catalog.base_url or default_base_url("openrouter")
+    else:
+        config.ollama_model = model
+        if ui_provider == "ollama-cloud":
+            config.ollama_base_url = catalog.base_url or default_base_url("ollama-cloud")
+            config.ollama_cloud_base_url = config.ollama_base_url
+            if prefs.api_key_for("ollama-cloud"):
+                config.ollama_api_key = prefs.api_key_for("ollama-cloud")
+                config.ollama_cloud_api_key = config.ollama_api_key
+        else:
+            if not config.ollama_base_url:
+                config.ollama_base_url = catalog.base_url or default_base_url("ollama")
+            config.ollama_api_key = ""
+    return config
+
+
 def build_config_response(user_id: str | None = None) -> dict:
     reload_runtime_env()
     config = load_config()
     settings = LlmSettingsStore().ensure_loaded()
-    provider = normalize_provider(config.llm_provider)
+
+    prefs: UserLlmPrefs | None = None
+    if user_id:
+        prefs = UserLlmStore(user_id).load()
+        provider = coerce_ui_provider(prefs.provider)
+        model = prefs.selected_model(provider)
+        provider_keys_set = {name: prefs.api_key_is_set(name) for name in UI_PROVIDERS}
+        api_key_set = prefs.api_key_is_set(provider)
+        selected_models = {
+            name: prefs.models.get(name) or default_model_for_provider(name)
+            for name in UI_PROVIDERS
+        }
+        for name, value in prefs.models.items():
+            if value:
+                selected_models[name] = value
+    else:
+        provider = coerce_ui_provider(config.llm_provider)
+        model = _active_model(config, provider) or default_model_for_provider(provider)
+        provider_keys_set = {name: provider_api_key_is_set(name) for name in UI_PROVIDERS}
+        api_key_set = provider_api_key_is_set(provider)
+        selected_models = {
+            name: _active_model(config, name) or default_model_for_provider(name)
+            for name in UI_PROVIDERS
+        }
+
     catalog = settings.get_provider(provider)
-    model = _active_model(config, provider)
+    model = coerce_provider_model(provider, model, base_url=catalog.base_url)
     base_url = _active_base_url(config, provider, catalog_base_url=catalog.base_url)
-    provider_keys_set = {name: provider_api_key_is_set(name) for name in UI_PROVIDERS}
+    if prefs is not None:
+        # Catalog owns shared base URLs for all users.
+        base_url = catalog.base_url or default_base_url(provider)
+
     provider_settings = {
-        name: entry.to_dict() for name, entry in settings.providers.items()
+        name: settings.get_provider(name).to_dict() for name in UI_PROVIDERS
     }
+
     fresh_profile = os.getenv("QA_FRESH_PROFILE", "true").lower() == "true"
     cdp_url = os.getenv("CDP_URL", "")
     chrome_user_data = os.getenv("CHROME_USER_DATA", "")
@@ -207,9 +305,10 @@ def build_config_response(user_id: str | None = None) -> dict:
         "provider": provider,
         "model": model,
         "base_url": base_url,
-        "api_key_set": provider_api_key_is_set(provider),
+        "api_key_set": api_key_set,
         "provider_keys_set": provider_keys_set,
         "provider_settings": provider_settings,
+        "selected_models": selected_models,
         "cdp_port": int(os.getenv("CDP_PORT", "9222")),
         "cdp_url": "" if worker_online else cdp_url,
         "fresh_profile": fresh_profile,
@@ -244,9 +343,17 @@ def _chrome_profile_display_name_from_worker(
 
 def apply_config_update(update, user_id: str | None = None) -> dict:
     reload_runtime_env()
-    config = load_config()
     settings_store = LlmSettingsStore()
-    provider = normalize_provider(update.provider or config.llm_provider)
+
+    if user_id:
+        current = UserLlmStore(user_id).load()
+        provider = coerce_ui_provider(
+            update.provider if update.provider is not None else current.provider
+        )
+    else:
+        provider = coerce_ui_provider(
+            update.provider if update.provider is not None else load_config().llm_provider
+        )
 
     if update.base_url is not None or update.model is not None:
         settings_store.update_catalog(
@@ -255,11 +362,7 @@ def apply_config_update(update, user_id: str | None = None) -> dict:
             model=update.model,
         )
 
-    if not ENV_FILE.exists():
-        ENV_FILE.write_text("")
-
-    if update.provider is not None:
-        set_key(str(ENV_FILE), "LLM_PROVIDER", provider)
+    coerced_model = None
     if update.model is not None:
         catalog = settings_store.ensure_loaded().get_provider(provider)
         coerced_model = coerce_provider_model(
@@ -267,7 +370,33 @@ def apply_config_update(update, user_id: str | None = None) -> dict:
             update.model,
             base_url=update.base_url if update.base_url is not None else catalog.base_url,
         )
-        set_key(str(ENV_FILE), provider_model_env_name(provider), coerced_model)
+
+    llm_touch = (
+        update.provider is not None
+        or update.model is not None
+        or update.api_key is not None
+    )
+    if user_id and llm_touch:
+        UserLlmStore(user_id).update(
+            provider=provider,
+            model=coerced_model,
+            api_key=update.api_key,
+        )
+    elif not user_id and llm_touch:
+        if not ENV_FILE.exists():
+            ENV_FILE.write_text("")
+        if update.provider is not None:
+            set_key(str(ENV_FILE), "LLM_PROVIDER", provider)
+        if coerced_model is not None:
+            set_key(str(ENV_FILE), provider_model_env_name(provider), coerced_model)
+        if update.api_key is not None:
+            key_env = provider_api_key_env_name(provider)
+            if key_env:
+                set_key(str(ENV_FILE), key_env, update.api_key)
+
+    if not ENV_FILE.exists():
+        ENV_FILE.write_text("")
+
     if update.base_url is not None:
         base_url_env = provider_base_url_env_name(provider)
         if base_url_env:
@@ -276,10 +405,6 @@ def apply_config_update(update, user_id: str | None = None) -> dict:
                 base_url_env,
                 coerce_provider_base_url(provider, update.base_url),
             )
-    if update.api_key is not None:
-        key_env = provider_api_key_env_name(provider)
-        if key_env:
-            set_key(str(ENV_FILE), key_env, update.api_key)
     if update.fresh_profile is not None:
         set_key(str(ENV_FILE), "QA_FRESH_PROFILE", "true" if update.fresh_profile else "false")
     if update.chrome_user_data is not None:
@@ -348,11 +473,15 @@ def compute_cost_usd(
     ) / 1_000_000
 
 
-def config_for_run() -> Config:
+def config_for_run(user_id: str | None = None) -> Config:
     reload_runtime_env()
     config = load_config()
+    if user_id:
+        prefs = UserLlmStore(user_id).load()
+        return _apply_user_llm_to_config(config, prefs)
+
     settings = LlmSettingsStore().ensure_loaded()
-    ui_provider = normalize_provider(config.llm_provider)
+    ui_provider = coerce_ui_provider(config.llm_provider)
     runtime = runtime_provider(ui_provider)
     catalog = settings.get_provider(ui_provider)
     config.llm_provider = runtime
@@ -392,25 +521,29 @@ def _update_has_llm_fields(update) -> bool:
     )
 
 
-def config_for_check(update=None) -> Config:
+def config_for_check(update=None, user_id: str | None = None) -> Config:
     """Build a Config for connection testing from saved settings or an optional form payload."""
     reload_runtime_env()
-    config = load_config()
     settings = LlmSettingsStore().ensure_loaded()
 
     if not _update_has_llm_fields(update):
-        return config_for_run()
+        return config_for_run(user_id=user_id)
 
-    ui_provider = normalize_provider(
-        update.provider if update.provider is not None else config.llm_provider
+    prefs = UserLlmStore(user_id).load() if user_id else None
+    if prefs is not None:
+        default_provider = prefs.provider
+        default_model = prefs.selected_model(default_provider)
+    else:
+        config = load_config()
+        default_provider = coerce_ui_provider(config.llm_provider)
+        default_model = _active_model(config, default_provider)
+
+    ui_provider = coerce_ui_provider(
+        update.provider if update.provider is not None else default_provider
     )
     catalog = settings.get_provider(ui_provider)
     if update.base_url is not None:
         base_url = coerce_provider_base_url(ui_provider, update.base_url)
-    elif ui_provider == "ollama-cloud":
-        base_url = coerce_provider_base_url(ui_provider, config.ollama_cloud_base_url)
-    elif ui_provider == "ollama":
-        base_url = coerce_provider_base_url(ui_provider, config.ollama_base_url)
     else:
         base_url = coerce_provider_base_url(ui_provider, catalog.base_url)
     model = (
@@ -418,10 +551,18 @@ def config_for_check(update=None) -> Config:
         if update.model is not None
         else coerce_provider_model(
             ui_provider,
-            _active_model(config, ui_provider),
+            (
+                prefs.selected_model(ui_provider)
+                if prefs is not None
+                else default_model
+            ),
             base_url=base_url,
         )
     )
+
+    config = load_config()
+    if prefs is not None:
+        config = _apply_user_llm_to_config(config, prefs)
 
     runtime = runtime_provider(ui_provider)
     config.llm_provider = runtime
@@ -429,16 +570,7 @@ def config_for_check(update=None) -> Config:
     config.active_model = model
 
     if update.api_key is not None:
-        key_env = provider_api_key_env_name(ui_provider)
-        if key_env == "GROQ_API_KEY":
-            config.groq_api_key = update.api_key
-        elif key_env == "GOOGLE_API_KEY":
-            config.google_api_key = update.api_key
-        elif key_env == "OPENROUTER_API_KEY":
-            config.openrouter_api_key = update.api_key
-        elif key_env == "OLLAMA_CLOUD_API_KEY":
-            config.ollama_cloud_api_key = update.api_key
-            config.ollama_api_key = update.api_key
+        _apply_api_key_to_config(config, ui_provider, update.api_key)
 
     if runtime == "groq":
         config.groq_model = model
@@ -452,11 +584,13 @@ def config_for_check(update=None) -> Config:
     else:
         config.ollama_model = model
         config.ollama_base_url = base_url or default_base_url(ui_provider)
+        if ui_provider == "ollama-cloud" and config.ollama_cloud_api_key:
+            config.ollama_api_key = config.ollama_cloud_api_key
     return config
 
 
-def check_llm_connection(update=None) -> None:
-    config = config_for_check(update)
+def check_llm_connection(update=None, user_id: str | None = None) -> None:
+    config = config_for_check(update, user_id=user_id)
     from ..main import create_llm
 
     try:

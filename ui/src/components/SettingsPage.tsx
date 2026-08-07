@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Check, Loader2, Plus, Trash2, X } from 'lucide-react'
 import { checkConfig, getConfig, getPricing, getWorkerStatus, isProviderApiKeySet, listChromeProfiles, savePricing, updateConfig } from '@/api'
-import { defaultBaseUrl, defaultModel, isValidBaseUrlForProvider, normalizeProvider, providerUsesApiKey } from '@/providers'
+import { defaultBaseUrl, defaultModel, isValidBaseUrlForProvider, coerceUiProvider, providerUsesApiKey, UI_PROVIDERS } from '@/providers'
 import type { BrowserSessionMode, ChromeProfile, Config, PricingEntry } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
@@ -21,6 +21,8 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 
 const PROFILE_APP_DEFAULT = '__app_default__'
 const PROFILE_CUSTOM = '__custom__'
+/** Display-only stand-in when a key is stored; never sent to the server. */
+const MASKED_API_KEY = '********'
 
 function inferProfileSelection(
   chromeUserData: string,
@@ -81,9 +83,11 @@ export default function SettingsPage() {
   const [pricingSaved, setPricingSaved] = useState(false)
 
   function applyConfig(next: Config) {
-    setProvider(normalizeProvider(next.provider))
+    const nextProvider = coerceUiProvider(next.provider)
+    setProvider(nextProvider)
     setBaseUrl(next.base_url)
     setModel(next.model)
+    setApiKey(isProviderApiKeySet(nextProvider, next) ? MASKED_API_KEY : '')
     setFreshProfile(next.fresh_profile ?? true)
     setChromeUserData(next.chrome_user_data ?? '')
     setChromeProfileDirectory(next.chrome_profile_directory ?? '')
@@ -103,18 +107,21 @@ export default function SettingsPage() {
   }, [config, dirty, chromeProfiles])
 
   function handleProviderChange(next: string) {
-    const canonical = normalizeProvider(next)
+    const canonical = coerceUiProvider(next)
     setDirty(true)
     setProvider(canonical)
-    setApiKey('')
+    setApiKey(isProviderApiKeySet(canonical, config) ? MASKED_API_KEY : '')
     const saved = config?.provider_settings?.[canonical]
     const savedBaseUrl = saved?.base_url || ''
     const baseUrlValid = isValidBaseUrlForProvider(canonical, savedBaseUrl)
     setBaseUrl(baseUrlValid ? savedBaseUrl : defaultBaseUrl(canonical))
-    if (canonical === normalizeProvider(config?.provider ?? '')) {
+    const lastModel = config?.selected_models?.[canonical]?.trim()
+    const savedModels = saved?.models ?? []
+    if (lastModel) {
+      setModel(lastModel)
+    } else if (canonical === coerceUiProvider(config?.provider ?? '')) {
       setModel(config?.model || defaultModel(canonical))
     } else {
-      const savedModels = saved?.models ?? []
       setModel(baseUrlValid && savedModels.length > 0 ? savedModels[0] : defaultModel(canonical))
     }
   }
@@ -125,13 +132,19 @@ export default function SettingsPage() {
 
   const connectOnline = Boolean(workerStatus?.online ?? config?.connect_online)
 
+  function apiKeyForRequest(): string | undefined {
+    const trimmed = apiKey.trim()
+    if (!trimmed || trimmed === MASKED_API_KEY) return undefined
+    return trimmed
+  }
+
   const saveMutation = useMutation({
     mutationFn: () =>
       updateConfig({
         provider,
         base_url: baseUrl,
         model,
-        api_key: apiKey || undefined,
+        api_key: apiKeyForRequest(),
         fresh_profile: freshProfile,
         chrome_user_data: chromeUserData,
         chrome_profile_directory: chromeProfileDirectory,
@@ -140,7 +153,6 @@ export default function SettingsPage() {
     onSuccess: (saved) => {
       queryClient.setQueryData(['config'], saved)
       applyConfig(saved)
-      setApiKey('')
       setDirty(false)
       queryClient.invalidateQueries({ queryKey: ['chrome-profiles'] })
       queryClient.invalidateQueries({ queryKey: ['worker-status'] })
@@ -173,7 +185,7 @@ export default function SettingsPage() {
       provider,
       base_url: baseUrl,
       model,
-      api_key: apiKey || undefined,
+      api_key: apiKeyForRequest(),
     }).catch((e) => ({ ok: false, error: String(e) }))
     setCheckResult(result)
     setChecking(false)
@@ -206,7 +218,8 @@ export default function SettingsPage() {
 
           <TabsContent value="llm" className="space-y-5">
             <p className="text-sm text-muted-foreground">
-              Provider, models, and API keys are shared across all users on this server.
+              Provider, model, and API key are saved for your account. The available-model list is
+              shared on this server.
             </p>
 
             <div className="space-y-2">
@@ -216,11 +229,11 @@ export default function SettingsPage() {
                   <SelectValue placeholder="Select provider" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="ollama-cloud">Ollama Cloud</SelectItem>
-                  <SelectItem value="ollama">Ollama (local)</SelectItem>
-                  <SelectItem value="google">Google Gemini</SelectItem>
-                  <SelectItem value="openrouter">OpenRouter</SelectItem>
-                  <SelectItem value="groq">Groq</SelectItem>
+                  {UI_PROVIDERS.map((item) => (
+                    <SelectItem key={item.id} value={item.id}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -263,7 +276,18 @@ export default function SettingsPage() {
                       setDirty(true)
                       setApiKey(e.target.value)
                     }}
-                    placeholder={providerApiKeySet ? '••••••••••••' : 'Enter API key…'}
+                    onFocus={() => {
+                      if (apiKey === MASKED_API_KEY) {
+                        setApiKey('')
+                      }
+                    }}
+                    onBlur={() => {
+                      if (!apiKey.trim() && providerApiKeySet) {
+                        setApiKey(MASKED_API_KEY)
+                      }
+                    }}
+                    autoComplete="off"
+                    placeholder={providerApiKeySet ? undefined : 'Enter API key…'}
                     className="mono"
                   />
                 </>

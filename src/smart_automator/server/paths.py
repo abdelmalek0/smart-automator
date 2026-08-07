@@ -25,6 +25,7 @@ REPLAY_DIR = Path(os.getenv("REPLAY_DIR", str(PROJECT_ROOT / "data" / "replays")
 AUTH_DIR = Path(os.getenv("AUTH_DIR", str(PROJECT_ROOT / "data" / "auth")))
 RUNS_DIR = Path(os.getenv("RUNS_DIR", str(PROJECT_ROOT / "data" / "runs")))
 WEBSITES_DIR = Path(os.getenv("WEBSITES_DIR", str(PROJECT_ROOT / "data" / "websites")))
+LLM_USER_DIR = Path(os.getenv("LLM_USER_DIR", str(PROJECT_ROOT / "data" / "llm")))
 USERS_FILE = AUTH_DIR / "users.json"
 SESSIONS_FILE = AUTH_DIR / "sessions.json"
 WORKER_TOKENS_FILE = AUTH_DIR / "worker_tokens.json"

@@ -218,6 +218,7 @@ export interface Config {
   api_key_set: boolean
   provider_keys_set: Record<string, boolean>
   provider_settings: Record<string, ProviderSettings>
+  selected_models?: Record<string, string>
   cdp_port: number
   cdp_url: string
   fresh_profile: boolean

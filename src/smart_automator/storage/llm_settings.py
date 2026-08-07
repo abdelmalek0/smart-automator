@@ -239,9 +239,13 @@ class LlmSettingsStore:
                         name,
                         base_url=entry.base_url,
                     )
-                    models = [m for m in entry.models if m != coerced_model]
-                    models.insert(0, coerced_model)
-                    entry.models = models[:_MAX_MODELS_PER_PROVIDER]
+                    if coerced_model not in entry.models:
+                        models = list(entry.models)
+                        models.append(coerced_model)
+                        # Drop oldest entries when over the cap.
+                        if len(models) > _MAX_MODELS_PER_PROVIDER:
+                            models = models[-_MAX_MODELS_PER_PROVIDER:]
+                        entry.models = models
             settings.sanitize_providers()
             self._save_raw(settings.to_dict())
             return settings

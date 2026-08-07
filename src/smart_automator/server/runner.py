@@ -369,7 +369,7 @@ def run_automation(run: RunState) -> None:
                     f"Replay script not found for source run {run.source_run_id}"
                 )
 
-        config = config_for_run()
+        config = config_for_run(run.user_id)
         config.headless = run.headless
         config.max_steps = run.max_steps
         if run.fresh_profile is not None:

@@ -9,7 +9,7 @@ import type {
   RunReplay,
   RunSummary,
 } from './types'
-import { normalizeProvider } from './providers'
+import { coerceUiProvider } from './providers'
 
 const BASE = '/api'
 
@@ -189,10 +189,10 @@ export async function updateConfig(payload: ConfigUpdatePayload): Promise<Config
 /** Whether the selected provider has a stored API key (dedicated slot or legacy fallback). */
 export function isProviderApiKeySet(provider: string, config: Config | undefined): boolean {
   if (!config) return false
-  const canonical = normalizeProvider(provider)
+  const canonical = coerceUiProvider(provider)
   if (config.provider_keys_set?.[canonical]) return true
   const hasDedicated = Object.values(config.provider_keys_set ?? {}).some(Boolean)
-  if (!hasDedicated && canonical === normalizeProvider(config.provider) && config.api_key_set) {
+  if (!hasDedicated && canonical === coerceUiProvider(config.provider) && config.api_key_set) {
     return true
   }
   return false

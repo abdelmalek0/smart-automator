@@ -5,7 +5,7 @@ import os
 import httpx
 
 SUPPORTED_PROVIDERS = ("groq", "ollama", "google", "openrouter")
-UI_PROVIDERS = ("groq", "ollama-cloud", "ollama", "google", "openrouter")
+UI_PROVIDERS = ("groq", "ollama-cloud", "google", "openrouter")
 
 _PROVIDER_ALIASES = {
     "ollama-local": "ollama",
@@ -104,6 +104,14 @@ def normalize_provider(provider: str) -> str:
         return key
     if key == "ollama-cloud":
         return key
+    return "groq"
+
+
+def coerce_ui_provider(provider: str) -> str:
+    """Map a provider id to one that appears in Settings (UI_PROVIDERS)."""
+    canonical = normalize_provider(provider)
+    if canonical in UI_PROVIDERS:
+        return canonical
     return "groq"
 
 

@@ -18,8 +18,10 @@ from smart_automator.server.config_service import (
 )
 from smart_automator.server.models import ConfigUpdate
 from smart_automator.server.provider_utils import (
+    UI_PROVIDERS,
     coerce_provider_base_url,
     coerce_provider_model,
+    coerce_ui_provider,
     default_base_url,
     default_model_for_provider,
     format_llm_connection_error,
@@ -42,6 +44,12 @@ class TestOpenRouterProvider(unittest.TestCase):
             default_model_for_provider("openrouter"),
             "deepseek/deepseek-v4-flash-0731",
         )
+
+    def test_ui_providers_exclude_local_ollama(self):
+        self.assertNotIn("ollama", UI_PROVIDERS)
+        self.assertIn("ollama-cloud", UI_PROVIDERS)
+        self.assertEqual(coerce_ui_provider("ollama"), "groq")
+        self.assertEqual(coerce_ui_provider("ollama-cloud"), "ollama-cloud")
 
     @patch("smart_automator.server.config_service.LlmSettingsStore")
     @patch("smart_automator.server.config_service.load_config")
@@ -185,6 +193,48 @@ class TestLlmSettingsMigration(unittest.TestCase):
             )
             self.assertNotIn("model", saved["providers"]["ollama"])
 
+    def test_update_catalog_keeps_order_for_existing_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "llm_settings.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "providers": {
+                            "groq": {
+                                "base_url": "https://api.groq.com/openai/v1",
+                                "models": ["model-a", "model-b", "model-c"],
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            store = LlmSettingsStore(path=path)
+            store.update_catalog(provider="groq", model="model-b")
+            entry = store.load().get_provider("groq")
+            self.assertEqual(entry.models, ["model-a", "model-b", "model-c"])
+
+    def test_update_catalog_appends_new_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "llm_settings.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "providers": {
+                            "groq": {
+                                "base_url": "https://api.groq.com/openai/v1",
+                                "models": ["model-a", "model-b"],
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            store = LlmSettingsStore(path=path)
+            store.update_catalog(provider="groq", model="model-c")
+            entry = store.load().get_provider("groq")
+            self.assertEqual(entry.models, ["model-a", "model-b", "model-c"])
+
     def test_update_catalog_coerces_cloud_url_for_local(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "llm_settings.json"
@@ -318,7 +368,7 @@ class TestEnvAuthoritativeConfig(unittest.TestCase):
     @patch("smart_automator.server.config_service.load_config")
     @patch("smart_automator.server.config_service.reload_runtime_env")
     @patch("smart_automator.server.config_service.ENV_FILE")
-    def test_apply_config_update_writes_local_vars_for_ollama(
+    def test_apply_config_update_coerces_local_ollama_to_groq(
         self,
         env_file_mock,
         _reload,
@@ -329,7 +379,9 @@ class TestEnvAuthoritativeConfig(unittest.TestCase):
     ):
         env_file_mock.exists.return_value = True
         load_config_mock.return_value = Config(llm_provider="groq")
-        store_mock.return_value.ensure_loaded.return_value = MagicMock()
+        catalog = MagicMock()
+        catalog.base_url = "https://api.groq.com/openai/v1"
+        store_mock.return_value.ensure_loaded.return_value.get_provider.return_value = catalog
 
         apply_config_update(
             ConfigUpdate(
@@ -339,22 +391,12 @@ class TestEnvAuthoritativeConfig(unittest.TestCase):
             )
         )
 
-        model_writes = [
-            call.args for call in set_key_mock.call_args_list if call.args[1] == "OLLAMA_MODEL"
+        provider_writes = [
+            call.args for call in set_key_mock.call_args_list if call.args[1] == "LLM_PROVIDER"
         ]
-        self.assertEqual(
-            model_writes,
-            [(str(env_file_mock), "OLLAMA_MODEL", "llama3.2")],
-        )
-        base_url_writes = [
-            call.args for call in set_key_mock.call_args_list if call.args[1] == "OLLAMA_BASE_URL"
-        ]
-        self.assertEqual(
-            base_url_writes,
-            [(str(env_file_mock), "OLLAMA_BASE_URL", "http://localhost:11434")],
-        )
+        self.assertEqual(provider_writes, [(str(env_file_mock), "LLM_PROVIDER", "groq")])
         self.assertFalse(
-            any(call.args[1] == "OLLAMA_CLOUD_MODEL" for call in set_key_mock.call_args_list)
+            any(call.args[1] == "OLLAMA_MODEL" for call in set_key_mock.call_args_list)
         )
 
 
