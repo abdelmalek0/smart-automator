@@ -9,6 +9,7 @@ from ..agent.context import ActionResult
 from ..browser.context import BrowserContext
 from .replay_script import (
     _playwright_keyboard_key,
+    _split_replay_locator_candidates,
     assert_locator_matches_identity,
     resolve_replay_locator,
 )
@@ -23,6 +24,22 @@ _IDENTITY_GATE_ACTIONS = frozenset({
     "click_element",
     "input_text",
     "select_dropdown_option",
+})
+
+_REQUIRED_ELEMENT_LOCATOR_ACTIONS = frozenset({
+    "click_element",
+    "input_text",
+    "select_dropdown_option",
+    "scroll_to_text",
+    "get_dropdown_options",
+})
+
+_OPTIONAL_ELEMENT_LOCATOR_ACTIONS = frozenset({
+    "scroll_to_percent",
+    "scroll_to_top",
+    "scroll_to_bottom",
+    "previous_page",
+    "next_page",
 })
 
 
@@ -43,20 +60,23 @@ def _resolve_locator(
     )
 
 
-def _uses_element_locator(step: dict[str, Any]) -> bool:
+def _step_has_locator_candidates(step: dict[str, Any]) -> bool:
+    identity, positional = _split_replay_locator_candidates(step)
+    return bool(identity or positional)
+
+
+def _resolve_step_locator(
+    page: PlaywrightPage,
+    step: dict[str, Any],
+) -> Locator | None:
     action = step.get("action", "")
-    return action in {
-        "click_element",
-        "input_text",
-        "select_dropdown_option",
-        "scroll_to_percent",
-        "scroll_to_top",
-        "scroll_to_bottom",
-        "previous_page",
-        "next_page",
-        "scroll_to_text",
-        "get_dropdown_options",
-    }
+    if action in _REQUIRED_ELEMENT_LOCATOR_ACTIONS:
+        return _resolve_locator(page, step)
+    if action in _OPTIONAL_ELEMENT_LOCATOR_ACTIONS:
+        if not _step_has_locator_candidates(step):
+            return None
+        return _resolve_locator(page, step)
+    return None
 
 
 def _execute_replay_step(page: PlaywrightPage, browser_context: BrowserContext, step: dict[str, Any]) -> ActionResult:
@@ -121,7 +141,7 @@ def _execute_replay_step(page: PlaywrightPage, browser_context: BrowserContext, 
                 browser_context.close_tab(tab_id)
             return ActionResult(extracted_content="Closed tab", include_in_memory=True, action_name=action_name)
 
-        locator = _resolve_locator(page, step) if _uses_element_locator(step) else None
+        locator = _resolve_step_locator(page, step)
         if locator is not None and action in _IDENTITY_GATE_ACTIONS:
             assert_locator_matches_identity(locator, step)
 
@@ -153,7 +173,7 @@ def _execute_replay_step(page: PlaywrightPage, browser_context: BrowserContext, 
             )
         if action == "scroll_to_percent":
             percent = int(args.get("yPercent") or args.get("percent") or 0)
-            if locator is not None and _uses_element_locator(step):
+            if locator is not None:
                 locator.evaluate(
                     "(el, pct) => el.scrollTo({ top: (el.scrollHeight - el.clientHeight) * pct / 100 })",
                     percent,

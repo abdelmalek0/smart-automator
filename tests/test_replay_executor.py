@@ -379,6 +379,50 @@ class TestReplayExecutor(unittest.TestCase):
         self.assertEqual(locator.click.call_count, 2)
         self.assertIsNone(results[0].error)
 
+    def test_locatoreless_scroll_to_percent_uses_window(self):
+        browser_context = MagicMock()
+        page = MagicMock()
+        browser_context.get_current_page.return_value.playwright_page = page
+
+        steps = [
+            {
+                "action": "scroll_to_percent",
+                "args": {"percent": 50, "yPercent": 50},
+            }
+        ]
+
+        results = execute_replay_steps(browser_context, steps)
+
+        page.evaluate.assert_called_once()
+        self.assertIn("window.scrollTo", page.evaluate.call_args[0][0])
+        self.assertEqual(page.evaluate.call_args[0][1], 50)
+        self.assertEqual(len(results), 1)
+        self.assertIsNone(results[0].error)
+        self.assertIn("50%", results[0].extracted_content or "")
+
+    def test_scroll_to_percent_with_xpath_uses_element(self):
+        browser_context = MagicMock()
+        page = MagicMock()
+        locator = self._unique_locator()
+        page.locator.return_value = locator
+        browser_context.get_current_page.return_value.playwright_page = page
+
+        steps = [
+            {
+                "action": "scroll_to_percent",
+                "args": {"percent": 75, "xpath": "html/body/div"},
+            }
+        ]
+
+        results = execute_replay_steps(browser_context, steps)
+
+        page.locator.assert_called()
+        locator.evaluate.assert_called_once()
+        self.assertEqual(locator.evaluate.call_args[0][1], 75)
+        page.evaluate.assert_not_called()
+        self.assertEqual(len(results), 1)
+        self.assertIsNone(results[0].error)
+
 
 if __name__ == "__main__":
     unittest.main()

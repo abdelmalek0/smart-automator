@@ -312,6 +312,87 @@ class TestOptionalScrollIndexCoercion(unittest.TestCase):
         call_args = page.resolve_scroll_target.call_args
         self.assertIs(call_args[0][0], node)
         self.assertIn("container", result.extracted_content or "")
+        self.assertIsNotNone(result.interacted_element)
+        self.assertEqual(result.interacted_element.xpath, "html/body/div")
+
+
+class TestScrollRegionCaptureForReplay(unittest.TestCase):
+    def _registry(self, page: MagicMock):
+        from smart_automator.actions.builder import ActionBuilder
+
+        context = AgentContext(
+            task_id="t",
+            browser_context=MagicMock(),
+            message_manager=MagicMock(),
+            options=AgentOptions(),
+        )
+        context.browser_context.get_current_page.return_value = page
+        return ActionBuilder(context).build_default_actions()
+
+    def test_scroll_to_percent_captures_container_xpath(self):
+        from smart_automator.reporting.replay_script import build_replay_steps
+
+        page = MagicMock()
+        region = ScrollRegion(
+            key="pane",
+            kind="container",
+            tag="div",
+            xpath="html/body/div[2]",
+            scroll_top=0,
+            client_height=200,
+            scroll_height=1000,
+        )
+        page.scroll_to_percent.return_value = region
+        result = self._registry(page).execute(
+            Action(name="scroll_to_percent", args={"percent": 50}),
+            {},
+        )
+        self.assertIsNotNone(result.interacted_element)
+        self.assertEqual(result.interacted_element.xpath, "html/body/div[2]")
+
+        steps = build_replay_steps(
+            [
+                {
+                    "action": "scroll_to_percent",
+                    "args": {"percent": 50, "yPercent": 50},
+                    "element": result.interacted_element.to_dict(),
+                }
+            ]
+        )
+        self.assertEqual(steps[0]["args"]["xpath"], "html/body/div[2]")
+        self.assertEqual(steps[0]["args"]["percent"], 50)
+
+    def test_scroll_to_percent_window_leaves_element_none(self):
+        from smart_automator.reporting.replay_script import build_replay_steps
+
+        page = MagicMock()
+        region = ScrollRegion(
+            key="window",
+            kind="window",
+            tag="window",
+            xpath="",
+            scroll_top=0,
+            client_height=800,
+            scroll_height=2000,
+        )
+        page.scroll_to_percent.return_value = region
+        result = self._registry(page).execute(
+            Action(name="scroll_to_percent", args={"percent": 50}),
+            {},
+        )
+        self.assertIsNone(result.interacted_element)
+
+        steps = build_replay_steps(
+            [
+                {
+                    "action": "scroll_to_percent",
+                    "args": {"percent": 50, "yPercent": 50},
+                    "element": None,
+                }
+            ]
+        )
+        self.assertNotIn("xpath", steps[0]["args"])
+        self.assertEqual(steps[0]["args"]["percent"], 50)
 
 
 if __name__ == "__main__":

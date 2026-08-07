@@ -28,9 +28,28 @@ from ..agent.verification import (
     redact_input_message,
 )
 from ..browser.dom import DOMElementNode
-from ..browser.history import convert_dom_element_to_history_element, find_history_element_in_tree, is_file_uploader
-from ..browser.views import BrowserState, URLNotAllowedError
+from ..browser.history import (
+    DOMHistoryElement,
+    convert_dom_element_to_history_element,
+    find_history_element_in_tree,
+    is_file_uploader,
+)
+from ..browser.views import BrowserState, ScrollRegion, URLNotAllowedError
 from .schemas import Action
+
+
+def _history_element_from_scroll_region(region: ScrollRegion | None) -> DOMHistoryElement | None:
+    """Capture container scroll targets for replay; window scrolls stay locatoreless."""
+    if region is None or region.kind != "container":
+        return None
+    xpath = (region.xpath or "").strip()
+    if not xpath:
+        return None
+    return DOMHistoryElement(
+        tag_name=region.tag or "div",
+        xpath=xpath,
+        highlight_index=None,
+    )
 
 
 def _resolve_element_for_action(
@@ -686,6 +705,7 @@ class ActionBuilder:
             return ActionResult(
                 extracted_content=f"Scrolled {label} to {y_percent}%",
                 include_in_memory=True,
+                interacted_element=_history_element_from_scroll_region(region),
             )
 
         def scroll_to_top(args, selector_map):
@@ -697,15 +717,18 @@ class ActionBuilder:
                     include_in_memory=True,
                 )
             region, _handle = resolved
+            interacted = _history_element_from_scroll_region(region)
             if region.at_top:
                 return ActionResult(
                     extracted_content=f"{_scroll_result_label(region)} already at top",
                     include_in_memory=True,
+                    interacted_element=interacted,
                 )
             get_page().scroll_to_percent(0, element)
             return ActionResult(
                 extracted_content=f"Scrolled {_scroll_result_label(region)} to top",
                 include_in_memory=True,
+                interacted_element=interacted,
             )
 
         def scroll_to_bottom(args, selector_map):
@@ -717,15 +740,18 @@ class ActionBuilder:
                     include_in_memory=True,
                 )
             region, _handle = resolved
+            interacted = _history_element_from_scroll_region(region)
             if region.at_bottom:
                 return ActionResult(
                     extracted_content=f"{_scroll_result_label(region)} already at bottom",
                     include_in_memory=True,
+                    interacted_element=interacted,
                 )
             get_page().scroll_to_percent(100, element)
             return ActionResult(
                 extracted_content=f"Scrolled {_scroll_result_label(region)} to bottom",
                 include_in_memory=True,
+                interacted_element=interacted,
             )
 
         def previous_page(args, selector_map):
@@ -737,15 +763,18 @@ class ActionBuilder:
                     include_in_memory=True,
                 )
             region, _handle = resolved
+            interacted = _history_element_from_scroll_region(region)
             if region.at_top:
                 return ActionResult(
                     extracted_content=f"{_scroll_result_label(region)} already at top",
                     include_in_memory=True,
+                    interacted_element=interacted,
                 )
             get_page().scroll_to_previous_page(element)
             return ActionResult(
                 extracted_content=f"Scrolled {_scroll_result_label(region)} to previous page",
                 include_in_memory=True,
+                interacted_element=interacted,
             )
 
         def next_page(args, selector_map):
@@ -757,15 +786,18 @@ class ActionBuilder:
                     include_in_memory=True,
                 )
             region, _handle = resolved
+            interacted = _history_element_from_scroll_region(region)
             if region.at_bottom:
                 return ActionResult(
                     extracted_content=f"{_scroll_result_label(region)} already at bottom",
                     include_in_memory=True,
+                    interacted_element=interacted,
                 )
             get_page().scroll_to_next_page(element)
             return ActionResult(
                 extracted_content=f"Scrolled {_scroll_result_label(region)} to next page",
                 include_in_memory=True,
+                interacted_element=interacted,
             )
 
         def scroll_to_text(args, _selector_map):
