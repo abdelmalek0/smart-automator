@@ -646,8 +646,7 @@ async def api_update_config(update: ConfigUpdate, user: User = Depends(get_curre
 @app.post("/api/config/check")
 async def api_check_config(update: ConfigUpdate | None = None, user: User = Depends(get_current_user)):
     try:
-        check_llm_connection(update, user_id=user.id)
-        return {"ok": True}
+        return check_llm_connection(update, user_id=user.id)
     except BaseException as exc:
         return {"ok": False, "error": str(exc)}
 

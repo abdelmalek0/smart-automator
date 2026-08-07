@@ -71,6 +71,29 @@ class TestUserLlmStore(unittest.TestCase):
         prefs = UserLlmPrefs.from_dict({"provider": "ollama", "models": {}, "api_keys": {}})
         self.assertEqual(prefs.provider, "groq")
 
+    def test_openrouter_provider_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("smart_automator.storage.user_llm.server_paths.LLM_USER_DIR", Path(tmp)):
+                store = UserLlmStore("u-or")
+                store.update(
+                    provider="openrouter",
+                    model="deepseek/deepseek-v4-flash-0731",
+                    openrouter_provider="together",
+                )
+                prefs = store.load()
+                self.assertEqual(prefs.openrouter_provider, "together")
+                store.update(provider="openrouter", openrouter_provider="")
+                cleared = store.load()
+                self.assertEqual(cleared.openrouter_provider, "")
+
+    def test_openrouter_provider_ignored_when_not_openrouter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("smart_automator.storage.user_llm.server_paths.LLM_USER_DIR", Path(tmp)):
+                store = UserLlmStore("u-groq")
+                store.update(provider="groq", openrouter_provider="together")
+                prefs = store.load()
+                self.assertEqual(prefs.openrouter_provider, "")
+
 
 class TestPerUserConfigService(unittest.TestCase):
     @patch("smart_automator.server.config_service.LlmSettingsStore")
@@ -104,6 +127,7 @@ class TestPerUserConfigService(unittest.TestCase):
                         provider="openrouter",
                         models={"openrouter": "user-model"},
                         api_keys={"openrouter": "user-key"},
+                        openrouter_provider="fireworks",
                     )
                 )
                 config = config_for_run("u1")
@@ -111,6 +135,7 @@ class TestPerUserConfigService(unittest.TestCase):
         self.assertEqual(config.active_provider, "openrouter")
         self.assertEqual(config.active_model, "user-model")
         self.assertEqual(config.openrouter_api_key, "user-key")
+        self.assertEqual(config.openrouter_provider, "fireworks")
         self.assertEqual(config.groq_api_key, "")
         self.assertEqual(config.openai_base_url, "https://openrouter.ai/api/v1")
 

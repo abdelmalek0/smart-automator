@@ -72,13 +72,18 @@ export default function SettingsPage() {
   const [baseUrl, setBaseUrl] = useState('')
   const [model, setModel] = useState('')
   const [apiKey, setApiKey] = useState('')
+  const [openrouterProvider, setOpenrouterProvider] = useState('')
   const [freshProfile, setFreshProfile] = useState(true)
   const [chromeUserData, setChromeUserData] = useState('')
   const [chromeProfileDirectory, setChromeProfileDirectory] = useState('')
   const [profileSelection, setProfileSelection] = useState(PROFILE_APP_DEFAULT)
   const [dirty, setDirty] = useState(false)
   const [checking, setChecking] = useState(false)
-  const [checkResult, setCheckResult] = useState<{ ok: boolean; error?: string } | null>(null)
+  const [checkResult, setCheckResult] = useState<{
+    ok: boolean
+    error?: string
+    provider_name?: string
+  } | null>(null)
   const [pricing, setPricing] = useState<PricingEntry[]>([])
   const [pricingSaved, setPricingSaved] = useState(false)
 
@@ -88,6 +93,7 @@ export default function SettingsPage() {
     setBaseUrl(next.base_url)
     setModel(next.model)
     setApiKey(isProviderApiKeySet(nextProvider, next) ? MASKED_API_KEY : '')
+    setOpenrouterProvider(next.openrouter_provider ?? '')
     setFreshProfile(next.fresh_profile ?? true)
     setChromeUserData(next.chrome_user_data ?? '')
     setChromeProfileDirectory(next.chrome_profile_directory ?? '')
@@ -145,6 +151,7 @@ export default function SettingsPage() {
         base_url: baseUrl,
         model,
         api_key: apiKeyForRequest(),
+        openrouter_provider: provider === 'openrouter' ? openrouterProvider.trim() : undefined,
         fresh_profile: freshProfile,
         chrome_user_data: chromeUserData,
         chrome_profile_directory: chromeProfileDirectory,
@@ -186,6 +193,7 @@ export default function SettingsPage() {
       base_url: baseUrl,
       model,
       api_key: apiKeyForRequest(),
+      openrouter_provider: provider === 'openrouter' ? openrouterProvider.trim() : undefined,
     }).catch((e) => ({ ok: false, error: String(e) }))
     setCheckResult(result)
     setChecking(false)
@@ -260,6 +268,24 @@ export default function SettingsPage() {
               }}
             />
 
+            {provider === 'openrouter' && (
+              <div className="space-y-2">
+                <Label>Upstream provider</Label>
+                <Input
+                  value={openrouterProvider}
+                  onChange={(e) => {
+                    setDirty(true)
+                    setOpenrouterProvider(e.target.value)
+                  }}
+                  placeholder="Auto"
+                  className="mono"
+                />
+                <p className="text-xs text-muted-foreground">
+                  OpenRouter provider slug (e.g. together, deepinfra). Leave empty for Auto.
+                </p>
+              </div>
+            )}
+
             <div className="space-y-2">
               {providerUsesApiKey(provider) && (
                 <>
@@ -302,7 +328,10 @@ export default function SettingsPage() {
                 <span className={`text-sm flex items-center gap-1 ${checkResult.ok ? 'text-success' : 'text-destructive'}`}>
                   {checkResult.ok ? (
                     <>
-                      <Check className="h-4 w-4" /> Connected
+                      <Check className="h-4 w-4" />{' '}
+                      {checkResult.provider_name
+                        ? `Connected (${checkResult.provider_name})`
+                        : 'Connected'}
                     </>
                   ) : (
                     <>
@@ -532,6 +561,12 @@ export default function SettingsPage() {
                   <InfoRow label="Provider" value={config.provider} />
                   <InfoRow label="Model" value={config.model} />
                   <InfoRow label="Base URL" value={config.base_url} />
+                  {config.provider === 'openrouter' && (
+                    <InfoRow
+                      label="Upstream provider"
+                      value={config.openrouter_provider?.trim() || 'Auto'}
+                    />
+                  )}
                   <InfoRow label="Connect" value={config.connect_online ? 'Online' : 'Offline'} />
                   <InfoRow label="Fresh profile" value={config.fresh_profile ? 'Yes' : 'No'} />
                   <InfoRow

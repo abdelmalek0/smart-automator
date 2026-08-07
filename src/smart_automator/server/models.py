@@ -102,6 +102,7 @@ class ConfigUpdate(BaseModel):
     base_url: Optional[str] = None
     model: Optional[str] = None
     api_key: Optional[str] = None
+    openrouter_provider: Optional[str] = None
     fresh_profile: Optional[bool] = None
     chrome_user_data: Optional[str] = None
     chrome_profile_directory: Optional[str] = None

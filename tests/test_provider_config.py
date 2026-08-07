@@ -12,6 +12,7 @@ from smart_automator.llm.ollama import OllamaLLM
 from smart_automator.main import create_llm
 from smart_automator.server.config_service import (
     apply_config_update,
+    check_llm_connection,
     config_for_check,
     config_for_run,
     migrate_legacy_ollama_env,
@@ -127,6 +128,136 @@ class TestOpenRouterProvider(unittest.TestCase):
         self.assertEqual(config.openrouter_model, "deepseek/deepseek-v4-flash-0731")
         self.assertEqual(config.openrouter_api_key, "sk-or-form")
         self.assertEqual(config.openai_base_url, "https://openrouter.ai/api/v1")
+
+    def test_openrouter_payload_omits_provider_when_auto(self):
+        config = Config(
+            llm_provider="openrouter",
+            openrouter_api_key="sk-or-test",
+            openrouter_model="deepseek/deepseek-v4-flash-0731",
+            openrouter_provider="",
+            openai_base_url="https://openrouter.ai/api/v1",
+            active_model="deepseek/deepseek-v4-flash-0731",
+        )
+        llm = OpenAICompatLLM(config, provider="openrouter")
+        request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+        response = httpx.Response(
+            200,
+            request=request,
+            json={
+                "id": "gen-auto-1",
+                "choices": [{"message": {"content": "OK"}}],
+                "usage": {},
+            },
+        )
+        with patch.object(llm._client, "post", return_value=response) as post:
+            content = llm.chat([{"role": "user", "content": "hi"}])
+        self.assertEqual(content, "OK")
+        payload = post.call_args.kwargs["json"]
+        self.assertNotIn("provider", payload)
+        self.assertEqual(llm.last_generation_id, "gen-auto-1")
+
+    def test_openrouter_payload_forces_only_provider(self):
+        config = Config(
+            llm_provider="openrouter",
+            openrouter_api_key="sk-or-test",
+            openrouter_model="deepseek/deepseek-v4-flash-0731",
+            openrouter_provider="together",
+            openai_base_url="https://openrouter.ai/api/v1",
+            active_model="deepseek/deepseek-v4-flash-0731",
+        )
+        llm = OpenAICompatLLM(config, provider="openrouter")
+        request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+        response = httpx.Response(
+            200,
+            request=request,
+            json={
+                "id": "gen-forced-1",
+                "choices": [{"message": {"content": "OK"}}],
+                "usage": {},
+            },
+        )
+        with patch.object(llm._client, "post", return_value=response) as post:
+            llm.chat([{"role": "user", "content": "hi"}])
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(
+            payload["provider"],
+            {"only": ["together"], "allow_fallbacks": False},
+        )
+
+    @patch("smart_automator.server.config_service.LlmSettingsStore")
+    @patch("smart_automator.server.config_service.load_config")
+    @patch("smart_automator.server.config_service.reload_runtime_env")
+    def test_config_for_check_applies_openrouter_provider(
+        self,
+        _reload,
+        load_config_mock,
+        store_mock,
+    ):
+        load_config_mock.return_value = Config()
+        catalog = MagicMock()
+        catalog.base_url = "https://openrouter.ai/api/v1"
+        catalog.models = ["deepseek/deepseek-v4-flash-0731"]
+        settings = MagicMock()
+        settings.get_provider.return_value = catalog
+        store_mock.return_value.ensure_loaded.return_value = settings
+
+        update = ConfigUpdate(
+            provider="openrouter",
+            model="deepseek/deepseek-v4-flash-0731",
+            openrouter_provider="deepinfra",
+        )
+        config = config_for_check(update)
+        self.assertEqual(config.openrouter_provider, "deepinfra")
+
+    @patch("smart_automator.server.config_service._fetch_openrouter_generation_provider")
+    @patch("smart_automator.server.config_service.config_for_check")
+    def test_check_llm_connection_returns_provider_name(
+        self,
+        config_for_check_mock,
+        fetch_provider_mock,
+    ):
+        config = Config(
+            llm_provider="openrouter",
+            openrouter_api_key="sk-or-test",
+            openrouter_model="deepseek/deepseek-v4-flash-0731",
+            openrouter_provider="together",
+            openai_base_url="https://openrouter.ai/api/v1",
+        )
+        config_for_check_mock.return_value = config
+        fetch_provider_mock.return_value = "Together"
+
+        llm = MagicMock()
+        llm._provider = "openrouter"
+        llm.last_generation_id = "gen-123"
+        llm.chat.return_value = "OK"
+
+        with patch("smart_automator.main.create_llm", return_value=llm):
+            result = check_llm_connection()
+
+        self.assertEqual(result, {"ok": True, "provider_name": "Together"})
+        fetch_provider_mock.assert_called_once()
+        self.assertEqual(fetch_provider_mock.call_args.kwargs["generation_id"], "gen-123")
+
+    def test_fetch_openrouter_generation_provider(self):
+        from smart_automator.server.config_service import _fetch_openrouter_generation_provider
+
+        request = httpx.Request("GET", "https://openrouter.ai/api/v1/generation")
+        response = httpx.Response(
+            200,
+            request=request,
+            json={"data": {"provider_name": "DeepInfra"}},
+        )
+        with patch("httpx.get", return_value=response) as get:
+            name = _fetch_openrouter_generation_provider(
+                api_key="sk-or-test",
+                base_url="https://openrouter.ai/api/v1",
+                generation_id="gen-abc",
+            )
+        self.assertEqual(name, "DeepInfra")
+        self.assertEqual(
+            get.call_args.kwargs["params"],
+            {"id": "gen-abc"},
+        )
 
 
 class TestProviderCoercion(unittest.TestCase):

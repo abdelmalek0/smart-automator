@@ -21,6 +21,8 @@ class OpenAICompatLLM(BaseLLM):
         super().__init__()
         selected = (provider or config.llm_provider or "groq").strip().lower()
         self._provider = selected
+        self._openrouter_provider = ""
+        self._last_generation_id = ""
         if selected == "google":
             self._api_key = config.google_api_key
             self._model = config.active_model or config.google_model
@@ -29,6 +31,7 @@ class OpenAICompatLLM(BaseLLM):
             self._api_key = config.openrouter_api_key
             self._model = config.active_model or config.openrouter_model
             base = config.openai_base_url or default_base_url("openrouter")
+            self._openrouter_provider = (config.openrouter_provider or "").strip()
         else:
             self._api_key = config.groq_api_key
             self._model = config.active_model or config.groq_model
@@ -39,6 +42,10 @@ class OpenAICompatLLM(BaseLLM):
     @property
     def model_name(self) -> str | None:
         return self._model
+
+    @property
+    def last_generation_id(self) -> str:
+        return self._last_generation_id
 
     @property
     def supports_structured_output(self) -> bool:
@@ -85,6 +92,11 @@ class OpenAICompatLLM(BaseLLM):
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
+        if self._provider == "openrouter" and self._openrouter_provider:
+            payload["provider"] = {
+                "only": [self._openrouter_provider],
+                "allow_fallbacks": False,
+            }
         response = self._client.post(
             self._base_url,
             headers=self._headers(),
@@ -100,6 +112,7 @@ class OpenAICompatLLM(BaseLLM):
                 )
         response.raise_for_status()
         body = response.json()
+        self._last_generation_id = str(body.get("id") or "").strip()
         usage = body.get("usage") or {}
         details = usage.get("prompt_tokens_details") or {}
         self._record_usage(

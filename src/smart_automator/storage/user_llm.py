@@ -36,12 +36,14 @@ class UserLlmPrefs:
     provider: str = "groq"
     models: dict[str, str] = field(default_factory=dict)
     api_keys: dict[str, str] = field(default_factory=dict)
+    openrouter_provider: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "provider": self.provider,
             "models": dict(self.models),
             "api_keys": dict(self.api_keys),
+            "openrouter_provider": self.openrouter_provider,
         }
 
     @classmethod
@@ -65,7 +67,13 @@ class UserLlmPrefs:
                 token = str(value or "").strip()
                 if token and canonical in UI_PROVIDERS:
                     api_keys[canonical] = token
-        return cls(provider=provider, models=models, api_keys=api_keys)
+        openrouter_provider = str(data.get("openrouter_provider") or "").strip()
+        return cls(
+            provider=provider,
+            models=models,
+            api_keys=api_keys,
+            openrouter_provider=openrouter_provider,
+        )
 
     def selected_model(self, provider: str | None = None) -> str:
         canonical = coerce_ui_provider(provider or self.provider)
@@ -98,7 +106,13 @@ def _seed_prefs_from_env() -> UserLlmPrefs:
                 api_keys[name] = token
     if provider not in models:
         models[provider] = default_model_for_provider(provider)
-    return UserLlmPrefs(provider=provider, models=models, api_keys=api_keys)
+    openrouter_provider = os.environ.get("OPENROUTER_PROVIDER", "").strip()
+    return UserLlmPrefs(
+        provider=provider,
+        models=models,
+        api_keys=api_keys,
+        openrouter_provider=openrouter_provider,
+    )
 
 
 class UserLlmStore:
@@ -155,6 +169,7 @@ class UserLlmStore:
         provider: str | None = None,
         model: str | None = None,
         api_key: str | None = None,
+        openrouter_provider: str | None = None,
     ) -> UserLlmPrefs:
         with self._lock:
             raw = self._load_raw()
@@ -176,6 +191,8 @@ class UserLlmStore:
                 token = api_key.strip()
                 if token:
                     prefs.api_keys[active] = token
+            if openrouter_provider is not None and active == "openrouter":
+                prefs.openrouter_provider = openrouter_provider.strip()
             cleaned = UserLlmPrefs.from_dict(prefs.to_dict())
             self._save_raw(cleaned.to_dict())
             return cleaned

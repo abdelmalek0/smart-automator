@@ -18,6 +18,7 @@ export type ConfigUpdatePayload = {
   base_url?: string
   model?: string
   api_key?: string
+  openrouter_provider?: string
   fresh_profile?: boolean
   chrome_user_data?: string
   chrome_profile_directory?: string
@@ -175,7 +176,8 @@ export function checkConfig(payload?: {
   base_url?: string
   model?: string
   api_key?: string
-}): Promise<{ ok: boolean; error?: string }> {
+  openrouter_provider?: string
+}): Promise<{ ok: boolean; error?: string; provider_name?: string }> {
   return request('/config/check', {
     method: 'POST',
     body: JSON.stringify(payload ?? {}),

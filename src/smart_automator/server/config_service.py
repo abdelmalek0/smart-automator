@@ -199,6 +199,7 @@ def _apply_user_llm_to_config(config: Config, prefs: UserLlmPrefs) -> Config:
     elif runtime == "openrouter":
         config.openrouter_model = model
         config.openai_base_url = catalog.base_url or default_base_url("openrouter")
+        config.openrouter_provider = (prefs.openrouter_provider or "").strip()
     else:
         config.ollama_model = model
         if ui_provider == "ollama-cloud":
@@ -309,6 +310,10 @@ def build_config_response(user_id: str | None = None) -> dict:
         "provider_keys_set": provider_keys_set,
         "provider_settings": provider_settings,
         "selected_models": selected_models,
+        "openrouter_provider": (
+            (prefs.openrouter_provider if prefs is not None else config.openrouter_provider)
+            or ""
+        ).strip(),
         "cdp_port": int(os.getenv("CDP_PORT", "9222")),
         "cdp_url": "" if worker_online else cdp_url,
         "fresh_profile": fresh_profile,
@@ -375,12 +380,16 @@ def apply_config_update(update, user_id: str | None = None) -> dict:
         update.provider is not None
         or update.model is not None
         or update.api_key is not None
+        or update.openrouter_provider is not None
     )
     if user_id and llm_touch:
         UserLlmStore(user_id).update(
             provider=provider,
             model=coerced_model,
             api_key=update.api_key,
+            openrouter_provider=(
+                update.openrouter_provider if provider == "openrouter" else None
+            ),
         )
     elif not user_id and llm_touch:
         if not ENV_FILE.exists():
@@ -393,6 +402,8 @@ def apply_config_update(update, user_id: str | None = None) -> dict:
             key_env = provider_api_key_env_name(provider)
             if key_env:
                 set_key(str(ENV_FILE), key_env, update.api_key)
+        if update.openrouter_provider is not None and provider == "openrouter":
+            set_key(str(ENV_FILE), "OPENROUTER_PROVIDER", update.openrouter_provider.strip())
 
     if not ENV_FILE.exists():
         ENV_FILE.write_text("")
@@ -517,7 +528,7 @@ def _update_has_llm_fields(update) -> bool:
         return False
     return any(
         getattr(update, field) is not None
-        for field in ("provider", "base_url", "model", "api_key")
+        for field in ("provider", "base_url", "model", "api_key", "openrouter_provider")
     )
 
 
@@ -581,6 +592,10 @@ def config_for_check(update=None, user_id: str | None = None) -> Config:
     elif runtime == "openrouter":
         config.openrouter_model = model
         config.openai_base_url = base_url or default_base_url("openrouter")
+        if update.openrouter_provider is not None:
+            config.openrouter_provider = update.openrouter_provider.strip()
+        elif prefs is not None:
+            config.openrouter_provider = (prefs.openrouter_provider or "").strip()
     else:
         config.ollama_model = model
         config.ollama_base_url = base_url or default_base_url(ui_provider)
@@ -589,7 +604,7 @@ def config_for_check(update=None, user_id: str | None = None) -> Config:
     return config
 
 
-def check_llm_connection(update=None, user_id: str | None = None) -> None:
+def check_llm_connection(update=None, user_id: str | None = None) -> dict:
     config = config_for_check(update, user_id=user_id)
     from ..main import create_llm
 
@@ -598,3 +613,57 @@ def check_llm_connection(update=None, user_id: str | None = None) -> None:
         llm.chat([{"role": "user", "content": "Reply with OK only."}], temperature=0)
     except BaseException as exc:
         raise RuntimeError(format_llm_connection_error(exc)) from exc
+
+    result: dict = {"ok": True}
+    if getattr(llm, "_provider", None) == "openrouter":
+        generation_id = getattr(llm, "last_generation_id", None) or ""
+        provider_name = _fetch_openrouter_generation_provider(
+            api_key=config.openrouter_api_key,
+            base_url=config.openai_base_url or default_base_url("openrouter"),
+            generation_id=generation_id,
+        )
+        if provider_name:
+            result["provider_name"] = provider_name
+    return result
+
+
+def _fetch_openrouter_generation_provider(
+    *,
+    api_key: str,
+    base_url: str,
+    generation_id: str,
+) -> str:
+    """Look up which upstream provider served an OpenRouter generation."""
+    if not api_key or not generation_id:
+        return ""
+    import httpx
+
+    base = (base_url or default_base_url("openrouter")).rstrip("/")
+    if base.endswith("/chat/completions"):
+        base = base[: -len("/chat/completions")]
+    # OpenRouter generation endpoint lives under /api/v1/generation
+    if base.endswith("/api/v1"):
+        url = f"{base}/generation"
+    else:
+        url = f"{base.rstrip('/')}/generation"
+    try:
+        response = httpx.get(
+            url,
+            params={"id": generation_id},
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            timeout=15.0,
+        )
+        if response.status_code >= 400:
+            return ""
+        body = response.json()
+        data = body.get("data") if isinstance(body, dict) else None
+        if not isinstance(data, dict):
+            data = body if isinstance(body, dict) else {}
+        name = str(data.get("provider_name") or "").strip()
+        return name
+    except Exception:
+        log.debug("Failed to fetch OpenRouter generation metadata", exc_info=True)
+        return ""
