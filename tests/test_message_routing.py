@@ -2,8 +2,10 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from smart_automator.agent.messages.service import MessageManager
+from smart_automator.agent.messages.utils import remove_think_tags
 from smart_automator.agents.action_critic import ACTION_CRITIC_SYSTEM_PROMPT, ActionCriticAgent
 from smart_automator.agents.base import BaseAgent
+from smart_automator.agents.errors import ResponseParseError
 from smart_automator.agents.planner import PlannerAgent
 from smart_automator.llm.base import BaseLLM
 
@@ -70,6 +72,34 @@ class TestInvokeMessageRouting(unittest.TestCase):
         self.assertEqual(llm.last_messages[0]["content"], ACTION_CRITIC_SYSTEM_PROMPT)
         self.assertEqual(len(llm.last_messages), 2)
         self.assertIn("Stuck reason", llm.last_messages[1]["content"])
+
+
+class _NullContentLLM(BaseLLM):
+    @property
+    def model_name(self) -> str:
+        return "test-model"
+
+    @property
+    def supports_structured_output(self) -> bool:
+        return False
+
+    def chat(self, messages, temperature=0.7):
+        return None
+
+    def chat_json(self, messages, temperature=0.7):
+        return None
+
+
+class TestEmptyLLMResponse(unittest.TestCase):
+    def test_remove_think_tags_handles_none(self):
+        self.assertEqual(remove_think_tags(None), "")
+        self.assertEqual(remove_think_tags(""), "")
+
+    def test_none_response_raises_response_parse_error(self):
+        agent = BaseAgent(_NullContentLLM(), "system")
+        with self.assertRaises(ResponseParseError) as ctx:
+            agent.get_json_response_with_raw()
+        self.assertIn("empty content", str(ctx.exception).lower())
 
 
 if __name__ == "__main__":

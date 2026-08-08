@@ -77,6 +77,8 @@ class BaseAgent:
             raise
         except Exception as error:
             raise classify_llm_error(error) from error
+        if not isinstance(response, str) or not response.strip():
+            raise ResponseParseError("LLM returned empty content")
         cleaned = remove_think_tags(response)
         try:
             parsed = extract_json_from_model_output(cleaned)

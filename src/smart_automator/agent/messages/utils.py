@@ -8,8 +8,11 @@ FILE_CONTENT_TAG_START = "<nano_file_content>"
 FILE_CONTENT_TAG_END = "</nano_file_content>"
 
 
-def remove_think_tags(text: str) -> str:
+def remove_think_tags(text: str | None) -> str:
     import re
+
+    if not text:
+        return ""
 
     result = re.sub(r"<think>[\s\S]*?</think>", "", text)
     result = re.sub(r"[\s\S]*?</think>", "", result)
