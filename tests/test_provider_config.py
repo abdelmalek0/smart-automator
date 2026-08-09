@@ -7,6 +7,10 @@ from unittest.mock import MagicMock, patch
 import httpx
 
 from smart_automator.config import Config
+from smart_automator.db import reset_engine
+from smart_automator.db.engine import get_engine
+from smart_automator.db.models import Base, LlmCatalogRow
+from smart_automator.db.engine import get_session
 from smart_automator.llm.groq import OpenAICompatLLM
 from smart_automator.llm.ollama import OllamaLLM
 from smart_automator.main import create_llm
@@ -30,7 +34,12 @@ from smart_automator.server.provider_utils import (
     normalize_provider,
     runtime_provider,
 )
-from smart_automator.storage.llm_settings import LlmSettingsStore
+from smart_automator.storage.llm_settings import LlmSettings, LlmSettingsStore
+
+
+def _setup_isolated_db(tmp: str) -> None:
+    reset_engine(f"sqlite:///{tmp}/test.db")
+    Base.metadata.create_all(get_engine())
 
 
 class TestOpenRouterProvider(unittest.TestCase):
@@ -293,9 +302,11 @@ class TestProviderCoercion(unittest.TestCase):
 class TestLlmSettingsMigration(unittest.TestCase):
     def test_load_migrates_contaminated_local_ollama(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "llm_settings.json"
-            path.write_text(
-                json.dumps(
+            _setup_isolated_db(tmp)
+            with patch("smart_automator.storage.llm_settings.ENV_FILE") as env_file:
+                env_file.exists.return_value = True
+                store = LlmSettingsStore()
+                store._save_raw(
                     {
                         "provider": "ollama",
                         "providers": {
@@ -306,17 +317,16 @@ class TestLlmSettingsMigration(unittest.TestCase):
                             }
                         },
                     }
-                ),
-                encoding="utf-8",
-            )
-            store = LlmSettingsStore(path=path)
-            settings = store.load()
+                )
+                settings = store.load()
             entry = settings.get_provider("ollama")
             self.assertEqual(entry.base_url, "http://localhost:11434")
             self.assertEqual(entry.models[0], "llama3.2")
             self.assertNotIn("gemma4:31b-cloud", entry.models)
 
-            saved = json.loads(path.read_text(encoding="utf-8"))
+            with get_session() as session:
+                row = session.get(LlmCatalogRow, 1)
+                saved = dict(row.payload) if row is not None else {}
             self.assertNotIn("provider", saved)
             self.assertEqual(
                 saved["providers"]["ollama"]["base_url"],
@@ -326,9 +336,10 @@ class TestLlmSettingsMigration(unittest.TestCase):
 
     def test_update_catalog_keeps_order_for_existing_model(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "llm_settings.json"
-            path.write_text(
-                json.dumps(
+            _setup_isolated_db(tmp)
+            store = LlmSettingsStore()
+            store.save(
+                LlmSettings.from_dict(
                     {
                         "providers": {
                             "groq": {
@@ -337,19 +348,18 @@ class TestLlmSettingsMigration(unittest.TestCase):
                             }
                         }
                     }
-                ),
-                encoding="utf-8",
+                )
             )
-            store = LlmSettingsStore(path=path)
             store.update_catalog(provider="groq", model="model-b")
             entry = store.load().get_provider("groq")
             self.assertEqual(entry.models, ["model-a", "model-b", "model-c"])
 
     def test_update_catalog_appends_new_model(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "llm_settings.json"
-            path.write_text(
-                json.dumps(
+            _setup_isolated_db(tmp)
+            store = LlmSettingsStore()
+            store.save(
+                LlmSettings.from_dict(
                     {
                         "providers": {
                             "groq": {
@@ -358,18 +368,16 @@ class TestLlmSettingsMigration(unittest.TestCase):
                             }
                         }
                     }
-                ),
-                encoding="utf-8",
+                )
             )
-            store = LlmSettingsStore(path=path)
             store.update_catalog(provider="groq", model="model-c")
             entry = store.load().get_provider("groq")
             self.assertEqual(entry.models, ["model-a", "model-b", "model-c"])
 
     def test_update_catalog_coerces_cloud_url_for_local(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "llm_settings.json"
-            store = LlmSettingsStore(path=path)
+            _setup_isolated_db(tmp)
+            store = LlmSettingsStore()
             store.update_catalog(
                 provider="ollama",
                 base_url="https://ollama.com",

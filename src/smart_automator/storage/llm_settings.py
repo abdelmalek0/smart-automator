@@ -9,6 +9,8 @@ from typing import Any
 
 from dotenv import set_key
 
+from ..db.engine import get_session
+from ..db.models import LlmCatalogRow
 from ..server.paths import ENV_FILE, LLM_SETTINGS_FILE
 from ..server.provider_utils import (
     UI_PROVIDERS,
@@ -24,6 +26,7 @@ from ..server.provider_utils import (
 )
 
 _MAX_MODELS_PER_PROVIDER = 50
+_CATALOG_ROW_ID = 1
 
 
 @dataclass
@@ -159,24 +162,30 @@ def _legacy_model_for_provider(raw: dict[str, Any], provider: str) -> str:
 
 class LlmSettingsStore:
     def __init__(self, path: Path = LLM_SETTINGS_FILE) -> None:
-        self._path = path
+        # path is ignored; kept for backward compatibility with tests.
         self._lock = threading.Lock()
 
     def _load_raw(self) -> dict[str, Any]:
-        if not self._path.exists():
-            return {}
-        try:
-            with open(self._path, encoding="utf-8") as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            return {}
-        return data if isinstance(data, dict) else {}
+        with get_session() as session:
+            row = session.get(LlmCatalogRow, _CATALOG_ROW_ID)
+            if row is not None and isinstance(row.payload, dict):
+                return dict(row.payload)
+        if LLM_SETTINGS_FILE.is_file():
+            try:
+                with open(LLM_SETTINGS_FILE, encoding="utf-8") as handle:
+                    data = json.load(handle)
+                return data if isinstance(data, dict) else {}
+            except (json.JSONDecodeError, OSError):
+                return {}
+        return {}
 
     def _save_raw(self, data: dict[str, Any]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self._path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-            f.write("\n")
+        with get_session() as session:
+            row = session.get(LlmCatalogRow, _CATALOG_ROW_ID)
+            if row is None:
+                session.add(LlmCatalogRow(id=_CATALOG_ROW_ID, payload=data))
+            else:
+                row.payload = data
 
     def _migrate_legacy_to_env(self, raw: dict[str, Any]) -> None:
         if not _is_legacy_format(raw):
@@ -242,7 +251,6 @@ class LlmSettingsStore:
                     if coerced_model not in entry.models:
                         models = list(entry.models)
                         models.append(coerced_model)
-                        # Drop oldest entries when over the cap.
                         if len(models) > _MAX_MODELS_PER_PROVIDER:
                             models = models[-_MAX_MODELS_PER_PROVIDER:]
                         entry.models = models
@@ -282,6 +290,8 @@ class LlmSettingsStore:
         return settings
 
     def ensure_loaded(self) -> LlmSettings:
-        if not self._path.exists():
-            return self.seed_from_env()
+        with get_session() as session:
+            row = session.get(LlmCatalogRow, _CATALOG_ROW_ID)
+            if row is None and not LLM_SETTINGS_FILE.is_file():
+                return self.seed_from_env()
         return self.load()

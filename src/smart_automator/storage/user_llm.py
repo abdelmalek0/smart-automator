@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import os
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..server import paths as server_paths
+from sqlalchemy import select
+
+from ..db.engine import get_session
+from ..db.models import UserLlmPrefsRow
 from ..server.provider_utils import (
     UI_PROVIDERS,
     coerce_ui_provider,
@@ -18,17 +20,6 @@ from ..server.provider_utils import (
     provider_api_key_env_name,
     provider_model_env_name,
 )
-
-
-def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp_path, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2)
-        handle.write("\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(tmp_path, path)
 
 
 @dataclass
@@ -115,52 +106,67 @@ def _seed_prefs_from_env() -> UserLlmPrefs:
     )
 
 
+def _prefs_from_row(row: UserLlmPrefsRow) -> UserLlmPrefs:
+    return UserLlmPrefs.from_dict(
+        {
+            "provider": row.provider,
+            "models": row.models,
+            "api_keys": row.api_keys,
+            "openrouter_provider": row.openrouter_provider,
+        }
+    )
+
+
+def _row_from_prefs(user_id: str, prefs: UserLlmPrefs) -> UserLlmPrefsRow:
+    cleaned = UserLlmPrefs.from_dict(prefs.to_dict())
+    return UserLlmPrefsRow(
+        user_id=user_id,
+        provider=cleaned.provider,
+        models=cleaned.models,
+        api_keys=cleaned.api_keys,
+        openrouter_provider=cleaned.openrouter_provider,
+    )
+
+
 class UserLlmStore:
     def __init__(self, user_id: str, path: Path | None = None) -> None:
+        # path is ignored; kept for backward compatibility with tests.
         if not user_id or not str(user_id).strip():
             raise ValueError("user_id is required")
         self._user_id = str(user_id).strip()
-        self._dir = server_paths.LLM_USER_DIR
-        self._path = path or (self._dir / f"{self._user_id}.json")
         self._lock = threading.Lock()
-
-    def _other_prefs_exist(self) -> bool:
-        try:
-            for item in self._dir.glob("*.json"):
-                if item.resolve() != self._path.resolve():
-                    return True
-        except OSError:
-            return False
-        return False
-
-    def _load_raw(self) -> dict[str, Any]:
-        if not self._path.exists():
-            return {}
-        try:
-            with open(self._path, encoding="utf-8") as handle:
-                data = json.load(handle)
-        except (json.JSONDecodeError, OSError):
-            return {}
-        return data if isinstance(data, dict) else {}
-
-    def _save_raw(self, data: dict[str, Any]) -> None:
-        _atomic_write_json(self._path, data)
 
     def load(self) -> UserLlmPrefs:
         with self._lock:
-            raw = self._load_raw()
-            if raw:
-                return UserLlmPrefs.from_dict(raw)
-            if not self._other_prefs_exist():
+            with get_session() as session:
+                row = session.get(UserLlmPrefsRow, self._user_id)
+                if row is not None:
+                    return _prefs_from_row(row)
+                other_exists = session.scalar(
+                    select(UserLlmPrefsRow.user_id)
+                    .where(UserLlmPrefsRow.user_id != self._user_id)
+                    .limit(1)
+                ) is not None
+            if not other_exists:
                 seeded = _seed_prefs_from_env()
-                self._save_raw(seeded.to_dict())
-                return seeded
+                cleaned = UserLlmPrefs.from_dict(seeded.to_dict())
+                with get_session() as session:
+                    session.add(_row_from_prefs(self._user_id, cleaned))
+                return cleaned
             return UserLlmPrefs()
 
     def save(self, prefs: UserLlmPrefs) -> UserLlmPrefs:
         with self._lock:
             cleaned = UserLlmPrefs.from_dict(prefs.to_dict())
-            self._save_raw(cleaned.to_dict())
+            with get_session() as session:
+                row = session.get(UserLlmPrefsRow, self._user_id)
+                if row is None:
+                    session.add(_row_from_prefs(self._user_id, cleaned))
+                else:
+                    row.provider = cleaned.provider
+                    row.models = cleaned.models
+                    row.api_keys = cleaned.api_keys
+                    row.openrouter_provider = cleaned.openrouter_provider
             return cleaned
 
     def update(
@@ -172,27 +178,39 @@ class UserLlmStore:
         openrouter_provider: str | None = None,
     ) -> UserLlmPrefs:
         with self._lock:
-            raw = self._load_raw()
-            if raw:
-                prefs = UserLlmPrefs.from_dict(raw)
-            elif not self._other_prefs_exist():
-                prefs = _seed_prefs_from_env()
-            else:
-                prefs = UserLlmPrefs()
+            with get_session() as session:
+                row = session.get(UserLlmPrefsRow, self._user_id)
+                other_exists = session.scalar(
+                    select(UserLlmPrefsRow.user_id)
+                    .where(UserLlmPrefsRow.user_id != self._user_id)
+                    .limit(1)
+                ) is not None
+                if row is not None:
+                    prefs = _prefs_from_row(row)
+                elif not other_exists:
+                    prefs = _seed_prefs_from_env()
+                else:
+                    prefs = UserLlmPrefs()
 
-            if provider is not None:
-                prefs.provider = coerce_ui_provider(provider)
-            active = prefs.provider
-            if model is not None:
-                name = model.strip()
-                if name:
-                    prefs.models[active] = name
-            if api_key is not None:
-                token = api_key.strip()
-                if token:
-                    prefs.api_keys[active] = token
-            if openrouter_provider is not None and active == "openrouter":
-                prefs.openrouter_provider = openrouter_provider.strip()
-            cleaned = UserLlmPrefs.from_dict(prefs.to_dict())
-            self._save_raw(cleaned.to_dict())
+                if provider is not None:
+                    prefs.provider = coerce_ui_provider(provider)
+                active = prefs.provider
+                if model is not None:
+                    name = model.strip()
+                    if name:
+                        prefs.models[active] = name
+                if api_key is not None:
+                    token = api_key.strip()
+                    if token:
+                        prefs.api_keys[active] = token
+                if openrouter_provider is not None and active == "openrouter":
+                    prefs.openrouter_provider = openrouter_provider.strip()
+                cleaned = UserLlmPrefs.from_dict(prefs.to_dict())
+                if row is None:
+                    session.add(_row_from_prefs(self._user_id, cleaned))
+                else:
+                    row.provider = cleaned.provider
+                    row.models = cleaned.models
+                    row.api_keys = cleaned.api_keys
+                    row.openrouter_provider = cleaned.openrouter_provider
             return cleaned

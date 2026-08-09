@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-import os
 import secrets
 import threading
 import time
@@ -10,24 +8,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .. import paths
+from sqlalchemy import delete, func, select
+
+from ...db.engine import get_session
+from ...db.models import SessionRow, UserRow
 from .passwords import hash_password, verify_password
 
 SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
-# Avoid rewriting sessions.json on every authenticated request.
+# Avoid rewriting the session row on every authenticated request.
 SESSION_TOUCH_INTERVAL_SECONDS = 60 * 60
 _MAX_USERNAME_LENGTH = 64
-
-
-def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp_path, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2)
-        handle.write("\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(tmp_path, path)
 
 
 @dataclass(frozen=True)
@@ -84,49 +74,47 @@ class Session:
         return current >= self.expires_at
 
 
+def _user_from_row(row: UserRow) -> User:
+    return User(id=row.id, username=row.username, created_at=row.created_at)
+
+
+def _session_from_row(row: SessionRow) -> Session:
+    return Session(
+        session_id=row.session_id,
+        user_id=row.user_id,
+        created_at=row.created_at,
+        expires_at=row.expires_at,
+        last_seen_at=row.last_seen_at,
+    )
+
+
 class UserStore:
     def __init__(self, path: Path | None = None) -> None:
-        self._path = path or paths.USERS_FILE
+        # path is ignored; kept for backward compatibility with tests.
         self._lock = threading.Lock()
-
-    def _load_raw(self) -> list[dict[str, Any]]:
-        if not self._path.exists():
-            return []
-        try:
-            with open(self._path, encoding="utf-8") as handle:
-                data = json.load(handle)
-        except json.JSONDecodeError as exc:
-            # Fail closed: a corrupt users file must not look like "no users"
-            # (which would reopen first-time registration).
-            raise RuntimeError(f"Corrupt users file: {self._path}") from exc
-        except OSError as exc:
-            raise RuntimeError(f"Unable to read users file: {self._path}") from exc
-        users = data.get("users", []) if isinstance(data, dict) else []
-        if not isinstance(users, list):
-            raise RuntimeError(f"Corrupt users file: {self._path}")
-        return users
-
-    def _save_raw(self, users: list[dict[str, Any]]) -> None:
-        _atomic_write_json(self._path, {"users": users})
 
     def has_users(self) -> bool:
         with self._lock:
-            return bool(self._load_raw())
+            with get_session() as session:
+                row = session.scalar(select(UserRow.id).limit(1))
+                return row is not None
 
     def get_by_id(self, user_id: str) -> User | None:
         with self._lock:
-            for item in self._load_raw():
-                if item.get("id") == user_id:
-                    return User.from_dict(item)
-        return None
+            with get_session() as session:
+                row = session.get(UserRow, user_id)
+                return _user_from_row(row) if row is not None else None
 
     def get_by_username(self, username: str) -> tuple[User, str] | None:
         normalized = username.strip().lower()
         with self._lock:
-            for item in self._load_raw():
-                if str(item.get("username", "")).lower() == normalized:
-                    return User.from_dict(item), str(item.get("password_hash", ""))
-        return None
+            with get_session() as session:
+                row = session.scalar(
+                    select(UserRow).where(func.lower(UserRow.username) == normalized)
+                )
+                if row is None:
+                    return None
+                return _user_from_row(row), row.password_hash
 
     def create_user(
         self,
@@ -143,20 +131,25 @@ class UserStore:
         if len(password) < 8:
             raise ValueError("Password must be at least 8 characters")
         with self._lock:
-            raw = self._load_raw()
-            if raw and not allow_when_users_exist:
-                raise PermissionError("Registration is disabled")
-            if any(str(item.get("username", "")).lower() == normalized.lower() for item in raw):
-                raise ValueError("Username already exists")
-            user = {
-                "id": str(uuid.uuid4()),
-                "username": normalized,
-                "password_hash": hash_password(password),
-                "created_at": time.time(),
-            }
-            raw.append(user)
-            self._save_raw(raw)
-            return User.from_dict(user)
+            with get_session() as session:
+                if session.scalar(select(UserRow.id).limit(1)) is not None and not allow_when_users_exist:
+                    raise PermissionError("Registration is disabled")
+                existing = session.scalar(
+                    select(UserRow).where(func.lower(UserRow.username) == normalized.lower())
+                )
+                if existing is not None:
+                    raise ValueError("Username already exists")
+                user_id = str(uuid.uuid4())
+                created_at = time.time()
+                session.add(
+                    UserRow(
+                        id=user_id,
+                        username=normalized,
+                        password_hash=hash_password(password),
+                        created_at=created_at,
+                    )
+                )
+                return User(id=user_id, username=normalized, created_at=created_at)
 
     def verify_credentials(self, username: str, password: str) -> User | None:
         found = self.get_by_username(username)
@@ -170,38 +163,20 @@ class UserStore:
 
 class SessionStore:
     def __init__(self, path: Path | None = None) -> None:
-        self._path = path or paths.SESSIONS_FILE
+        # path is ignored; kept for backward compatibility with tests.
         self._lock = threading.Lock()
 
-    def _load_raw(self) -> list[dict[str, Any]]:
-        if not self._path.exists():
-            return []
-        try:
-            with open(self._path, encoding="utf-8") as handle:
-                data = json.load(handle)
-        except (json.JSONDecodeError, OSError):
-            return []
-        sessions = data.get("sessions", []) if isinstance(data, dict) else []
-        return sessions if isinstance(sessions, list) else []
-
-    def _save_raw(self, sessions: list[dict[str, Any]]) -> None:
-        _atomic_write_json(self._path, {"sessions": sessions})
-
-    @staticmethod
-    def _prune_expired(raw: list[dict[str, Any]], now: float) -> list[dict[str, Any]]:
-        kept: list[dict[str, Any]] = []
-        for item in raw:
-            try:
-                expires_at = float(item.get("expires_at", 0))
-            except (TypeError, ValueError):
-                continue
-            if expires_at > now:
-                kept.append(item)
-        return kept
+    def _prune_expired(self, now: float) -> None:
+        with get_session() as session:
+            expired = session.scalars(
+                select(SessionRow).where(SessionRow.expires_at <= now)
+            ).all()
+            for row in expired:
+                session.delete(row)
 
     def create_session(self, user_id: str) -> Session:
         now = time.time()
-        session = Session(
+        session_obj = Session(
             session_id=secrets.token_urlsafe(32),
             user_id=user_id,
             created_at=now,
@@ -209,49 +184,42 @@ class SessionStore:
             last_seen_at=now,
         )
         with self._lock:
-            raw = self._prune_expired(self._load_raw(), now)
-            raw.append(session.to_dict())
-            self._save_raw(raw)
-        return session
+            self._prune_expired(now)
+            with get_session() as session:
+                session.add(
+                    SessionRow(
+                        session_id=session_obj.session_id,
+                        user_id=session_obj.user_id,
+                        created_at=session_obj.created_at,
+                        expires_at=session_obj.expires_at,
+                        last_seen_at=session_obj.last_seen_at,
+                    )
+                )
+        return session_obj
 
     def get_session(self, session_id: str) -> Session | None:
         if not session_id:
             return None
         now = time.time()
         with self._lock:
-            raw = self._load_raw()
-            changed = False
-            found: Session | None = None
-            next_raw: list[dict[str, Any]] = []
-            for item in raw:
-                try:
-                    session = Session.from_dict(item)
-                except (KeyError, TypeError, ValueError):
-                    changed = True
-                    continue
-                if session.is_expired(now):
-                    changed = True
-                    continue
-                if session.session_id == session_id:
-                    if now - session.last_seen_at >= SESSION_TOUCH_INTERVAL_SECONDS:
-                        session.last_seen_at = now
-                        session.expires_at = now + SESSION_TTL_SECONDS
-                        changed = True
-                    item = session.to_dict()
-                    found = session
-                next_raw.append(item)
-            if changed:
-                self._save_raw(next_raw)
-            return found
+            with get_session() as session:
+                row = session.get(SessionRow, session_id)
+                if row is None:
+                    return None
+                if row.expires_at <= now:
+                    session.delete(row)
+                    return None
+                session_obj = _session_from_row(row)
+                if now - session_obj.last_seen_at >= SESSION_TOUCH_INTERVAL_SECONDS:
+                    row.last_seen_at = now
+                    row.expires_at = now + SESSION_TTL_SECONDS
+                    session_obj.last_seen_at = now
+                    session_obj.expires_at = now + SESSION_TTL_SECONDS
+                return session_obj
 
     def delete_session(self, session_id: str) -> None:
         now = time.time()
         with self._lock:
-            raw = self._load_raw()
-            next_raw = [
-                item
-                for item in self._prune_expired(raw, now)
-                if item.get("session_id") != session_id
-            ]
-            if len(next_raw) != len(raw):
-                self._save_raw(next_raw)
+            self._prune_expired(now)
+            with get_session() as session:
+                session.execute(delete(SessionRow).where(SessionRow.session_id == session_id))

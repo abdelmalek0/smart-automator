@@ -11,6 +11,7 @@ from smart_automator.server.runner import run_automation
 
 
 class TestScriptReplayCriteria(unittest.TestCase):
+    @patch("smart_automator.server.runner.local_browser_mode_enabled", return_value=True)
     @patch("smart_automator.server.runner._generate_report")
     @patch("smart_automator.server.runner.save_run_history")
     @patch("smart_automator.server.runner._apply_criteria_verdict")
@@ -31,6 +32,7 @@ class TestScriptReplayCriteria(unittest.TestCase):
         mock_apply_criteria,
         mock_save_history,
         mock_generate_report,
+        mock_local_browser,
     ) -> None:
         mock_load_replay.return_value = {
             "replay_steps": [{"action": "click_element", "args": {}}],
@@ -69,6 +71,7 @@ class TestScriptReplayCriteria(unittest.TestCase):
 
 
 class TestTrainingRerun(unittest.TestCase):
+    @patch("smart_automator.server.runner.local_browser_mode_enabled", return_value=True)
     @patch("smart_automator.server.runner._generate_report")
     @patch("smart_automator.server.runner.save_run_history")
     @patch("smart_automator.server.runner._apply_criteria_verdict")
@@ -87,6 +90,7 @@ class TestTrainingRerun(unittest.TestCase):
         mock_apply_criteria,
         mock_save_history,
         mock_generate_report,
+        mock_local_browser,
     ) -> None:
         mock_config = MagicMock()
         mock_config_for_run.return_value = mock_config

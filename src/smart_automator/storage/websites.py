@@ -1,28 +1,16 @@
-"""JSON-backed persistence for websites and their test tasks."""
-
 from __future__ import annotations
 
-import json
-import os
 import threading
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..server import paths as server_paths
-from ..server.paths import WEBSITES_FILE
+from sqlalchemy import delete, select
+from sqlalchemy.orm import selectinload
 
-
-def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp_path, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2)
-        handle.write("\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(tmp_path, path)
+from ..db.engine import get_session
+from ..db.models import WebsiteRow, WebsiteTaskRow
 
 
 @dataclass
@@ -95,73 +83,48 @@ class Website:
         )
 
 
+def _task_from_row(row: WebsiteTaskRow) -> WebsiteTask:
+    return WebsiteTask(
+        id=row.id,
+        task=row.task,
+        success_criteria=row.success_criteria,
+        name=row.name,
+        headless=row.headless,
+        max_steps=row.max_steps,
+        cdp_url=row.cdp_url,
+        fresh_profile=row.fresh_profile,
+        last_trained_run_id=row.last_trained_run_id,
+    )
+
+
+def _website_from_row(row: WebsiteRow) -> Website:
+    return Website(
+        id=row.id,
+        name=row.name,
+        url=row.url,
+        description=row.description,
+        context_prompt=row.context_prompt,
+        tasks=[_task_from_row(task) for task in row.tasks],
+        user_id=row.user_id,
+    )
+
+
 class WebsiteStore:
     def __init__(self, user_id: str, path: Path | None = None) -> None:
+        # path is ignored; kept for backward compatibility with tests.
         self._user_id = user_id
-        self._path = path or (server_paths.WEBSITES_DIR / f"{user_id}.json")
         self._lock = threading.Lock()
-        self._maybe_migrate_legacy()
-
-    def _maybe_migrate_legacy(self) -> None:
-        if self._path.exists() or not WEBSITES_FILE.exists():
-            return
-        # Only the first per-user store should claim the legacy file; otherwise every
-        # new account would get a copy of the same websites.
-        try:
-            if any(server_paths.WEBSITES_DIR.glob("*.json")):
-                return
-        except OSError:
-            return
-        try:
-            with open(WEBSITES_FILE, encoding="utf-8") as handle:
-                data = json.load(handle)
-        except (json.JSONDecodeError, OSError):
-            return
-        websites = data.get("websites", []) if isinstance(data, dict) else []
-        if not isinstance(websites, list) or not websites:
-            return
-        migrated = []
-        for item in websites:
-            if not isinstance(item, dict):
-                continue
-            item = dict(item)
-            item["user_id"] = self._user_id
-            migrated.append(item)
-        if not migrated:
-            return
-        self._save_raw(migrated)
-        backup = WEBSITES_FILE.with_suffix(".json.migrated")
-        try:
-            WEBSITES_FILE.replace(backup)
-        except OSError:
-            pass
-
-    def _load_raw(self) -> list[dict[str, Any]]:
-        if not self._path.exists():
-            return []
-        try:
-            with open(self._path, encoding="utf-8") as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            return []
-        if isinstance(data, dict):
-            websites = data.get("websites", [])
-        elif isinstance(data, list):
-            websites = data
-        else:
-            websites = []
-        return websites if isinstance(websites, list) else []
-
-    def _save_raw(self, websites: list[dict[str, Any]]) -> None:
-        _atomic_write_json(self._path, {"websites": websites})
 
     def list_websites(self) -> list[Website]:
         with self._lock:
-            return [
-                Website.from_dict(w, user_id=self._user_id)
-                for w in self._load_raw()
-                if not w.get("user_id") or w.get("user_id") == self._user_id
-            ]
+            with get_session() as session:
+                rows = session.scalars(
+                    select(WebsiteRow)
+                    .where(WebsiteRow.user_id == self._user_id)
+                    .options(selectinload(WebsiteRow.tasks))
+                    .order_by(WebsiteRow.name)
+                ).all()
+                return [_website_from_row(row) for row in rows]
 
     def get_website(self, website_id: str) -> Website | None:
         for website in self.list_websites():
@@ -186,9 +149,17 @@ class WebsiteStore:
             user_id=self._user_id,
         )
         with self._lock:
-            raw = self._load_raw()
-            raw.append(website.to_dict())
-            self._save_raw(raw)
+            with get_session() as session:
+                session.add(
+                    WebsiteRow(
+                        id=website.id,
+                        user_id=self._user_id,
+                        name=website.name,
+                        url=website.url,
+                        description=website.description,
+                        context_prompt=website.context_prompt,
+                    )
+                )
         return website
 
     def update_website(
@@ -201,37 +172,37 @@ class WebsiteStore:
         context_prompt: str | None = None,
     ) -> Website | None:
         with self._lock:
-            raw = self._load_raw()
-            for item in raw:
-                if item.get("id") != website_id:
-                    continue
-                if item.get("user_id") and item.get("user_id") != self._user_id:
-                    continue
+            with get_session() as session:
+                row = session.scalar(
+                    select(WebsiteRow)
+                    .where(WebsiteRow.id == website_id, WebsiteRow.user_id == self._user_id)
+                    .options(selectinload(WebsiteRow.tasks))
+                )
+                if row is None:
+                    return None
                 if name is not None:
-                    item["name"] = name.strip()
+                    row.name = name.strip()
                 if url is not None:
-                    item["url"] = url.strip()
+                    row.url = url.strip()
                 if description is not None:
-                    item["description"] = description.strip()
+                    row.description = description.strip()
                 if context_prompt is not None:
-                    item["context_prompt"] = context_prompt.strip()
-                item["user_id"] = self._user_id
-                self._save_raw(raw)
-                return Website.from_dict(item, user_id=self._user_id)
-        return None
+                    row.context_prompt = context_prompt.strip()
+                return _website_from_row(row)
 
     def delete_website(self, website_id: str) -> bool:
         with self._lock:
-            raw = self._load_raw()
-            next_raw = [
-                w
-                for w in raw
-                if not (w.get("id") == website_id and (not w.get("user_id") or w.get("user_id") == self._user_id))
-            ]
-            if len(next_raw) == len(raw):
-                return False
-            self._save_raw(next_raw)
-            return True
+            with get_session() as session:
+                row = session.scalar(
+                    select(WebsiteRow).where(
+                        WebsiteRow.id == website_id,
+                        WebsiteRow.user_id == self._user_id,
+                    )
+                )
+                if row is None:
+                    return False
+                session.delete(row)
+                return True
 
     def add_task(
         self,
@@ -256,18 +227,29 @@ class WebsiteStore:
             fresh_profile=fresh_profile,
         )
         with self._lock:
-            raw = self._load_raw()
-            for item in raw:
-                if item.get("id") != website_id:
-                    continue
-                if item.get("user_id") and item.get("user_id") != self._user_id:
-                    continue
-                tasks = item.setdefault("tasks", [])
-                tasks.append(new_task.to_dict())
-                item["user_id"] = self._user_id
-                self._save_raw(raw)
+            with get_session() as session:
+                row = session.scalar(
+                    select(WebsiteRow).where(
+                        WebsiteRow.id == website_id,
+                        WebsiteRow.user_id == self._user_id,
+                    )
+                )
+                if row is None:
+                    return None
+                session.add(
+                    WebsiteTaskRow(
+                        id=new_task.id,
+                        website_id=website_id,
+                        task=new_task.task,
+                        success_criteria=new_task.success_criteria,
+                        name=new_task.name,
+                        headless=new_task.headless,
+                        max_steps=new_task.max_steps,
+                        cdp_url=new_task.cdp_url,
+                        fresh_profile=new_task.fresh_profile,
+                    )
+                )
                 return new_task
-        return None
 
     def update_task(
         self,
@@ -276,70 +258,70 @@ class WebsiteStore:
         **fields: Any,
     ) -> WebsiteTask | None:
         with self._lock:
-            raw = self._load_raw()
-            for item in raw:
-                if item.get("id") != website_id:
-                    continue
-                if item.get("user_id") and item.get("user_id") != self._user_id:
-                    continue
-                for task_data in item.get("tasks", []):
-                    if task_data.get("id") != task_id:
-                        continue
-                    if "task" in fields and fields["task"] is not None:
-                        task_data["task"] = str(fields["task"]).strip()
-                    if "success_criteria" in fields and fields["success_criteria"] is not None:
-                        task_data["success_criteria"] = str(fields["success_criteria"]).strip()
-                    if "name" in fields:
-                        name_value = fields["name"]
-                        task_data["name"] = name_value.strip() if name_value else None
-                    if "headless" in fields and fields["headless"] is not None:
-                        task_data["headless"] = bool(fields["headless"])
-                    if "max_steps" in fields and fields["max_steps"] is not None:
-                        task_data["max_steps"] = int(fields["max_steps"])
-                    if "cdp_url" in fields:
-                        task_data["cdp_url"] = fields["cdp_url"] or None
-                    if "fresh_profile" in fields and fields["fresh_profile"] is not None:
-                        task_data["fresh_profile"] = bool(fields["fresh_profile"])
-                    if "last_trained_run_id" in fields:
-                        last_trained = fields["last_trained_run_id"]
-                        task_data["last_trained_run_id"] = (
-                            str(last_trained).strip() if last_trained else None
-                        )
-                    self._save_raw(raw)
-                    return WebsiteTask.from_dict(task_data)
-        return None
+            with get_session() as session:
+                task_row = session.scalar(
+                    select(WebsiteTaskRow)
+                    .join(WebsiteRow)
+                    .where(
+                        WebsiteTaskRow.id == task_id,
+                        WebsiteTaskRow.website_id == website_id,
+                        WebsiteRow.user_id == self._user_id,
+                    )
+                )
+                if task_row is None:
+                    return None
+                if "task" in fields and fields["task"] is not None:
+                    task_row.task = str(fields["task"]).strip()
+                if "success_criteria" in fields and fields["success_criteria"] is not None:
+                    task_row.success_criteria = str(fields["success_criteria"]).strip()
+                if "name" in fields:
+                    name_value = fields["name"]
+                    task_row.name = name_value.strip() if name_value else None
+                if "headless" in fields and fields["headless"] is not None:
+                    task_row.headless = bool(fields["headless"])
+                if "max_steps" in fields and fields["max_steps"] is not None:
+                    task_row.max_steps = int(fields["max_steps"])
+                if "cdp_url" in fields:
+                    task_row.cdp_url = fields["cdp_url"] or None
+                if "fresh_profile" in fields and fields["fresh_profile"] is not None:
+                    task_row.fresh_profile = bool(fields["fresh_profile"])
+                if "last_trained_run_id" in fields:
+                    last_trained = fields["last_trained_run_id"]
+                    task_row.last_trained_run_id = (
+                        str(last_trained).strip() if last_trained else None
+                    )
+                return _task_from_row(task_row)
 
     def clear_last_trained_run_id(self, run_id: str) -> None:
-        """Clear last_trained_run_id on any task that points to run_id."""
         with self._lock:
-            raw = self._load_raw()
-            changed = False
-            for item in raw:
-                if item.get("user_id") and item.get("user_id") != self._user_id:
-                    continue
-                for task_data in item.get("tasks", []):
-                    if task_data.get("last_trained_run_id") == run_id:
-                        task_data["last_trained_run_id"] = None
-                        changed = True
-            if changed:
-                self._save_raw(raw)
+            with get_session() as session:
+                rows = session.scalars(
+                    select(WebsiteTaskRow)
+                    .join(WebsiteRow)
+                    .where(
+                        WebsiteRow.user_id == self._user_id,
+                        WebsiteTaskRow.last_trained_run_id == run_id,
+                    )
+                ).all()
+                for row in rows:
+                    row.last_trained_run_id = None
 
     def delete_task(self, website_id: str, task_id: str) -> bool:
         with self._lock:
-            raw = self._load_raw()
-            for item in raw:
-                if item.get("id") != website_id:
-                    continue
-                if item.get("user_id") and item.get("user_id") != self._user_id:
-                    continue
-                tasks = item.get("tasks", [])
-                next_tasks = [t for t in tasks if t.get("id") != task_id]
-                if len(next_tasks) == len(tasks):
+            with get_session() as session:
+                task_row = session.scalar(
+                    select(WebsiteTaskRow)
+                    .join(WebsiteRow)
+                    .where(
+                        WebsiteTaskRow.id == task_id,
+                        WebsiteTaskRow.website_id == website_id,
+                        WebsiteRow.user_id == self._user_id,
+                    )
+                )
+                if task_row is None:
                     return False
-                item["tasks"] = next_tasks
-                self._save_raw(raw)
+                session.delete(task_row)
                 return True
-        return False
 
 
 def task_to_api_dict(task: WebsiteTask, *, user_id: str) -> dict[str, Any]:

@@ -84,30 +84,39 @@ def test_protected_routes_require_auth(anon_client: TestClient) -> None:
     assert res.status_code == 401
 
 
-def test_registration_disabled_after_first_user(tmp_path) -> None:
-    users_file = tmp_path / "users.json"
-    store = UserStore(users_file)
+def test_registration_disabled_after_first_user() -> None:
+    store = UserStore()
     store.create_user("first", "password123", allow_when_users_exist=False)
     with pytest.raises(PermissionError, match="Registration is disabled"):
         store.create_user("second", "password123", allow_when_users_exist=False)
 
 
-def test_corrupt_users_file_fail_closed(tmp_path) -> None:
-    users_file = tmp_path / "users.json"
+def test_corrupt_users_file_fail_closed_during_migration(tmp_path, monkeypatch) -> None:
+    auth_dir = tmp_path / "auth"
+    auth_dir.mkdir(exist_ok=True)
+    users_file = auth_dir / "users.json"
     users_file.write_text("{not-json", encoding="utf-8")
-    store = UserStore(users_file)
-    with pytest.raises(RuntimeError, match="Corrupt users file"):
-        store.has_users()
+    monkeypatch.setattr("smart_automator.server.paths.AUTH_DIR", auth_dir)
+    monkeypatch.setattr("smart_automator.server.paths.USERS_FILE", users_file)
+
+    from smart_automator.db import init_db, reset_engine
+
+    reset_engine(f"sqlite:///{tmp_path / 'migrate.db'}")
+    with pytest.raises(RuntimeError, match="Corrupt JSON file"):
+        init_db()
 
 
-def test_session_touch_is_throttled(tmp_path) -> None:
-    store = SessionStore(tmp_path / "sessions.json")
-    session = store.create_session("user-1")
-    mtime_1 = (tmp_path / "sessions.json").stat().st_mtime
-    time.sleep(0.02)
-    assert store.get_session(session.session_id) is not None
-    mtime_2 = (tmp_path / "sessions.json").stat().st_mtime
-    assert mtime_2 == mtime_1
+def test_session_touch_is_throttled() -> None:
+    user_store = UserStore()
+    user = user_store.create_user("session-user", "password123")
+    store = SessionStore()
+    session = store.create_session(user.id)
+    first = store.get_session(session.session_id)
+    assert first is not None
+    first_last_seen = first.last_seen_at
+    second = store.get_session(session.session_id)
+    assert second is not None
+    assert second.last_seen_at == first_last_seen
 
 
 def test_run_ownership_isolation(auth_client: TestClient, second_auth_client: TestClient) -> None:
@@ -221,8 +230,24 @@ def test_websites_are_scoped_per_user(auth_client: TestClient, second_auth_clien
 
 
 def test_legacy_websites_migrate_only_once(tmp_path, monkeypatch) -> None:
-    websites_dir = tmp_path / "websites"
-    websites_dir.mkdir()
+    auth_dir = tmp_path / "auth"
+    auth_dir.mkdir(exist_ok=True)
+    users_file = auth_dir / "users.json"
+    users_file.write_text(
+        json.dumps(
+            {
+                "users": [
+                    {
+                        "id": "user-a",
+                        "username": "alice",
+                        "password_hash": "hash",
+                        "created_at": 1.0,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
     legacy = tmp_path / "websites.json"
     legacy.write_text(
         json.dumps(
@@ -240,14 +265,22 @@ def test_legacy_websites_migrate_only_once(tmp_path, monkeypatch) -> None:
         ),
         encoding="utf-8",
     )
+    websites_dir = tmp_path / "websites"
+    websites_dir.mkdir(exist_ok=True)
+    monkeypatch.setattr("smart_automator.server.paths.AUTH_DIR", auth_dir)
+    monkeypatch.setattr("smart_automator.server.paths.USERS_FILE", users_file)
+    monkeypatch.setattr("smart_automator.server.paths.WEBSITES_FILE", legacy)
     monkeypatch.setattr("smart_automator.server.paths.WEBSITES_DIR", websites_dir)
-    monkeypatch.setattr("smart_automator.storage.websites.WEBSITES_FILE", legacy)
-    monkeypatch.setattr("smart_automator.storage.websites.server_paths.WEBSITES_DIR", websites_dir)
 
-    first = WebsiteStore("user-a", websites_dir / "user-a.json")
+    from smart_automator.db import init_db, reset_engine
+
+    reset_engine(f"sqlite:///{tmp_path / 'legacy.db'}")
+    init_db()
+
+    first = WebsiteStore("user-a")
     assert any(site.id == "legacy-1" for site in first.list_websites())
     assert not legacy.exists()
-    assert legacy.with_suffix(".json.migrated").exists()
+    assert not legacy.with_suffix(".json.migrated").exists()
 
-    second = WebsiteStore("user-b", websites_dir / "user-b.json")
+    second = WebsiteStore("user-b")
     assert second.list_websites() == []

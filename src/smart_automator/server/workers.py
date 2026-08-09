@@ -19,10 +19,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import delete, select
+
 from fastapi import WebSocket
 
+from ..db.engine import get_session
+from ..db.models import WorkerTokenRow
 from . import paths
-from .auth.stores import User, _atomic_write_json
+from .auth.stores import User
 
 log = logging.getLogger(__name__)
 
@@ -72,27 +76,8 @@ class WorkerToken:
 
 class WorkerTokenStore:
     def __init__(self, path: Path | None = None) -> None:
-        self._path = path or (paths.AUTH_DIR / "worker_tokens.json")
+        # path is ignored; kept for backward compatibility with tests.
         self._lock = threading.Lock()
-
-    def _load_raw(self) -> list[dict[str, Any]]:
-        if not self._path.exists():
-            return []
-        try:
-            with open(self._path, encoding="utf-8") as handle:
-                data = json.load(handle)
-        except (json.JSONDecodeError, OSError):
-            return []
-        tokens = data.get("tokens", []) if isinstance(data, dict) else []
-        return tokens if isinstance(tokens, list) else []
-
-    def _save_raw(self, tokens: list[dict[str, Any]]) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write_json(self._path, {"tokens": tokens})
-        try:
-            os.chmod(self._path, 0o600)
-        except OSError:
-            pass
 
     def create_token(self, user_id: str) -> WorkerToken:
         token = WorkerToken(
@@ -101,36 +86,40 @@ class WorkerTokenStore:
             created_at=time.time(),
         )
         with self._lock:
-            raw = [item for item in self._load_raw() if item.get("user_id") != user_id]
-            raw.append(token.to_dict())
-            self._save_raw(raw)
+            with get_session() as session:
+                session.execute(delete(WorkerTokenRow).where(WorkerTokenRow.user_id == user_id))
+                session.add(
+                    WorkerTokenRow(
+                        token=token.token,
+                        user_id=token.user_id,
+                        created_at=token.created_at,
+                    )
+                )
         return token
 
     def get_by_token(self, token: str) -> WorkerToken | None:
         if not token:
             return None
         with self._lock:
-            for item in self._load_raw():
-                if item.get("token") == token:
-                    try:
-                        return WorkerToken.from_dict(item)
-                    except (KeyError, TypeError, ValueError):
-                        return None
-        return None
+            with get_session() as session:
+                row = session.get(WorkerTokenRow, token)
+                if row is None:
+                    return None
+                return WorkerToken(
+                    token=row.token,
+                    user_id=row.user_id,
+                    created_at=row.created_at,
+                )
 
     def delete_for_user(self, user_id: str) -> None:
         with self._lock:
-            raw = self._load_raw()
-            next_raw = [item for item in raw if item.get("user_id") != user_id]
-            if len(next_raw) != len(raw):
-                self._save_raw(next_raw)
+            with get_session() as session:
+                session.execute(delete(WorkerTokenRow).where(WorkerTokenRow.user_id == user_id))
 
     def delete_token(self, token: str) -> None:
         with self._lock:
-            raw = self._load_raw()
-            next_raw = [item for item in raw if item.get("token") != token]
-            if len(next_raw) != len(raw):
-                self._save_raw(next_raw)
+            with get_session() as session:
+                session.execute(delete(WorkerTokenRow).where(WorkerTokenRow.token == token))
 
 
 def pack_mux_frame(conn_id: int, flags: int, payload: bytes = b"") -> bytes:

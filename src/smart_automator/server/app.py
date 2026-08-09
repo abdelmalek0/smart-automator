@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
+from ..db import init_db
 from ..logging_setup import setup_logging, shutdown_logging
 
 from ..storage.websites import WebsiteStore, task_to_api_dict, website_to_api_dict
@@ -56,7 +57,7 @@ from .workers import (
     worker_registry,
     worker_token_store,
 )
-from .paths import AUTH_DIR, ENV_FILE, HISTORY_DIR, REPLAY_DIR, REPORT_DIR, RUNS_DIR, SCREENSHOT_DIR, UI_DIST, WEBSITES_DIR
+from .paths import ENV_FILE, HISTORY_DIR, REPLAY_DIR, REPORT_DIR, SCREENSHOT_DIR, UI_DIST
 from .run_store import user_owns_run_prefix
 from .history_store import delete_run_history
 from .replay_store import delete_run_replay, has_replay_script, load_run_replay, save_run_replay
@@ -81,6 +82,7 @@ log = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     log.info("Smart Automator API starting")
+    init_db()
     yield
     await shutdown_logging()
 
@@ -111,9 +113,6 @@ SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
 REPORT_DIR.mkdir(parents=True, exist_ok=True)
 HISTORY_DIR.mkdir(parents=True, exist_ok=True)
 REPLAY_DIR.mkdir(parents=True, exist_ok=True)
-AUTH_DIR.mkdir(parents=True, exist_ok=True)
-RUNS_DIR.mkdir(parents=True, exist_ok=True)
-WEBSITES_DIR.mkdir(parents=True, exist_ok=True)
 
 app.include_router(auth_router)
 

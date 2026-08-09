@@ -26,6 +26,7 @@ AUTH_DIR = Path(os.getenv("AUTH_DIR", str(PROJECT_ROOT / "data" / "auth")))
 RUNS_DIR = Path(os.getenv("RUNS_DIR", str(PROJECT_ROOT / "data" / "runs")))
 WEBSITES_DIR = Path(os.getenv("WEBSITES_DIR", str(PROJECT_ROOT / "data" / "websites")))
 LLM_USER_DIR = Path(os.getenv("LLM_USER_DIR", str(PROJECT_ROOT / "data" / "llm")))
+DATABASE_FILE = Path(os.getenv("DATABASE_FILE", str(PROJECT_ROOT / "data" / "smart_automator.db")))
 USERS_FILE = AUTH_DIR / "users.json"
 SESSIONS_FILE = AUTH_DIR / "sessions.json"
 WORKER_TOKENS_FILE = AUTH_DIR / "worker_tokens.json"

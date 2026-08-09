@@ -1,11 +1,16 @@
-import json
+"""Tests for per-user LLM preferences."""
+
+from __future__ import annotations
+
 import os
 import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from smart_automator.config import Config
+from smart_automator.db.engine import get_engine
+from smart_automator.db.models import Base
+from smart_automator.db import reset_engine
 from smart_automator.server.config_service import (
     apply_config_update,
     config_for_run,
@@ -14,58 +19,62 @@ from smart_automator.server.models import ConfigUpdate
 from smart_automator.storage.user_llm import UserLlmPrefs, UserLlmStore
 
 
+def _setup_isolated_db(tmp: str) -> None:
+    reset_engine(f"sqlite:///{tmp}/test.db")
+    Base.metadata.create_all(get_engine())
+
+
 class TestUserLlmStore(unittest.TestCase):
     def test_isolation_between_users(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with patch("smart_automator.storage.user_llm.server_paths.LLM_USER_DIR", Path(tmp)):
-                a = UserLlmStore("user-a")
-                b = UserLlmStore("user-b")
-                a.update(provider="groq", model="model-a", api_key="key-a")
-                b.update(provider="openrouter", model="model-b", api_key="key-b")
+            _setup_isolated_db(tmp)
+            a = UserLlmStore("user-a")
+            b = UserLlmStore("user-b")
+            a.update(provider="groq", model="model-a", api_key="key-a")
+            b.update(provider="openrouter", model="model-b", api_key="key-b")
 
-                prefs_a = a.load()
-                prefs_b = b.load()
-                self.assertEqual(prefs_a.provider, "groq")
-                self.assertEqual(prefs_a.api_key_for("groq"), "key-a")
-                self.assertEqual(prefs_b.provider, "openrouter")
-                self.assertEqual(prefs_b.api_key_for("openrouter"), "key-b")
-                self.assertFalse(prefs_b.api_key_is_set("groq"))
+            prefs_a = a.load()
+            prefs_b = b.load()
+            self.assertEqual(prefs_a.provider, "groq")
+            self.assertEqual(prefs_a.api_key_for("groq"), "key-a")
+            self.assertEqual(prefs_b.provider, "openrouter")
+            self.assertEqual(prefs_b.api_key_for("openrouter"), "key-b")
+            self.assertFalse(prefs_b.api_key_is_set("groq"))
 
     def test_first_user_seeds_from_env(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with patch("smart_automator.storage.user_llm.server_paths.LLM_USER_DIR", Path(tmp)):
-                with patch.dict(
-                    os.environ,
-                    {
-                        "LLM_PROVIDER": "openrouter",
-                        "OPENROUTER_MODEL": "seed-model",
-                        "OPENROUTER_API_KEY": "seed-key",
-                    },
-                    clear=False,
-                ):
-                    prefs = UserLlmStore("first-user").load()
-                self.assertEqual(prefs.provider, "openrouter")
-                self.assertEqual(prefs.selected_model("openrouter"), "seed-model")
-                self.assertEqual(prefs.api_key_for("openrouter"), "seed-key")
-                self.assertTrue((Path(tmp) / "first-user.json").exists())
+            _setup_isolated_db(tmp)
+            with patch.dict(
+                os.environ,
+                {
+                    "LLM_PROVIDER": "openrouter",
+                    "OPENROUTER_MODEL": "seed-model",
+                    "OPENROUTER_API_KEY": "seed-key",
+                },
+                clear=False,
+            ):
+                prefs = UserLlmStore("first-user").load()
+            self.assertEqual(prefs.provider, "openrouter")
+            self.assertEqual(prefs.selected_model("openrouter"), "seed-model")
+            self.assertEqual(prefs.api_key_for("openrouter"), "seed-key")
 
     def test_second_user_does_not_inherit_env_after_first_seed(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with patch("smart_automator.storage.user_llm.server_paths.LLM_USER_DIR", Path(tmp)):
-                with patch.dict(
-                    os.environ,
-                    {
-                        "LLM_PROVIDER": "groq",
-                        "GROQ_API_KEY": "shared-key",
-                        "GROQ_MODEL": "shared-model",
-                    },
-                    clear=False,
-                ):
-                    first = UserLlmStore("user-1").load()
-                    second = UserLlmStore("user-2").load()
-                self.assertTrue(first.api_key_is_set("groq"))
-                self.assertFalse(second.api_key_is_set("groq"))
-                self.assertEqual(second.provider, "groq")
+            _setup_isolated_db(tmp)
+            with patch.dict(
+                os.environ,
+                {
+                    "LLM_PROVIDER": "groq",
+                    "GROQ_API_KEY": "shared-key",
+                    "GROQ_MODEL": "shared-model",
+                },
+                clear=False,
+            ):
+                first = UserLlmStore("user-1").load()
+                second = UserLlmStore("user-2").load()
+            self.assertTrue(first.api_key_is_set("groq"))
+            self.assertFalse(second.api_key_is_set("groq"))
+            self.assertEqual(second.provider, "groq")
 
     def test_coerce_legacy_ollama_provider(self):
         prefs = UserLlmPrefs.from_dict({"provider": "ollama", "models": {}, "api_keys": {}})
@@ -73,26 +82,26 @@ class TestUserLlmStore(unittest.TestCase):
 
     def test_openrouter_provider_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with patch("smart_automator.storage.user_llm.server_paths.LLM_USER_DIR", Path(tmp)):
-                store = UserLlmStore("u-or")
-                store.update(
-                    provider="openrouter",
-                    model="deepseek/deepseek-v4-flash-0731",
-                    openrouter_provider="together",
-                )
-                prefs = store.load()
-                self.assertEqual(prefs.openrouter_provider, "together")
-                store.update(provider="openrouter", openrouter_provider="")
-                cleared = store.load()
-                self.assertEqual(cleared.openrouter_provider, "")
+            _setup_isolated_db(tmp)
+            store = UserLlmStore("u-or")
+            store.update(
+                provider="openrouter",
+                model="deepseek/deepseek-v4-flash-0731",
+                openrouter_provider="together",
+            )
+            prefs = store.load()
+            self.assertEqual(prefs.openrouter_provider, "together")
+            store.update(provider="openrouter", openrouter_provider="")
+            cleared = store.load()
+            self.assertEqual(cleared.openrouter_provider, "")
 
     def test_openrouter_provider_ignored_when_not_openrouter(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with patch("smart_automator.storage.user_llm.server_paths.LLM_USER_DIR", Path(tmp)):
-                store = UserLlmStore("u-groq")
-                store.update(provider="groq", openrouter_provider="together")
-                prefs = store.load()
-                self.assertEqual(prefs.openrouter_provider, "")
+            _setup_isolated_db(tmp)
+            store = UserLlmStore("u-groq")
+            store.update(provider="groq", openrouter_provider="together")
+            prefs = store.load()
+            self.assertEqual(prefs.openrouter_provider, "")
 
 
 class TestPerUserConfigService(unittest.TestCase):
@@ -119,18 +128,17 @@ class TestPerUserConfigService(unittest.TestCase):
         store_mock.return_value.ensure_loaded.return_value = settings
 
         with tempfile.TemporaryDirectory() as tmp:
-            with patch("smart_automator.storage.user_llm.server_paths.LLM_USER_DIR", Path(tmp)):
-                # Pre-create another prefs file so u1 is not env-seeded.
-                UserLlmStore("other").save(UserLlmPrefs(provider="groq"))
-                UserLlmStore("u1").save(
-                    UserLlmPrefs(
-                        provider="openrouter",
-                        models={"openrouter": "user-model"},
-                        api_keys={"openrouter": "user-key"},
-                        openrouter_provider="fireworks",
-                    )
+            _setup_isolated_db(tmp)
+            UserLlmStore("other").save(UserLlmPrefs(provider="groq"))
+            UserLlmStore("u1").save(
+                UserLlmPrefs(
+                    provider="openrouter",
+                    models={"openrouter": "user-model"},
+                    api_keys={"openrouter": "user-key"},
+                    openrouter_provider="fireworks",
                 )
-                config = config_for_run("u1")
+            )
+            config = config_for_run("u1")
 
         self.assertEqual(config.active_provider, "openrouter")
         self.assertEqual(config.active_model, "user-model")
@@ -161,16 +169,12 @@ class TestPerUserConfigService(unittest.TestCase):
         store_mock.return_value.ensure_loaded.return_value = settings
 
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "other.json"
-            path.write_text(
-                '{"provider":"groq","models":{},"api_keys":{"groq":"other"}}',
-                encoding="utf-8",
+            _setup_isolated_db(tmp)
+            UserLlmStore("other").save(UserLlmPrefs(provider="groq", api_keys={"groq": "other"}))
+            UserLlmStore("empty-user").save(
+                UserLlmPrefs(provider="groq", models={"groq": "m"}, api_keys={})
             )
-            with patch("smart_automator.storage.user_llm.server_paths.LLM_USER_DIR", Path(tmp)):
-                UserLlmStore("empty-user").save(
-                    UserLlmPrefs(provider="groq", models={"groq": "m"}, api_keys={})
-                )
-                config = config_for_run("empty-user")
+            config = config_for_run("empty-user")
 
         self.assertEqual(config.groq_api_key, "")
         self.assertEqual(config.openrouter_api_key, "")
@@ -181,7 +185,7 @@ class TestPerUserConfigService(unittest.TestCase):
     @patch("smart_automator.server.config_service.load_config")
     @patch("smart_automator.server.config_service.reload_runtime_env")
     @patch("smart_automator.server.config_service.ENV_FILE")
-    def test_apply_config_update_writes_user_file_not_env_keys(
+    def test_apply_config_update_writes_user_prefs_not_env_keys(
         self,
         env_file_mock,
         _reload,
@@ -200,20 +204,18 @@ class TestPerUserConfigService(unittest.TestCase):
         store_mock.return_value.ensure_loaded.return_value = settings
 
         with tempfile.TemporaryDirectory() as tmp:
-            with patch("smart_automator.storage.user_llm.server_paths.LLM_USER_DIR", Path(tmp)):
-                apply_config_update(
-                    ConfigUpdate(
-                        provider="groq",
-                        model="m1",
-                        api_key="secret-user-key",
-                    ),
-                    user_id="alice",
-                )
-                prefs = UserLlmStore("alice").load()
-                data = json.loads((Path(tmp) / "alice.json").read_text(encoding="utf-8"))
+            _setup_isolated_db(tmp)
+            apply_config_update(
+                ConfigUpdate(
+                    provider="groq",
+                    model="m1",
+                    api_key="secret-user-key",
+                ),
+                user_id="alice",
+            )
+            prefs = UserLlmStore("alice").load()
 
         self.assertEqual(prefs.api_key_for("groq"), "secret-user-key")
-        self.assertEqual(data["api_keys"]["groq"], "secret-user-key")
         self.assertFalse(
             any(call.args[1] == "GROQ_API_KEY" for call in set_key_mock.call_args_list)
         )

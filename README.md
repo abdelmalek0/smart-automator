@@ -102,12 +102,19 @@ MAX_FAILURES=3
 MAX_INPUT_TOKENS=128000
 ```
 
-Runtime data (websites, LLM provider catalog, pricing, screenshots) is stored in the project root:
+Runtime data:
 
-- `websites.json`
-- `llm_settings.json` — per-provider base URLs and saved model lists (not the active selection)
-- `pricing.json`
-- `data/screenshots/`
+- `data/smart_automator.db` — SQLite database (users, sessions, websites, runs, LLM prefs, pricing, etc.)
+- `data/histories/` — per-run agent step histories (JSON)
+- `data/replays/` — replay scripts and step metadata
+- `data/reports/` — generated HTML run reports
+- `data/screenshots/` — step screenshots
+- `data/logs/` — application logs
+
+Root JSON fallbacks used only when the corresponding DB tables are empty:
+
+- `llm_settings.json` — per-provider base URLs and saved model lists
+- `pricing.json` — token pricing table
 
 ## Example Tasks
 
@@ -118,5 +125,5 @@ Runtime data (websites, LLM provider catalog, pricing, screenshots) is stored in
 ## Tests
 
 ```bash
-uv run python -m unittest discover -s tests
+uv run python -m pytest
 ```

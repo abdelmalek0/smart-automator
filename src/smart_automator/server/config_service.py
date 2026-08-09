@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 from dotenv import load_dotenv, set_key
+from sqlalchemy import delete, select
 
 from ..config import (
     Config,
@@ -23,6 +24,8 @@ from ..browser.chrome_profile_mirror import (
     chrome_profile_mirror_path,
     format_mirrored_chrome_profile,
 )
+from ..db.engine import get_session
+from ..db.models import PricingEntryRow
 from ..server.paths import ENV_FILE, PRICING_FILE
 from ..server.provider_utils import (
     UI_PROVIDERS,
@@ -428,7 +431,21 @@ def apply_config_update(update, user_id: str | None = None) -> dict:
     reload_runtime_env()
     return build_config_response(user_id=user_id)
 
+def _pricing_row_to_dict(row: PricingEntryRow) -> dict:
+    return {
+        "provider": row.provider,
+        "model": row.model,
+        "input": row.input_price,
+        "output": row.output_price,
+        "cache_read": row.cache_read,
+    }
+
+
 def load_pricing() -> list[dict]:
+    with get_session() as session:
+        rows = session.scalars(select(PricingEntryRow).order_by(PricingEntryRow.id)).all()
+        if rows:
+            return [_pricing_row_to_dict(row) for row in rows]
     if PRICING_FILE.exists():
         try:
             with open(PRICING_FILE, encoding="utf-8") as handle:
@@ -441,10 +458,24 @@ def load_pricing() -> list[dict]:
 
 
 def save_pricing(entries: list[dict]) -> int:
-    PRICING_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(PRICING_FILE, "w", encoding="utf-8") as handle:
-        json.dump(entries, handle, indent=2)
-        handle.write("\n")
+    with get_session() as session:
+        session.execute(delete(PricingEntryRow))
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            provider = str(item.get("provider", "")).strip()
+            model = str(item.get("model", "")).strip()
+            if not provider or not model:
+                continue
+            session.add(
+                PricingEntryRow(
+                    provider=provider,
+                    model=model,
+                    input_price=float(item.get("input", 0)),
+                    output_price=float(item.get("output", 0)),
+                    cache_read=float(item.get("cache_read", 0)),
+                )
+            )
     return len(entries)
 
 
