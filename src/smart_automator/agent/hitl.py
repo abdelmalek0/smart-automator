@@ -698,6 +698,12 @@ class HitlController:
             except Exception:
                 log.debug("HITL ensure_current_page failed", exc_info=True)
 
+    def _run_prefix(self) -> str:
+        run_id = self._context.run_id
+        if run_id:
+            return f"[run:{run_id[:8]}] "
+        return ""
+
     @property
     def recorder(self) -> HumanActionRecorder:
         return self._recorder
@@ -754,6 +760,13 @@ class HitlController:
         context.human_controlling = True
         context.hitl_interrupt = False
         self._recorder.start()
+        log.info(
+            "%sHITL take_control reason=%s url=%s source=%s",
+            self._run_prefix(),
+            context.hitl_reason,
+            self._session_start_url,
+            source,
+        )
         self._emit({"type": "human_control_started", "source": source})
         return True
 
@@ -762,7 +775,12 @@ class HitlController:
         if not context.human_controlling and not context.awaiting_human:
             return True
 
-        self._capture_and_flush_recorded(set_handoff=True)
+        recorded = self._capture_and_flush_recorded(set_handoff=True)
+        log.info(
+            "%sHITL release actions_recorded=%d",
+            self._run_prefix(),
+            len(recorded),
+        )
 
         context.message_manager.prepare_post_hitl_resume()
         context.action_results.clear()

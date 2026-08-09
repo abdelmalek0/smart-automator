@@ -464,6 +464,15 @@ def run_automation(run: RunState) -> None:
             planner_llm=planner_llm,
             on_event=on_event,
             success_criteria=run.success_criteria,
+            run_id=run.run_id,
+        )
+        log.info(
+            "[run:%s] LLM navigator=%s/%s planner=%s/%s",
+            run.run_id[:8],
+            config.llm_provider,
+            llm.model_name or "?",
+            planner_provider or config.llm_provider,
+            planner_llm.model_name or "?",
         )
         run.executor = executor
 

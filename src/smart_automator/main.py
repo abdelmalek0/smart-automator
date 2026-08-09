@@ -3,6 +3,7 @@ from .browser.context import BrowserContext
 from .llm.base import BaseLLM
 from .llm.groq import OpenAICompatLLM
 from .llm.ollama import OllamaLLM
+from .logging_setup import setup_logging
 from .server.provider_utils import runtime_provider
 from .agent.executor import Executor
 from rich.console import Console
@@ -40,6 +41,7 @@ def run_task(task: str, config: Config) -> str | None:
 
 
 def main():
+    setup_logging()
     config = load_config()
 
     console.print(Panel(

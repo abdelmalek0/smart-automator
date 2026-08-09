@@ -9,6 +9,7 @@ dependencies = [
     "fastapi>=0.115.0",
     "httpx>=0.28.1",
     "json-repair>=0.39.1",
+    "loguru>=0.7.3",
     "playwright>=1.48.0",
     "pydantic>=2.10.6",
     "pytest>=8.0.0",

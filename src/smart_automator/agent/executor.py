@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import uuid
 from collections.abc import Callable
@@ -37,10 +38,12 @@ from ..agent.stuck_recovery import (
     detect_stuck_signals,
     update_page_progress,
 )
+from ..agent.log_utils import log_section
 from ..server.step_mapper import build_step_start, planner_to_plan
 from ..server.config_service import compute_cost_usd
 
 console = Console()
+log = logging.getLogger(__name__)
 
 
 def _format_planner_panel(plan: dict) -> str:
@@ -116,6 +119,7 @@ class Executor:
         planner_llm: BaseLLM | None = None,
         on_event: Callable[[dict], None] | None = None,
         success_criteria: str = "",
+        run_id: str = "",
     ):
         self._task = task
         self._tasks = [task]
@@ -149,6 +153,7 @@ class Executor:
             message_manager=message_manager,
             options=options,
         )
+        self._context.run_id = run_id
         self._context.success_criteria = self._success_criteria
         self._context.hitl_enabled = not config.headless
         self._last_error: str | None = None
@@ -180,6 +185,15 @@ class Executor:
     @property
     def context(self) -> AgentContext:
         return self._context
+
+    def _run_prefix(self) -> str:
+        run_id = self._context.run_id
+        if run_id:
+            return f"[run:{run_id[:8]}] "
+        return ""
+
+    def _log_section(self, title: str) -> None:
+        log_section(log, self._run_prefix(), title)
 
     @property
     def hitl(self) -> HitlController:
@@ -419,6 +433,7 @@ class Executor:
                 border_style="yellow",
             )
         )
+        self._log_section("HITL debrief")
         debrief_started = time.time()
         analysis = self._hitl_debrief.analyze(
             task=self._task,
@@ -460,7 +475,9 @@ class Executor:
 
     def _finalize_with_criteria(self, final_answer: str) -> str:
         context = self._context
+        self._log_section("Criteria checker")
         checker = CriteriaCheckerAgent(self._llm)
+        checker._context = context
         state_message = CriteriaCheckerAgent.build_state_message(context)
         verdict = checker.check(
             task=self._task,
@@ -591,6 +608,7 @@ class Executor:
                     border_style="magenta",
                 )
             )
+            self._log_section(f"Planner (after step {context.n_steps})")
             plan_output = self._planner.execute()
             self._navigator.remove_last_state_message_from_memory()
             if context.hitl_interrupt:
@@ -645,6 +663,7 @@ class Executor:
                 border_style="yellow",
             )
         )
+        self._log_section("Action critic")
         suggestion = self._action_critic.suggest_actions(reason)
         self._emit_tokens()
         if not suggestion:
@@ -731,6 +750,26 @@ class Executor:
                     border_style="cyan",
                 )
             )
+            self._log_section(f"Navigator step {context.n_steps + 1}")
+            try:
+                pre_state = context.browser_context.get_state(
+                    show_highlights=False,
+                    wait_for_stable=False,
+                )
+                log.info(
+                    "%sNavigator step %d | url=%s title=%s | elements=%d",
+                    self._run_prefix(),
+                    context.n_steps + 1,
+                    pre_state.url,
+                    pre_state.title,
+                    len(pre_state.selector_map),
+                )
+            except Exception:
+                log.info(
+                    "%sNavigator step %d | url=? title=? | elements=?",
+                    self._run_prefix(),
+                    context.n_steps + 1,
+                )
             step_index = context.alloc_ui_step_index()
             self._emit({"type": "step_start", "step": build_step_start(step_index)})
             nav_started = time.time()
@@ -782,6 +821,17 @@ class Executor:
                 )
                 self._emit_tokens()
                 if metrics:
+                    log.info(
+                        "%s│ step_timing dom_ms=%s llm_ms=%s batch_ms=%s settle_ms=%s "
+                        "recovery_attempts=%s rejected=%s",
+                        self._run_prefix(),
+                        metrics.get("dom_ms"),
+                        metrics.get("llm_ms"),
+                        metrics.get("batch_ms"),
+                        metrics.get("settle_ms"),
+                        metrics.get("recovery_attempts"),
+                        metrics.get("rejected_actions"),
+                    )
                     self._emit(
                         {
                             "type": "turn_timing",

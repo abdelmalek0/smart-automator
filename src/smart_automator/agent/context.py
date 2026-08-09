@@ -95,6 +95,7 @@ class AgentContext:
         options: AgentOptions | None = None,
     ):
         self.task_id = task_id
+        self.run_id = ""
         self.browser_context = browser_context
         self.message_manager = message_manager
         self.options = options or AgentOptions()

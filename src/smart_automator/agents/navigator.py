@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -39,6 +40,8 @@ from .recovery import (
 )
 
 MAX_CONSECUTIVE_NO_ACTION_STEPS = 3
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..agent.messages.service import MessageManager
@@ -174,6 +177,12 @@ class NavigatorAgent(BaseAgent):
             if fixed_actions:
                 response["action"] = fixed_actions
             if rejected_actions:
+                log.warning(
+                    "%snavigator rejected %d actions during validation: %s",
+                    self._run_log_prefix(),
+                    len(rejected_actions),
+                    rejected_actions,
+                )
                 self._context.message_manager.add_message_with_tokens({
                     "role": "user",
                     "content": (
@@ -247,6 +256,12 @@ class NavigatorAgent(BaseAgent):
                     browser_state.selector_map,
                 )
                 if invalid_index_actions:
+                    log.warning(
+                        "%snavigator rejected %d actions with invalid indices: %s",
+                        self._run_log_prefix(),
+                        len(invalid_index_actions),
+                        invalid_index_actions,
+                    )
                     valid_indices = format_valid_indices(browser_state.selector_map)
                     self._context.message_manager.add_message_with_tokens({
                         "role": "user",
@@ -302,6 +317,7 @@ class NavigatorAgent(BaseAgent):
             )
             batch_ms = (time.perf_counter() - batch_start) * 1000
             self._context.action_results = action_results
+            self._log_action_results(actions, action_results, browser_state.url)
 
             if self._context.hitl_interrupt:
                 output["interrupted"] = True
@@ -419,7 +435,7 @@ class NavigatorAgent(BaseAgent):
                 ),
             ):
                 raise classified from error
-            output["error"] = str(error)
+            output["error"] = f"{type(error).__name__}: {error}"
             return output
 
     def _invoke_navigator_with_recovery(
@@ -435,6 +451,11 @@ class NavigatorAgent(BaseAgent):
             response, raw = self.get_json_response_with_raw(messages, temperature=0.1)
         except ResponseParseError as error:
             recovery_attempts = 1
+            log.warning(
+                "%snavigator parse error, attempting repair: %s",
+                self._run_log_prefix(),
+                error,
+            )
             repair_messages = [
                 *messages,
                 {
@@ -454,6 +475,11 @@ class NavigatorAgent(BaseAgent):
         )
         if not response.get("action") and raw_before_validation:
             recovery_attempts += 1
+            log.warning(
+                "%snavigator all actions rejected during validation: %s",
+                self._run_log_prefix(),
+                rejected_actions,
+            )
             repair_messages = [
                 *messages,
                 {
@@ -473,6 +499,53 @@ class NavigatorAgent(BaseAgent):
             )
 
         return response, raw, recovery_attempts, rejected_actions
+
+    def _log_action_results(
+        self,
+        actions: list[Action],
+        action_results: list[ActionResult],
+        url: str,
+    ) -> None:
+        from ..agent.verification import VERIFICATION_FAILED
+
+        prefix = self._run_log_prefix()
+        branch = f"{prefix}│ "
+        ok = 0
+        failed = 0
+        verification_failed = 0
+        for result in action_results:
+            if result.error or result.verification_status == VERIFICATION_FAILED:
+                failed += 1
+            else:
+                ok += 1
+            if result.verification_status == VERIFICATION_FAILED:
+                verification_failed += 1
+
+        log.info(
+            "%sactions_executed=%d ok=%d failed=%d url=%s verification_failed=%d",
+            branch,
+            len(action_results),
+            ok,
+            failed,
+            url,
+            verification_failed,
+        )
+        for i, result in enumerate(action_results):
+            action = actions[i] if i < len(actions) else None
+            name = result.action_name or (action.name if action else "?")
+            index = result.action_index
+            if index is None and action is not None:
+                index = action.index
+            index_part = f" index={index}" if index is not None else ""
+            if result.error:
+                detail = result.error.split("\n")[-1]
+                status = f"failed: {detail}"
+            elif result.verification_status == VERIFICATION_FAILED:
+                evidence = result.verification_evidence or "verification failed"
+                status = f"verification_failed: {evidence}"
+            else:
+                status = "ok"
+            log.info("%s  %s%s %s", branch, name, index_part, status)
 
     def _record_progress(
         self,

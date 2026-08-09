@@ -12,6 +12,7 @@ from smart_automator.llm.base import BaseLLM
 
 class _RecordingLLM(BaseLLM):
     def __init__(self):
+        super().__init__()
         self.last_messages: list[dict] | None = None
 
     @property
@@ -75,6 +76,9 @@ class TestInvokeMessageRouting(unittest.TestCase):
 
 
 class _NullContentLLM(BaseLLM):
+    def __init__(self):
+        super().__init__()
+
     @property
     def model_name(self) -> str:
         return "test-model"

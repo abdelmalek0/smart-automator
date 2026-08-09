@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable
 from typing import TypeVar
 
 import httpx
+
+log = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
@@ -47,6 +50,19 @@ def call_with_retry(
             if attempt + 1 >= max_attempts or not _is_retryable_http_error(error):
                 raise
             delay = base_delay_seconds * (2**attempt)
+            status_code = (
+                error.response.status_code
+                if isinstance(error, httpx.HTTPStatusError)
+                else None
+            )
+            log.warning(
+                "LLM request retry attempt=%d/%d status=%s delay_s=%.1f error=%s",
+                attempt + 2,
+                max_attempts,
+                status_code if status_code is not None else "n/a",
+                delay,
+                error,
+            )
             time.sleep(delay)
     if last_error is not None:
         raise last_error

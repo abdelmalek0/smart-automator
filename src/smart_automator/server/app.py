@@ -10,18 +10,21 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import logging.config
 import os
 import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from loguru import logger
+
+from ..logging_setup import setup_logging, shutdown_logging
 
 from ..storage.websites import WebsiteStore, task_to_api_dict, website_to_api_dict
 from ..browser.chrome_profiles import discover_chrome_profiles
@@ -70,37 +73,19 @@ from .step_mapper import compose_agent_task
 from .tools import list_action_tools
 
 load_dotenv(ENV_FILE)
-
-logging.config.dictConfig(
-    {
-        "version": 1,
-        "disable_existing_loggers": False,
-        "formatters": {
-            "default": {
-                "format": "%(asctime)s %(levelname)-8s %(name)s  %(message)s",
-                "datefmt": "%H:%M:%S",
-            }
-        },
-        "handlers": {
-            "console": {
-                "class": "logging.StreamHandler",
-                "formatter": "default",
-                "stream": "ext://sys.stderr",
-            }
-        },
-        "root": {"handlers": ["console"], "level": os.getenv("LOG_LEVEL", "INFO")},
-        "loggers": {
-            "uvicorn": {"level": "WARNING"},
-            "uvicorn.error": {"level": "WARNING"},
-            "uvicorn.access": {"level": "WARNING"},
-            "websockets": {"level": "WARNING"},
-        },
-    }
-)
+setup_logging()
 
 log = logging.getLogger(__name__)
 
-app = FastAPI(title="Smart Automator", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    log.info("Smart Automator API starting")
+    yield
+    await shutdown_logging()
+
+
+app = FastAPI(title="Smart Automator", version="0.1.0", lifespan=lifespan)
 
 _cors_origins_env = os.getenv("CORS_ORIGINS", "")
 _cors_origins: list[str] = (
@@ -131,6 +116,16 @@ RUNS_DIR.mkdir(parents=True, exist_ok=True)
 WEBSITES_DIR.mkdir(parents=True, exist_ok=True)
 
 app.include_router(auth_router)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.opt(exception=exc).error(
+        "Unhandled error on {} {}",
+        request.method,
+        request.url.path,
+    )
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
 def _websites(user: User) -> WebsiteStore:
@@ -811,6 +806,7 @@ def main() -> None:
     # Only watch package source. Writing under data/ (histories, reports, replays/*.py)
     # must not restart the process — that wipes in-memory run history in the sidebar.
     package_dir = str(Path(__file__).resolve().parent.parent)
+    debug = os.getenv("LOG_LEVEL", "INFO").upper() == "DEBUG"
 
     uvicorn.run(
         "smart_automator.server.app:app",
@@ -823,6 +819,9 @@ def main() -> None:
             "**/*.pyc",
             "**/data/**",
         ],
+        log_config=None,
+        log_level="debug" if debug else "info",
+        access_log=debug,
     )
 
 

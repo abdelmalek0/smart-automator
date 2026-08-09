@@ -1,3 +1,5 @@
+import json
+
 import httpx
 
 from .base import BaseLLM
@@ -12,6 +14,53 @@ def _chat_completions_url(base_url: str) -> str:
     if base.endswith("/chat/completions"):
         return base
     return f"{base}/chat/completions"
+
+
+def _body_preview(body: dict, *, limit: int = 500) -> str:
+    try:
+        text = json.dumps(body, ensure_ascii=False)
+    except TypeError:
+        text = repr(body)
+    if len(text) > limit:
+        return text[:limit] + "..."
+    return text
+
+
+def _extract_chat_completion_content(body: dict) -> str:
+    error = body.get("error")
+    if error:
+        if isinstance(error, dict):
+            message = error.get("message") or error.get("detail") or json.dumps(error)
+        else:
+            message = str(error)
+        raise ValueError(f"LLM API returned error payload: {message}")
+
+    choices = body.get("choices")
+    if not choices:
+        keys = ", ".join(sorted(body.keys())) or "(empty)"
+        raise ValueError(
+            f"LLM API response missing choices (keys: {keys}): {_body_preview(body)}"
+        )
+
+    first = choices[0]
+    if not isinstance(first, dict):
+        raise ValueError(
+            f"LLM API response has invalid choices[0]: {_body_preview(body)}"
+        )
+
+    message = first.get("message")
+    if not isinstance(message, dict):
+        raise ValueError(
+            f"LLM API response missing message in choices[0]: {_body_preview(body)}"
+        )
+
+    content = message.get("content")
+    if content is None:
+        raise ValueError(
+            f"LLM API response missing message content: {_body_preview(body)}"
+        )
+
+    return content
 
 
 class OpenAICompatLLM(BaseLLM):
@@ -122,7 +171,7 @@ class OpenAICompatLLM(BaseLLM):
                 "cache_tokens": int(details.get("cached_tokens", 0) or 0),
             }
         )
-        return body["choices"][0]["message"]["content"]
+        return _extract_chat_completion_content(body)
 
     def __del__(self):
         try:
