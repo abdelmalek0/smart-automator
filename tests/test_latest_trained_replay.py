@@ -251,8 +251,10 @@ def test_pass_training_updates_task_pointer(client: TestClient) -> None:
 
     executor.execute = MagicMock(side_effect=mark_pass_and_execute)
 
+    llm = MagicMock()
     with patch("smart_automator.server.runner.config_for_run"), patch(
-        "smart_automator.server.runner.create_llm"
+        "smart_automator.server.runner.create_role_llms",
+        return_value=(llm, llm),
     ), patch("smart_automator.server.runner.local_browser_mode_enabled", return_value=True), patch(
         "smart_automator.server.runner.BrowserContext"
     ) as browser_context_cls, patch(
@@ -306,8 +308,10 @@ def test_failed_training_does_not_save_replay(client: TestClient) -> None:
 
     executor.execute = MagicMock(side_effect=mark_fail_and_execute)
 
+    llm = MagicMock()
     with patch("smart_automator.server.runner.config_for_run"), patch(
-        "smart_automator.server.runner.create_llm"
+        "smart_automator.server.runner.create_role_llms",
+        return_value=(llm, llm),
     ), patch("smart_automator.server.runner.local_browser_mode_enabled", return_value=True), patch(
         "smart_automator.server.runner.BrowserContext"
     ) as browser_context_cls, patch(

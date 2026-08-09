@@ -80,10 +80,11 @@ def get_session():
 
 
 def init_db() -> None:
-    from .migrate_json import cleanup_migrated_json_files, migrate_json_if_needed
+    from .migrate_json import cleanup_migrated_json_files, migrate_json_if_needed, migrate_schema_if_needed
     from .models import Base
 
     engine = get_engine()
     Base.metadata.create_all(engine)
+    migrate_schema_if_needed()
     migrate_json_if_needed()
     cleanup_migrated_json_files()

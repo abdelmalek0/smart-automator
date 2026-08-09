@@ -24,6 +24,51 @@ const PROFILE_CUSTOM = '__custom__'
 /** Display-only stand-in when a key is stored; never sent to the server. */
 const MASKED_API_KEY = '********'
 
+const AGENT_ROLES = [
+  {
+    id: 'navigation' as const,
+    title: 'Navigation',
+    description: 'Navigator and criteria checker',
+  },
+  {
+    id: 'planning' as const,
+    title: 'Planning',
+    description: 'Planner, actor-critic, and HITL debrief',
+  },
+]
+
+type AgentRoleId = (typeof AGENT_ROLES)[number]['id']
+
+type RoleFormState = {
+  provider: string
+  baseUrl: string
+  model: string
+  apiKey: string
+  openrouterProvider: string
+}
+
+function emptyRoleForm(): RoleFormState {
+  return {
+    provider: '',
+    baseUrl: '',
+    model: '',
+    apiKey: '',
+    openrouterProvider: '',
+  }
+}
+
+function roleFormFromConfig(role: AgentRoleId, next: Config): RoleFormState {
+  const roleConfig = next.roles?.[role]
+  const provider = coerceUiProvider(roleConfig?.provider ?? next.provider)
+  return {
+    provider,
+    baseUrl: roleConfig?.base_url ?? next.base_url,
+    model: roleConfig?.model ?? next.model,
+    apiKey: isProviderApiKeySet(provider, next) ? MASKED_API_KEY : '',
+    openrouterProvider: roleConfig?.openrouter_provider ?? next.openrouter_provider ?? '',
+  }
+}
+
 function inferProfileSelection(
   chromeUserData: string,
   chromeProfileDirectory: string,
@@ -68,32 +113,27 @@ export default function SettingsPage() {
     refetchInterval: 5_000,
   })
 
-  const [provider, setProvider] = useState('')
-  const [baseUrl, setBaseUrl] = useState('')
-  const [model, setModel] = useState('')
-  const [apiKey, setApiKey] = useState('')
-  const [openrouterProvider, setOpenrouterProvider] = useState('')
+  const [roleForms, setRoleForms] = useState<Record<AgentRoleId, RoleFormState>>({
+    navigation: emptyRoleForm(),
+    planning: emptyRoleForm(),
+  })
   const [freshProfile, setFreshProfile] = useState(true)
   const [chromeUserData, setChromeUserData] = useState('')
   const [chromeProfileDirectory, setChromeProfileDirectory] = useState('')
   const [profileSelection, setProfileSelection] = useState(PROFILE_APP_DEFAULT)
   const [dirty, setDirty] = useState(false)
-  const [checking, setChecking] = useState(false)
-  const [checkResult, setCheckResult] = useState<{
-    ok: boolean
-    error?: string
-    provider_name?: string
-  } | null>(null)
+  const [checkingRole, setCheckingRole] = useState<AgentRoleId | null>(null)
+  const [checkResults, setCheckResults] = useState<
+    Partial<Record<AgentRoleId, { ok: boolean; error?: string; provider_name?: string }>>
+  >({})
   const [pricing, setPricing] = useState<PricingEntry[]>([])
   const [pricingSaved, setPricingSaved] = useState(false)
 
   function applyConfig(next: Config) {
-    const nextProvider = coerceUiProvider(next.provider)
-    setProvider(nextProvider)
-    setBaseUrl(next.base_url)
-    setModel(next.model)
-    setApiKey(isProviderApiKeySet(nextProvider, next) ? MASKED_API_KEY : '')
-    setOpenrouterProvider(next.openrouter_provider ?? '')
+    setRoleForms({
+      navigation: roleFormFromConfig('navigation', next),
+      planning: roleFormFromConfig('planning', next),
+    })
     setFreshProfile(next.fresh_profile ?? true)
     setChromeUserData(next.chrome_user_data ?? '')
     setChromeProfileDirectory(next.chrome_profile_directory ?? '')
@@ -112,23 +152,50 @@ export default function SettingsPage() {
     }
   }, [config, dirty, chromeProfiles])
 
-  function handleProviderChange(next: string) {
-    const canonical = coerceUiProvider(next)
+  function updateRoleForm(role: AgentRoleId, patch: Partial<RoleFormState>) {
     setDirty(true)
-    setProvider(canonical)
-    setApiKey(isProviderApiKeySet(canonical, config) ? MASKED_API_KEY : '')
+    setRoleForms((prev) => ({ ...prev, [role]: { ...prev[role], ...patch } }))
+  }
+
+  function handleProviderChange(role: AgentRoleId, next: string) {
+    const canonical = coerceUiProvider(next)
     const saved = config?.provider_settings?.[canonical]
     const savedBaseUrl = saved?.base_url || ''
     const baseUrlValid = isValidBaseUrlForProvider(canonical, savedBaseUrl)
-    setBaseUrl(baseUrlValid ? savedBaseUrl : defaultBaseUrl(canonical))
     const lastModel = config?.selected_models?.[canonical]?.trim()
     const savedModels = saved?.models ?? []
+    const currentRole = roleForms[role]
+    let nextModel = defaultModel(canonical)
     if (lastModel) {
-      setModel(lastModel)
-    } else if (canonical === coerceUiProvider(config?.provider ?? '')) {
-      setModel(config?.model || defaultModel(canonical))
-    } else {
-      setModel(baseUrlValid && savedModels.length > 0 ? savedModels[0] : defaultModel(canonical))
+      nextModel = lastModel
+    } else if (canonical === coerceUiProvider(config?.roles?.[role]?.provider ?? config?.provider ?? '')) {
+      nextModel = config?.roles?.[role]?.model || config?.model || defaultModel(canonical)
+    } else if (baseUrlValid && savedModels.length > 0) {
+      nextModel = savedModels[0]
+    }
+    updateRoleForm(role, {
+      provider: canonical,
+      baseUrl: baseUrlValid ? savedBaseUrl : defaultBaseUrl(canonical),
+      model: nextModel,
+      apiKey: isProviderApiKeySet(canonical, config) ? MASKED_API_KEY : '',
+      openrouterProvider: canonical === 'openrouter' ? currentRole.openrouterProvider : '',
+    })
+  }
+
+  function apiKeyForRequest(role: AgentRoleId): string | undefined {
+    const trimmed = roleForms[role].apiKey.trim()
+    if (!trimmed || trimmed === MASKED_API_KEY) return undefined
+    return trimmed
+  }
+
+  function rolePayload(role: AgentRoleId) {
+    const form = roleForms[role]
+    return {
+      provider: form.provider,
+      base_url: form.baseUrl,
+      model: form.model,
+      api_key: apiKeyForRequest(role),
+      openrouter_provider: form.provider === 'openrouter' ? form.openrouterProvider.trim() : undefined,
     }
   }
 
@@ -138,20 +205,13 @@ export default function SettingsPage() {
 
   const connectOnline = Boolean(workerStatus?.online ?? config?.connect_online)
 
-  function apiKeyForRequest(): string | undefined {
-    const trimmed = apiKey.trim()
-    if (!trimmed || trimmed === MASKED_API_KEY) return undefined
-    return trimmed
-  }
-
   const saveMutation = useMutation({
     mutationFn: () =>
       updateConfig({
-        provider,
-        base_url: baseUrl,
-        model,
-        api_key: apiKeyForRequest(),
-        openrouter_provider: provider === 'openrouter' ? openrouterProvider.trim() : undefined,
+        roles: {
+          navigation: rolePayload('navigation'),
+          planning: rolePayload('planning'),
+        },
         fresh_profile: freshProfile,
         chrome_user_data: chromeUserData,
         chrome_profile_directory: chromeProfileDirectory,
@@ -185,22 +245,16 @@ export default function SettingsPage() {
     )
   }
 
-  async function handleCheck() {
-    setChecking(true)
-    setCheckResult(null)
-    const result = await checkConfig({
-      provider,
-      base_url: baseUrl,
-      model,
-      api_key: apiKeyForRequest(),
-      openrouter_provider: provider === 'openrouter' ? openrouterProvider.trim() : undefined,
-    }).catch((e) => ({ ok: false, error: String(e) }))
-    setCheckResult(result)
-    setChecking(false)
+  async function handleCheck(role: AgentRoleId) {
+    setCheckingRole(role)
+    setCheckResults((prev) => ({ ...prev, [role]: undefined }))
+    const result = await checkConfig(rolePayload(role)).catch((e) => ({
+      ok: false,
+      error: String(e),
+    }))
+    setCheckResults((prev) => ({ ...prev, [role]: result }))
+    setCheckingRole(null)
   }
-
-  const providerApiKeySet = isProviderApiKeySet(provider, config)
-  const modelOptions = config?.provider_settings?.[provider]?.models ?? []
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -224,123 +278,43 @@ export default function SettingsPage() {
             <TabsTrigger value="about">About</TabsTrigger>
           </TabsList>
 
-          <TabsContent value="llm" className="space-y-5">
+          <TabsContent value="llm" className="space-y-8">
             <p className="text-sm text-muted-foreground">
-              Provider, model, and API key are saved for your account. The available-model list is
-              shared on this server.
+              Choose provider and model per agent role. API keys are shared per provider; the
+              available-model list is shared on this server.
             </p>
 
-            <div className="space-y-2">
-              <Label>Provider</Label>
-              <Select value={provider} onValueChange={handleProviderChange}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select provider" />
-                </SelectTrigger>
-                <SelectContent>
-                  {UI_PROVIDERS.map((item) => (
-                    <SelectItem key={item.id} value={item.id}>
-                      {item.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
-              <Label>Base URL</Label>
-              <Input
-                value={baseUrl}
-                onChange={(e) => {
-                  setDirty(true)
-                  setBaseUrl(e.target.value)
+            {AGENT_ROLES.map((role) => (
+              <LlmRoleSection
+                key={role.id}
+                roleId={role.id}
+                title={role.title}
+                description={role.description}
+                form={roleForms[role.id]}
+                config={config}
+                checking={checkingRole === role.id}
+                checkResult={checkResults[role.id]}
+                onProviderChange={(value) => handleProviderChange(role.id, value)}
+                onBaseUrlChange={(value) => updateRoleForm(role.id, { baseUrl: value })}
+                onModelChange={(value) => updateRoleForm(role.id, { model: value })}
+                onOpenrouterProviderChange={(value) =>
+                  updateRoleForm(role.id, { openrouterProvider: value })
+                }
+                onApiKeyChange={(value) => updateRoleForm(role.id, { apiKey: value })}
+                onApiKeyFocus={() => {
+                  if (roleForms[role.id].apiKey === MASKED_API_KEY) {
+                    updateRoleForm(role.id, { apiKey: '' })
+                  }
                 }}
-                className="mono"
+                onApiKeyBlur={() => {
+                  const provider = roleForms[role.id].provider
+                  if (!roleForms[role.id].apiKey.trim() && isProviderApiKeySet(provider, config)) {
+                    updateRoleForm(role.id, { apiKey: MASKED_API_KEY })
+                  }
+                }}
+                onCheck={() => handleCheck(role.id)}
               />
-            </div>
-
-            <ModelField
-              key={provider}
-              model={model}
-              modelOptions={modelOptions}
-              onModelChange={(value) => {
-                setDirty(true)
-                setModel(value)
-              }}
-            />
-
-            {provider === 'openrouter' && (
-              <div className="space-y-2">
-                <Label>Upstream provider</Label>
-                <Input
-                  value={openrouterProvider}
-                  onChange={(e) => {
-                    setDirty(true)
-                    setOpenrouterProvider(e.target.value)
-                  }}
-                  placeholder="Auto"
-                  className="mono"
-                />
-                <p className="text-xs text-muted-foreground">
-                  OpenRouter provider slug (e.g. together, deepinfra). Leave empty for Auto.
-                </p>
-              </div>
-            )}
-
-            <div className="space-y-2">
-              {providerUsesApiKey(provider) && (
-                <>
-                  <Label>
-                    API Key{' '}
-                    {providerApiKeySet && (
-                      <span className="text-success font-normal text-xs">(set)</span>
-                    )}
-                  </Label>
-                  <Input
-                    type="password"
-                    value={apiKey}
-                    onChange={(e) => {
-                      setDirty(true)
-                      setApiKey(e.target.value)
-                    }}
-                    onFocus={() => {
-                      if (apiKey === MASKED_API_KEY) {
-                        setApiKey('')
-                      }
-                    }}
-                    onBlur={() => {
-                      if (!apiKey.trim() && providerApiKeySet) {
-                        setApiKey(MASKED_API_KEY)
-                      }
-                    }}
-                    autoComplete="off"
-                    placeholder={providerApiKeySet ? undefined : 'Enter API key…'}
-                    className="mono"
-                  />
-                </>
-              )}
-            </div>
-
-            <div className="flex items-center gap-3">
-              <Button variant="outline" onClick={handleCheck} disabled={checking}>
-                {checking ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Test Connection'}
-              </Button>
-              {checkResult && (
-                <span className={`text-sm flex items-center gap-1 ${checkResult.ok ? 'text-success' : 'text-destructive'}`}>
-                  {checkResult.ok ? (
-                    <>
-                      <Check className="h-4 w-4" />{' '}
-                      {checkResult.provider_name
-                        ? `Connected (${checkResult.provider_name})`
-                        : 'Connected'}
-                    </>
-                  ) : (
-                    <>
-                      <X className="h-4 w-4" /> {checkResult.error ?? 'Failed'}
-                    </>
-                  )}
-                </span>
-              )}
-            </div>
+            ))}
 
             <SaveBar
               pending={saveMutation.isPending}
@@ -558,15 +532,27 @@ export default function SettingsPage() {
             {config && (
               <Card>
                 <CardContent className="p-0 divide-y divide-border">
-                  <InfoRow label="Provider" value={config.provider} />
-                  <InfoRow label="Model" value={config.model} />
-                  <InfoRow label="Base URL" value={config.base_url} />
-                  {config.provider === 'openrouter' && (
-                    <InfoRow
-                      label="Upstream provider"
-                      value={config.openrouter_provider?.trim() || 'Auto'}
-                    />
-                  )}
+                  {AGENT_ROLES.map((role) => {
+                    const roleConfig = config.roles?.[role.id]
+                    return (
+                      <div key={role.id} className="px-4 py-3 space-y-2">
+                        <p className="text-xs uppercase tracking-wide text-muted-foreground">{role.title}</p>
+                        <InfoRow label="Provider" value={roleConfig?.provider ?? config.provider} />
+                        <InfoRow label="Model" value={roleConfig?.model ?? config.model} />
+                        <InfoRow label="Base URL" value={roleConfig?.base_url ?? config.base_url} />
+                        {(roleConfig?.provider ?? config.provider) === 'openrouter' && (
+                          <InfoRow
+                            label="Upstream provider"
+                            value={roleConfig?.openrouter_provider?.trim() || 'Auto'}
+                          />
+                        )}
+                        <InfoRow
+                          label="API Key Set"
+                          value={(roleConfig?.api_key_set ?? config.api_key_set) ? 'Yes' : 'No'}
+                        />
+                      </div>
+                    )
+                  })}
                   <InfoRow label="Connect" value={config.connect_online ? 'Online' : 'Offline'} />
                   <InfoRow label="Fresh profile" value={config.fresh_profile ? 'Yes' : 'No'} />
                   <InfoRow
@@ -577,7 +563,6 @@ export default function SettingsPage() {
                     label="Profile"
                     value={config.effective_chrome_profile || config.effective_chrome_user_data || '(default)'}
                   />
-                  <InfoRow label="API Key Set" value={config.api_key_set ? 'Yes' : 'No'} />
                 </CardContent>
               </Card>
             )}
@@ -585,6 +570,140 @@ export default function SettingsPage() {
         </Tabs>
       </ScrollArea>
     </div>
+  )
+}
+
+function LlmRoleSection({
+  roleId,
+  title,
+  description,
+  form,
+  config,
+  checking,
+  checkResult,
+  onProviderChange,
+  onBaseUrlChange,
+  onModelChange,
+  onOpenrouterProviderChange,
+  onApiKeyChange,
+  onApiKeyFocus,
+  onApiKeyBlur,
+  onCheck,
+}: {
+  roleId: AgentRoleId
+  title: string
+  description: string
+  form: RoleFormState
+  config: Config | undefined
+  checking: boolean
+  checkResult?: { ok: boolean; error?: string; provider_name?: string }
+  onProviderChange: (value: string) => void
+  onBaseUrlChange: (value: string) => void
+  onModelChange: (value: string) => void
+  onOpenrouterProviderChange: (value: string) => void
+  onApiKeyChange: (value: string) => void
+  onApiKeyFocus: () => void
+  onApiKeyBlur: () => void
+  onCheck: () => void
+}) {
+  const providerApiKeySet = isProviderApiKeySet(form.provider, config)
+  const modelOptions = config?.provider_settings?.[form.provider]?.models ?? []
+
+  return (
+    <section className="space-y-4 rounded-lg border border-border p-4">
+      <div>
+        <h3 className="text-sm font-semibold">{title}</h3>
+        <p className="text-xs text-muted-foreground mt-0.5">{description}</p>
+      </div>
+
+      <div className="space-y-2">
+        <Label>Provider</Label>
+        <Select value={form.provider} onValueChange={onProviderChange}>
+          <SelectTrigger>
+            <SelectValue placeholder="Select provider" />
+          </SelectTrigger>
+          <SelectContent>
+            {UI_PROVIDERS.map((item) => (
+              <SelectItem key={`${roleId}-${item.id}`} value={item.id}>
+                {item.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="space-y-2">
+        <Label>Base URL</Label>
+        <Input value={form.baseUrl} onChange={(e) => onBaseUrlChange(e.target.value)} className="mono" />
+      </div>
+
+      <ModelField
+        key={`${roleId}-${form.provider}`}
+        model={form.model}
+        modelOptions={modelOptions}
+        onModelChange={onModelChange}
+      />
+
+      {form.provider === 'openrouter' && (
+        <div className="space-y-2">
+          <Label>Upstream provider</Label>
+          <Input
+            value={form.openrouterProvider}
+            onChange={(e) => onOpenrouterProviderChange(e.target.value)}
+            placeholder="Auto"
+            className="mono"
+          />
+          <p className="text-xs text-muted-foreground">
+            OpenRouter provider slug (e.g. together, deepinfra). Leave empty for Auto.
+          </p>
+        </div>
+      )}
+
+      {providerUsesApiKey(form.provider) && (
+        <div className="space-y-2">
+          <Label>
+            API Key{' '}
+            {providerApiKeySet && (
+              <span className="text-success font-normal text-xs">(set)</span>
+            )}
+          </Label>
+          <Input
+            type="password"
+            value={form.apiKey}
+            onChange={(e) => onApiKeyChange(e.target.value)}
+            onFocus={onApiKeyFocus}
+            onBlur={onApiKeyBlur}
+            autoComplete="off"
+            placeholder={providerApiKeySet ? undefined : 'Enter API key…'}
+            className="mono"
+          />
+        </div>
+      )}
+
+      <div className="flex items-center gap-3">
+        <Button variant="outline" onClick={onCheck} disabled={checking}>
+          {checking ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Test Connection'}
+        </Button>
+        {checkResult && (
+          <span
+            className={`text-sm flex items-center gap-1 ${checkResult.ok ? 'text-success' : 'text-destructive'}`}
+          >
+            {checkResult.ok ? (
+              <>
+                <Check className="h-4 w-4" />{' '}
+                {checkResult.provider_name
+                  ? `Connected (${checkResult.provider_name})`
+                  : 'Connected'}
+              </>
+            ) : (
+              <>
+                <X className="h-4 w-4" /> {checkResult.error ?? 'Failed'}
+              </>
+            )}
+          </span>
+        )}
+      </div>
+    </section>
   )
 }
 

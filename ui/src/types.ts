@@ -37,6 +37,16 @@ export interface CriteriaVerdict {
   reason: string
 }
 
+export interface CostBreakdownEntry {
+  role: 'navigation' | 'planning' | string
+  provider: string
+  model: string
+  prompt_tokens: number
+  completion_tokens: number
+  cache_tokens: number
+  cost_usd: number | null
+}
+
 export interface RunSummary {
   run_id: string
   name?: string | null
@@ -61,6 +71,7 @@ export interface RunSummary {
   completion_tokens: number
   cache_tokens: number
   cost_usd: number | null
+  cost_breakdown?: CostBreakdownEntry[]
   criteria_verdict?: CriteriaVerdict
   hitl_reason?: string | null
   hitl_source?: string | null
@@ -196,6 +207,14 @@ export interface PricingEntry {
   cache_read: number // USD per 1M cache-read tokens
 }
 
+export interface RoleLlmConfig {
+  provider: string
+  model: string
+  base_url: string
+  api_key_set: boolean
+  openrouter_provider?: string
+}
+
 export interface ProviderSettings {
   base_url: string
   models: string[]
@@ -216,6 +235,7 @@ export interface Config {
   model: string
   base_url: string
   api_key_set: boolean
+  roles?: Record<string, RoleLlmConfig>
   provider_keys_set: Record<string, boolean>
   provider_settings: Record<string, ProviderSettings>
   selected_models?: Record<string, string>
@@ -264,7 +284,7 @@ export type WSEvent =
   | { type: 'human_intervention_ended'; cycle?: number }
   | { type: 'human_action'; action: string; args: Record<string, unknown>; result: string; step?: Step; cycle?: number }
   | { type: 'human_handoff'; analysis: Record<string, unknown>; actions: Array<Record<string, unknown>>; step?: Step; intervention_reason?: string; intervention_source?: string; start_url?: string; end_url?: string; cycle?: number }
-  | { type: 'tokens_update'; tokens: number; prompt_tokens: number; completion_tokens: number; cache_tokens: number; cost_usd: number | null }
+  | { type: 'tokens_update'; tokens: number; prompt_tokens: number; completion_tokens: number; cache_tokens: number; cost_usd: number | null; cost_breakdown?: CostBreakdownEntry[] }
   | { type: 'turn_timing'; snapshot_ms?: number; llm_navigator_ms?: number; batch_ms?: number; settle_ms?: number; turn_ms?: number }
   | { type: 'error'; message: string }
   | { type: 'ping' }

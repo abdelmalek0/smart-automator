@@ -95,7 +95,44 @@ class TestUserLlmStore(unittest.TestCase):
             cleared = store.load()
             self.assertEqual(cleared.openrouter_provider, "")
 
-    def test_openrouter_provider_ignored_when_not_openrouter(self):
+    def test_role_selection_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _setup_isolated_db(tmp)
+            store = UserLlmStore("role-user")
+            store.update(
+                roles={
+                    "navigation": {
+                        "provider": "groq",
+                        "model": "nav-model",
+                    },
+                    "planning": {
+                        "provider": "google",
+                        "model": "plan-model",
+                    },
+                }
+            )
+            prefs = store.load()
+            self.assertEqual(prefs.role_selection("navigation").provider, "groq")
+            self.assertEqual(prefs.role_selection("navigation").model, "nav-model")
+            self.assertEqual(prefs.role_selection("planning").provider, "google")
+            self.assertEqual(prefs.role_selection("planning").model, "plan-model")
+
+    def test_legacy_prefs_seed_both_roles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _setup_isolated_db(tmp)
+            store = UserLlmStore("legacy-user")
+            store.save(
+                UserLlmPrefs(
+                    provider="groq",
+                    models={"groq": "legacy-model"},
+                    api_keys={"groq": "legacy-key"},
+                )
+            )
+            prefs = store.load()
+            self.assertEqual(prefs.role_selection("navigation").model, "legacy-model")
+            self.assertEqual(prefs.role_selection("planning").provider, "groq")
+            self.assertEqual(prefs.role_selection("planning").model, "legacy-model")
+
         with tempfile.TemporaryDirectory() as tmp:
             _setup_isolated_db(tmp)
             store = UserLlmStore("u-groq")
@@ -142,6 +179,8 @@ class TestPerUserConfigService(unittest.TestCase):
 
         self.assertEqual(config.active_provider, "openrouter")
         self.assertEqual(config.active_model, "user-model")
+        self.assertEqual(config.planner_model, "user-model")
+        self.assertEqual(config.active_planning_provider, "openrouter")
         self.assertEqual(config.openrouter_api_key, "user-key")
         self.assertEqual(config.openrouter_provider, "fireworks")
         self.assertEqual(config.groq_api_key, "")

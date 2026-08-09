@@ -16,6 +16,9 @@ DEFAULT_INCLUDE_ATTRIBUTES = [
 class Config(BaseModel):
     llm_provider: str = "groq"
     planner_llm_provider: str = ""
+    planner_model: str = ""
+    active_planning_provider: str = ""
+    planning_openrouter_provider: str = ""
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
     ollama_base_url: str = "http://localhost:11434"
@@ -113,6 +116,7 @@ def load_config() -> Config:
     return Config(
         llm_provider=os.getenv("LLM_PROVIDER", "groq"),
         planner_llm_provider=os.getenv("PLANNER_LLM_PROVIDER", ""),
+        planner_model=os.getenv("PLANNER_MODEL", "").strip(),
         groq_api_key=os.getenv("GROQ_API_KEY", ""),
         groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
         ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),

@@ -64,6 +64,7 @@ class RunState:
         self.completion_tokens = 0
         self.cache_tokens = 0
         self.cost_usd: Optional[float] = None
+        self.cost_breakdown: list[dict[str, Any]] = []
         self.turn_timing: dict[str, Any] = {}
         self.started_at = time.time()
         self.finished_at: Optional[float] = None
@@ -115,6 +116,7 @@ class RunState:
             "completion_tokens": self.completion_tokens,
             "cache_tokens": self.cache_tokens,
             "cost_usd": self.cost_usd,
+            "cost_breakdown": self.cost_breakdown,
             "criteria_verdict": self.criteria_verdict,
             "hitl_reason": self.hitl_reason,
             "hitl_source": self.hitl_source,
@@ -179,6 +181,7 @@ class RunState:
         run.completion_tokens = int(data.get("completion_tokens", 0))
         run.cache_tokens = int(data.get("cache_tokens", 0))
         run.cost_usd = data.get("cost_usd")
+        run.cost_breakdown = list(data.get("cost_breakdown") or [])
         run.turn_timing = dict(data.get("turn_timing") or {})
         run.started_at = float(data.get("started_at", time.time()))
         run.finished_at = data.get("finished_at")

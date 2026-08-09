@@ -1,6 +1,6 @@
 import { useEffect, useReducer, useRef } from 'react'
 import { upsertStep } from '@/lib/run-steps'
-import type { AtomicStep, Plan, RunDetails, RunProgress, Step, WSEvent } from '../types'
+import type { AtomicStep, CostBreakdownEntry, Plan, RunDetails, RunProgress, Step, WSEvent } from '../types'
 
 interface StreamState {
   run: RunDetails | null
@@ -33,7 +33,7 @@ type Action =
   | { type: 'HUMAN_INTERVENTION_ENDED' }
   | { type: 'HUMAN_ACTION'; step: Step }
   | { type: 'HUMAN_HANDOFF'; step: Step }
-  | { type: 'TOKENS_UPDATE'; tokens: number; prompt_tokens: number; completion_tokens: number; cache_tokens: number; cost_usd: number | null }
+  | { type: 'TOKENS_UPDATE'; tokens: number; prompt_tokens: number; completion_tokens: number; cache_tokens: number; cost_usd: number | null; cost_breakdown?: CostBreakdownEntry[] }
   | { type: 'TURN_TIMING'; snapshot_ms?: number; llm_navigator_ms?: number; batch_ms?: number; settle_ms?: number; turn_ms?: number }
   | { type: 'CONNECTED' }
   | { type: 'DISCONNECTED' }
@@ -243,6 +243,7 @@ function reducer(state: StreamState, action: Action): StreamState {
           completion_tokens: action.completion_tokens,
           cache_tokens: action.cache_tokens,
           cost_usd: action.cost_usd,
+          cost_breakdown: action.cost_breakdown,
         },
       }
     case 'TURN_TIMING':
@@ -403,6 +404,7 @@ export function useRunStream(runId: string | null) {
             completion_tokens: event.completion_tokens,
             cache_tokens: event.cache_tokens,
             cost_usd: event.cost_usd,
+            cost_breakdown: event.cost_breakdown,
           })
           break
         case 'turn_timing':

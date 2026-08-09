@@ -308,6 +308,7 @@ export default function RunView({ runId, onRunComplete }: Props) {
               completionTokens={run?.completion_tokens}
               cacheTokens={run?.cache_tokens}
               costUsd={run?.cost_usd}
+              costBreakdown={run?.cost_breakdown}
               steps={run?.steps}
               typicalTiming={run ? aggregateTurnTiming(run.steps) : null}
               currentTiming={isRunning ? run?.turn_timing : undefined}

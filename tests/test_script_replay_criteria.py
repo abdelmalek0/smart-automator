@@ -18,14 +18,14 @@ class TestScriptReplayCriteria(unittest.TestCase):
     @patch("smart_automator.server.runner._script_replay_with_events")
     @patch("smart_automator.server.runner.Executor")
     @patch("smart_automator.server.runner.BrowserContext")
-    @patch("smart_automator.server.runner.create_llm")
+    @patch("smart_automator.server.runner.create_role_llms")
     @patch("smart_automator.server.runner.config_for_run")
     @patch("smart_automator.server.runner.load_run_replay")
     def test_criteria_runs_after_script_step_failure(
         self,
         mock_load_replay,
         mock_config_for_run,
-        mock_create_llm,
+        mock_create_role_llms,
         mock_browser_context_cls,
         mock_executor_cls,
         mock_script_replay,
@@ -44,7 +44,8 @@ class TestScriptReplayCriteria(unittest.TestCase):
         mock_config = MagicMock()
         mock_config.replay_action_retry_wait_seconds = 0.0
         mock_config_for_run.return_value = mock_config
-        mock_create_llm.return_value = MagicMock()
+        nav_llm = MagicMock()
+        mock_create_role_llms.return_value = (nav_llm, nav_llm)
 
         browser_context = MagicMock()
         mock_browser_context_cls.return_value = browser_context
@@ -67,7 +68,7 @@ class TestScriptReplayCriteria(unittest.TestCase):
         run_automation(run)
 
         mock_script_replay.assert_called_once()
-        mock_apply_criteria.assert_called_once_with(run, executor, mock_create_llm.return_value)
+        mock_apply_criteria.assert_called_once_with(run, executor, nav_llm)
 
 
 class TestTrainingRerun(unittest.TestCase):
@@ -78,12 +79,12 @@ class TestTrainingRerun(unittest.TestCase):
     @patch("smart_automator.server.runner.load_run_replay")
     @patch("smart_automator.server.runner.Executor")
     @patch("smart_automator.server.runner.BrowserContext")
-    @patch("smart_automator.server.runner.create_llm")
+    @patch("smart_automator.server.runner.create_role_llms")
     @patch("smart_automator.server.runner.config_for_run")
     def test_training_rerun_executes_llm_not_script_replay(
         self,
         mock_config_for_run,
-        mock_create_llm,
+        mock_create_role_llms,
         mock_browser_context_cls,
         mock_executor_cls,
         mock_load_replay,
@@ -94,7 +95,8 @@ class TestTrainingRerun(unittest.TestCase):
     ) -> None:
         mock_config = MagicMock()
         mock_config_for_run.return_value = mock_config
-        mock_create_llm.return_value = MagicMock()
+        nav_llm = MagicMock()
+        mock_create_role_llms.return_value = (nav_llm, nav_llm)
 
         browser_context = MagicMock()
         mock_browser_context_cls.return_value = browser_context
@@ -120,7 +122,7 @@ class TestTrainingRerun(unittest.TestCase):
 
         mock_load_replay.assert_not_called()
         executor.execute.assert_called_once()
-        mock_apply_criteria.assert_called_once_with(run, executor, mock_create_llm.return_value)
+        mock_apply_criteria.assert_called_once_with(run, executor, nav_llm)
         self.assertTrue(executor.context.hitl_enabled)
 
 

@@ -141,11 +141,14 @@ class OpenAICompatLLM(BaseLLM):
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
-        if self._provider == "openrouter" and self._openrouter_provider:
-            payload["provider"] = {
-                "only": [self._openrouter_provider],
-                "allow_fallbacks": False,
-            }
+        if self._provider == "openrouter":
+            # Temporary cap while OpenRouter routing/models are being tuned.
+            payload["max_tokens"] = 20000
+            if self._openrouter_provider:
+                payload["provider"] = {
+                    "only": [self._openrouter_provider],
+                    "allow_fallbacks": False,
+                }
         response = self._client.post(
             self._base_url,
             headers=self._headers(),

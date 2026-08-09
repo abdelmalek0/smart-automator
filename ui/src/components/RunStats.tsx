@@ -11,7 +11,7 @@ import {
   formatDurationMs,
   hasTurnTiming,
 } from '@/lib/run-status'
-import type { Step, TurnTiming } from '@/types'
+import type { CostBreakdownEntry, Step, TurnTiming } from '@/types'
 
 interface Props {
   stepCount?: number
@@ -22,6 +22,7 @@ interface Props {
   completionTokens?: number
   cacheTokens?: number
   costUsd?: number | null
+  costBreakdown?: CostBreakdownEntry[]
   steps?: Step[]
   typicalTiming?: TurnTiming | null
   currentTiming?: TurnTiming
@@ -36,6 +37,7 @@ export default function RunStats({
   completionTokens,
   cacheTokens,
   costUsd,
+  costBreakdown,
   steps,
   typicalTiming,
   currentTiming,
@@ -55,6 +57,17 @@ export default function RunStats({
 
   const showCurrentTiming = isRunning && hasTurnTiming(currentTiming)
   const currentActMs = currentTiming ? actDurationMs(currentTiming) : 0
+
+  const showCostBreakdown =
+    (costBreakdown?.length ?? 0) > 1 &&
+    new Set(costBreakdown!.map((entry) => `${entry.provider}/${entry.model}`)).size > 1
+
+  const costLabel =
+    costUsd === null || costUsd === undefined
+      ? '—'
+      : costUsd === 0
+        ? 'free'
+        : `$${costUsd.toFixed(4)}`
 
   return (
     <Card className="flex-[1] min-w-[10rem]">
@@ -102,13 +115,25 @@ export default function RunStats({
         )}
         {tokens !== undefined && tokens > 0 && (
           <StatRow label="Cost">
-            <span className="text-xs mono">
-              {costUsd === null || costUsd === undefined
-                ? '—'
-                : costUsd === 0
-                  ? 'free'
-                  : `$${costUsd.toFixed(4)}`}
-            </span>
+            {showCostBreakdown ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="text-xs mono cursor-help border-b border-dotted border-muted-foreground">
+                    {costLabel}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="left" className="space-y-1">
+                  {costBreakdown!.map((entry) => (
+                    <p key={`${entry.role}-${entry.provider}-${entry.model}`}>
+                      {formatCostRole(entry.role)} ({entry.provider}/{entry.model}):{' '}
+                      {formatCostUsd(entry.cost_usd)}
+                    </p>
+                  ))}
+                </TooltipContent>
+              </Tooltip>
+            ) : (
+              <span className="text-xs mono">{costLabel}</span>
+            )}
           </StatRow>
         )}
         {elapsed && (
@@ -171,6 +196,18 @@ function TurnTimingRow({
       </Tooltip>
     </StatRow>
   )
+}
+
+function formatCostRole(role: string): string {
+  if (role === 'navigation') return 'Navigation'
+  if (role === 'planning') return 'Planning'
+  return role
+}
+
+function formatCostUsd(cost: number | null | undefined): string {
+  if (cost === null || cost === undefined) return '—'
+  if (cost === 0) return 'free'
+  return `$${cost.toFixed(4)}`
 }
 
 function StatRow({ label, children }: { label: string; children: React.ReactNode }) {

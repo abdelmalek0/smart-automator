@@ -169,7 +169,9 @@ class Executor:
         action_registry = ActionBuilder(self._context).build_default_actions()
         self._navigator = NavigatorAgent(llm, self._context, message_manager, action_registry)
         self._planner = PlannerAgent(self._planner_llm, self._context, message_manager)
-        self._action_critic = ActionCriticAgent(llm, message_manager, context=self._context)
+        self._action_critic = ActionCriticAgent(
+            self._planner_llm, message_manager, context=self._context
+        )
         self._hitl_debrief = HitlDebriefAgent(
             self._planner_llm,
             message_manager,
@@ -215,22 +217,57 @@ class Executor:
             except Exception:
                 pass
 
-    def _llm_usage_sources(self) -> list[tuple[BaseLLM, str, str]]:
-        navigator_provider = self._config.active_provider or self._config.llm_provider
-        navigator_model = self._config.active_model or self._llm.model_name or ""
-        planner_provider = self._config.planner_llm_provider or navigator_provider
-        planner_model = (
-            getattr(self._config, "planner_model", None)
-            or self._planner_llm.model_name
-            or navigator_model
+    @staticmethod
+    def _config_str(value: object) -> str:
+        if not isinstance(value, str):
+            return ""
+        return value.strip()
+
+    def _llm_billing_identity(
+        self,
+        llm: BaseLLM,
+        *,
+        fallback_provider: str,
+        fallback_model: str,
+    ) -> tuple[str, str]:
+        provider = self._config_str(llm.billing_provider) or fallback_provider
+        model = self._config_str(llm.model_name or "") or fallback_model
+        return provider, model
+
+    def _llm_usage_entries(self) -> list[tuple[str, BaseLLM, str, str]]:
+        nav_fallback_provider = (
+            self._config_str(self._config.active_provider)
+            or self._config_str(self._config.llm_provider)
         )
-        seen: dict[int, tuple[BaseLLM, str, str]] = {}
-        for llm, provider, model in (
-            (self._llm, navigator_provider, navigator_model),
-            (self._planner_llm, planner_provider, planner_model),
+        nav_fallback_model = (
+            self._config_str(self._config.active_model)
+            or self._config_str(self._llm.model_name or "")
+        )
+        plan_fallback_provider = (
+            self._config_str(getattr(self._config, "active_planning_provider", ""))
+            or self._config_str(self._config.planner_llm_provider)
+            or nav_fallback_provider
+        )
+        plan_fallback_model = (
+            self._config_str(self._config.planner_model)
+            or self._config_str(self._planner_llm.model_name or "")
+            or nav_fallback_model
+        )
+        seen: dict[int, tuple[str, BaseLLM, str, str]] = {}
+        for role, llm, provider, model in (
+            ("navigation", self._llm, nav_fallback_provider, nav_fallback_model),
+            ("planning", self._planner_llm, plan_fallback_provider, plan_fallback_model),
         ):
-            seen[id(llm)] = (llm, provider, model)
+            billing_provider, billing_model = self._llm_billing_identity(
+                llm,
+                fallback_provider=provider,
+                fallback_model=model,
+            )
+            seen[id(llm)] = (role, llm, billing_provider, billing_model)
         return list(seen.values())
+
+    def _llm_usage_sources(self) -> list[tuple[BaseLLM, str, str]]:
+        return [(llm, provider, model) for _, llm, provider, model in self._llm_usage_entries()]
 
     def _emit_tokens(self) -> None:
         total = self._context.message_manager.history.total_tokens
@@ -238,7 +275,8 @@ class Executor:
         completion_tokens = 0
         cache_tokens = 0
         cost_parts: list[float | None] = []
-        for llm, provider, model in self._llm_usage_sources():
+        cost_breakdown: list[dict[str, object]] = []
+        for role, llm, provider, model in self._llm_usage_entries():
             usage = llm.get_accumulated_usage()
             llm_prompt = usage.get("prompt_tokens", 0)
             llm_completion = usage.get("completion_tokens", 0)
@@ -246,14 +284,24 @@ class Executor:
             prompt_tokens += llm_prompt
             completion_tokens += llm_completion
             cache_tokens += llm_cache
-            cost_parts.append(
-                compute_cost_usd(
-                    provider,
-                    model,
-                    prompt_tokens=llm_prompt,
-                    completion_tokens=llm_completion,
-                    cache_tokens=llm_cache,
-                )
+            part_cost = compute_cost_usd(
+                provider,
+                model,
+                prompt_tokens=llm_prompt,
+                completion_tokens=llm_completion,
+                cache_tokens=llm_cache,
+            )
+            cost_parts.append(part_cost)
+            cost_breakdown.append(
+                {
+                    "role": role,
+                    "provider": provider,
+                    "model": model,
+                    "prompt_tokens": llm_prompt,
+                    "completion_tokens": llm_completion,
+                    "cache_tokens": llm_cache,
+                    "cost_usd": part_cost,
+                }
             )
         if prompt_tokens == 0 and completion_tokens == 0:
             prompt_tokens = total
@@ -262,16 +310,17 @@ class Executor:
             cost_usd = sum(part or 0.0 for part in cost_parts)
         else:
             cost_usd = None
-        self._emit(
-            {
-                "type": "tokens_update",
-                "tokens": tokens or total,
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "cache_tokens": cache_tokens,
-                "cost_usd": cost_usd,
-            }
-        )
+        payload: dict[str, object] = {
+            "type": "tokens_update",
+            "tokens": tokens or total,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "cache_tokens": cache_tokens,
+            "cost_usd": cost_usd,
+        }
+        if len(cost_breakdown) > 1:
+            payload["cost_breakdown"] = cost_breakdown
+        self._emit(payload)
 
     def flush_token_usage(self) -> None:
         """Emit a cumulative token snapshot for all LLM calls so far."""

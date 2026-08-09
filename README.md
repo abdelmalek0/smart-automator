@@ -70,12 +70,16 @@ uv run smart-automator-api
 
 ## Configuration (.env)
 
-Active LLM provider and model are set in `.env`:
+Active LLM provider and model are set in `.env` (or per-user in Settings):
 
 ```env
-LLM_PROVIDER=groq  # groq, google, openrouter, ollama, or ollama-cloud
+LLM_PROVIDER=groq  # navigation: groq, google, openrouter, ollama, or ollama-cloud
 GROQ_API_KEY=gsk_...
 GROQ_MODEL=llama-3.3-70b-versatile
+
+# Optional separate planning role (planner, actor-critic, HITL debrief)
+PLANNER_LLM_PROVIDER=google
+PLANNER_MODEL=gemini-2.5-flash
 
 # Google Gemini
 GOOGLE_API_KEY=
@@ -101,6 +105,8 @@ MAX_ACTIONS_PER_STEP=10
 MAX_FAILURES=3
 MAX_INPUT_TOKENS=128000
 ```
+
+In the web UI **Settings → LLM Provider**, configure **Navigation** (navigator + criteria checker) and **Planning** (planner + actor-critic + HITL debrief) independently. Each role picks its own provider and model; API keys remain shared per provider.
 
 Runtime data:
 

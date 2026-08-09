@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy import select
 
 from ..server import paths
-from .engine import get_session
+from .engine import get_engine, get_session
 from .models import (
     LlmCatalogRow,
     PricingEntryRow,
@@ -231,6 +231,7 @@ def _import_user_llm_prefs() -> None:
                     models=dict(data.get("models") or {}),
                     api_keys=dict(data.get("api_keys") or {}),
                     openrouter_provider=str(data.get("openrouter_provider") or ""),
+                    roles=dict(data.get("roles") or {}),
                 )
             )
 
@@ -270,6 +271,21 @@ def _import_pricing() -> None:
                     cache_read=float(item.get("cache_read", 0)),
                 )
             )
+
+
+def migrate_schema_if_needed() -> None:
+    """Apply lightweight SQLite schema updates for existing databases."""
+    from sqlalchemy import inspect, text
+
+    engine = get_engine()
+    inspector = inspect(engine)
+    if "user_llm_prefs" not in inspector.get_table_names():
+        return
+    columns = {col["name"] for col in inspector.get_columns("user_llm_prefs")}
+    if "roles" not in columns:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE user_llm_prefs ADD COLUMN roles JSON DEFAULT '{}'"))
+        log.info("Added roles column to user_llm_prefs")
 
 
 def migrate_json_if_needed() -> None:

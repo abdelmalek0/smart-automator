@@ -16,6 +16,15 @@ class BaseLLM(ABC):
             "completion_tokens": 0,
             "cache_tokens": 0,
         }
+        self._billing_provider: str = ""
+
+    @property
+    def billing_provider(self) -> str:
+        """UI provider id used for pricing lookup (e.g. groq, ollama-cloud)."""
+        return self._billing_provider
+
+    def set_billing_provider(self, provider: str) -> None:
+        self._billing_provider = (provider or "").strip()
 
     @property
     def model_name(self) -> str | None:

@@ -13,9 +13,11 @@ from smart_automator.server.run_state import RunState
 
 
 class _UsageLLM(BaseLLM):
-    def __init__(self, model_name: str = "test-model"):
+    def __init__(self, model_name: str = "test-model", *, billing_provider: str = ""):
         super().__init__()
         self._model_name = model_name
+        if billing_provider:
+            self.set_billing_provider(billing_provider)
 
     @property
     def model_name(self) -> str:
@@ -135,6 +137,8 @@ class TestExecutorTokenEmission(unittest.TestCase):
         config.llm_provider = "groq"
         config.active_model = llm.model_name
         config.planner_llm_provider = planner_provider
+        if planner_provider:
+            config.active_planning_provider = planner_provider
         if planner_model is not None:
             config.planner_model = planner_model
         executor = Executor(
@@ -212,6 +216,92 @@ class TestExecutorTokenEmission(unittest.TestCase):
             cache_tokens=0,
         )
         self.assertEqual(events[0]["cost_usd"], 0.03)
+        breakdown = events[0].get("cost_breakdown")
+        self.assertIsInstance(breakdown, list)
+        self.assertEqual(len(breakdown), 2)
+        roles = {entry["role"] for entry in breakdown}
+        self.assertEqual(roles, {"navigation", "planning"})
+
+    @patch("smart_automator.agent.executor.compute_cost_usd")
+    def test_shared_llm_omits_cost_breakdown(self, compute_cost):
+        compute_cost.return_value = 0.01
+        llm = _UsageLLM("shared-model")
+        llm.add_usage(prompt_tokens=100, completion_tokens=50)
+        executor, events = self._make_executor(llm)
+
+        executor.flush_token_usage()
+
+        self.assertNotIn("cost_breakdown", events[0])
+
+    @patch("smart_automator.agent.executor.compute_cost_usd")
+    def test_cost_uses_llm_billing_provider_over_config(self, compute_cost):
+        navigator = _UsageLLM("nav-model", billing_provider="groq")
+        planner = _UsageLLM("plan-model", billing_provider="google")
+        navigator.add_usage(prompt_tokens=100, completion_tokens=10)
+        planner.add_usage(prompt_tokens=50, completion_tokens=5)
+        compute_cost.side_effect = [0.01, 0.02]
+        executor, events = self._make_executor(
+            navigator,
+            planner_llm=planner,
+            planner_provider="groq",
+            planner_model="wrong-plan-model",
+        )
+        executor._config.active_planning_provider = "groq"
+        executor._config.planner_model = "wrong-plan-model"
+
+        executor.flush_token_usage()
+
+        compute_cost.assert_any_call(
+            "groq",
+            "nav-model",
+            prompt_tokens=100,
+            completion_tokens=10,
+            cache_tokens=0,
+        )
+        compute_cost.assert_any_call(
+            "google",
+            "plan-model",
+            prompt_tokens=50,
+            completion_tokens=5,
+            cache_tokens=0,
+        )
+        self.assertEqual(events[0]["cost_usd"], 0.03)
+
+    @patch("smart_automator.server.config_service.load_pricing")
+    def test_dual_model_cost_sums_pricing_for_each_role(self, load_pricing):
+        load_pricing.return_value = [
+            {
+                "provider": "groq",
+                "model": "nav-model",
+                "input": 1.0,
+                "output": 2.0,
+                "cache_read": 0.0,
+            },
+            {
+                "provider": "google",
+                "model": "plan-model",
+                "input": 10.0,
+                "output": 20.0,
+                "cache_read": 0.0,
+            },
+        ]
+        from smart_automator.server.config_service import compute_cost_usd
+
+        navigator = _UsageLLM("nav-model", billing_provider="groq")
+        planner = _UsageLLM("plan-model", billing_provider="google")
+        navigator.add_usage(prompt_tokens=1_000_000, completion_tokens=0)
+        planner.add_usage(prompt_tokens=0, completion_tokens=1_000_000)
+        executor, events = self._make_executor(
+            navigator,
+            planner_llm=planner,
+            planner_provider="google",
+            planner_model="plan-model",
+        )
+
+        with patch("smart_automator.agent.executor.compute_cost_usd", wraps=compute_cost_usd):
+            executor.flush_token_usage()
+
+        self.assertAlmostEqual(events[0]["cost_usd"], 21.0)
 
     def test_action_critic_emits_updated_totals(self):
         llm = _UsageLLM("nav-model")
@@ -257,6 +347,26 @@ class TestRunnerTokenHandling(unittest.TestCase):
                 "completion_tokens": 100,
                 "cache_tokens": 5,
                 "cost_usd": 0.004,
+                "cost_breakdown": [
+                    {
+                        "role": "navigation",
+                        "provider": "groq",
+                        "model": "nav-model",
+                        "prompt_tokens": 200,
+                        "completion_tokens": 50,
+                        "cache_tokens": 0,
+                        "cost_usd": 0.001,
+                    },
+                    {
+                        "role": "planning",
+                        "provider": "google",
+                        "model": "plan-model",
+                        "prompt_tokens": 100,
+                        "completion_tokens": 50,
+                        "cache_tokens": 5,
+                        "cost_usd": 0.003,
+                    },
+                ],
             },
         )
 
@@ -265,6 +375,7 @@ class TestRunnerTokenHandling(unittest.TestCase):
         self.assertEqual(run.completion_tokens, 100)
         self.assertEqual(run.cache_tokens, 5)
         self.assertEqual(run.cost_usd, 0.004)
+        self.assertEqual(len(run.cost_breakdown), 2)
 
     def test_report_data_uses_final_run_token_snapshot(self):
         run = RunState(run_id="run-1", task="task", headless=True, max_steps=5, success_criteria="Done", user_id="test-user")

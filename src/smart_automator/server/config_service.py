@@ -44,6 +44,7 @@ from ..server.provider_utils import (
     provider_model_env_name,
     runtime_provider,
 )
+from ..agents.roles import AGENT_ROLES
 from ..storage.llm_settings import LlmSettingsStore
 from ..storage.user_llm import UserLlmPrefs, UserLlmStore
 
@@ -173,49 +174,135 @@ def _apply_api_key_to_config(config: Config, ui_provider: str, api_key: str) -> 
         config.ollama_api_key = token
 
 
+def _apply_role_selection_to_config_fields(
+    config: Config,
+    *,
+    ui_provider: str,
+    model: str,
+    catalog_base_url: str,
+    openrouter_provider: str = "",
+) -> None:
+    runtime = runtime_provider(ui_provider)
+    base_url = catalog_base_url or default_base_url(ui_provider)
+    model = coerce_provider_model(ui_provider, model, base_url=base_url)
+    if runtime == "groq":
+        config.groq_model = model
+        config.openai_base_url = base_url
+    elif runtime == "google":
+        config.google_model = model
+        config.openai_base_url = base_url
+    elif runtime == "openrouter":
+        config.openrouter_model = model
+        config.openai_base_url = base_url
+        if openrouter_provider:
+            config.openrouter_provider = openrouter_provider.strip()
+    else:
+        config.ollama_model = model
+        config.ollama_base_url = base_url
+        if ui_provider == "ollama-cloud":
+            config.ollama_cloud_base_url = base_url
+
+
 def _apply_user_llm_to_config(config: Config, prefs: UserLlmPrefs) -> Config:
     """Overlay per-user provider/model/keys onto a Config built from env/catalog."""
     settings = LlmSettingsStore().ensure_loaded()
-    ui_provider = coerce_ui_provider(prefs.provider)
-    catalog = settings.get_provider(ui_provider)
-    model = prefs.selected_model(ui_provider)
-    model = coerce_provider_model(ui_provider, model, base_url=catalog.base_url)
-    runtime = runtime_provider(ui_provider)
+    prefs.ensure_roles()
 
-    config.llm_provider = runtime
-    config.active_provider = ui_provider
-    config.active_model = model
-
-    # Per-user mode must not inherit shared .env API keys.
     _clear_provider_api_keys(config)
     for name in UI_PROVIDERS:
         key = prefs.api_key_for(name)
         if key:
             _apply_api_key_to_config(config, name, key)
 
-    if runtime == "groq":
-        config.groq_model = model
-        config.openai_base_url = catalog.base_url or default_base_url("groq")
-    elif runtime == "google":
-        config.google_model = model
-        config.openai_base_url = catalog.base_url or default_base_url("google")
-    elif runtime == "openrouter":
-        config.openrouter_model = model
-        config.openai_base_url = catalog.base_url or default_base_url("openrouter")
-        config.openrouter_provider = (prefs.openrouter_provider or "").strip()
-    else:
-        config.ollama_model = model
-        if ui_provider == "ollama-cloud":
-            config.ollama_base_url = catalog.base_url or default_base_url("ollama-cloud")
-            config.ollama_cloud_base_url = config.ollama_base_url
-            if prefs.api_key_for("ollama-cloud"):
-                config.ollama_api_key = prefs.api_key_for("ollama-cloud")
-                config.ollama_cloud_api_key = config.ollama_api_key
-        else:
-            if not config.ollama_base_url:
-                config.ollama_base_url = catalog.base_url or default_base_url("ollama")
-            config.ollama_api_key = ""
+    navigation = prefs.role_selection("navigation")
+    planning = prefs.role_selection("planning")
+    nav_catalog = settings.get_provider(navigation.provider)
+    nav_model = coerce_provider_model(
+        navigation.provider,
+        navigation.model,
+        base_url=nav_catalog.base_url,
+    )
+    plan_catalog = settings.get_provider(planning.provider)
+    plan_model = coerce_provider_model(
+        planning.provider,
+        planning.model,
+        base_url=plan_catalog.base_url,
+    )
+
+    config.llm_provider = runtime_provider(navigation.provider)
+    config.active_provider = navigation.provider
+    config.active_model = nav_model
+    config.planner_llm_provider = runtime_provider(planning.provider)
+    config.active_planning_provider = planning.provider
+    config.planner_model = plan_model
+    config.openrouter_provider = (
+        navigation.openrouter_provider if navigation.provider == "openrouter" else ""
+    )
+    config.planning_openrouter_provider = (
+        planning.openrouter_provider if planning.provider == "openrouter" else ""
+    )
+
+    _apply_role_selection_to_config_fields(
+        config,
+        ui_provider=navigation.provider,
+        model=nav_model,
+        catalog_base_url=nav_catalog.base_url,
+        openrouter_provider=navigation.openrouter_provider,
+    )
+    if planning.provider != navigation.provider or plan_model != nav_model:
+        _apply_role_selection_to_config_fields(
+            config,
+            ui_provider=planning.provider,
+            model=plan_model,
+            catalog_base_url=plan_catalog.base_url,
+            openrouter_provider=planning.openrouter_provider,
+        )
+    elif planning.provider == "openrouter":
+        config.openrouter_provider = planning.openrouter_provider
+
+    if navigation.provider == "ollama-cloud" and prefs.api_key_for("ollama-cloud"):
+        config.ollama_api_key = prefs.api_key_for("ollama-cloud")
+        config.ollama_cloud_api_key = config.ollama_api_key
+    elif navigation.provider == "ollama":
+        config.ollama_api_key = ""
     return config
+
+
+def _role_config_payload(
+    *,
+    prefs: UserLlmPrefs | None,
+    config: Config,
+    role: str,
+    settings,
+) -> dict:
+    if prefs is not None:
+        prefs.ensure_roles()
+        selection = prefs.role_selection(role)
+        provider = selection.provider
+        model = selection.model
+        openrouter_provider = selection.openrouter_provider
+        api_key_set = prefs.api_key_is_set(provider)
+    else:
+        if role == "planning":
+            provider = coerce_ui_provider(config.planner_llm_provider or config.llm_provider)
+            model = config.planner_model or _active_model(config, provider)
+            openrouter_provider = config.planning_openrouter_provider or config.openrouter_provider
+        else:
+            provider = coerce_ui_provider(config.llm_provider)
+            model = _active_model(config, provider) or default_model_for_provider(provider)
+            openrouter_provider = config.openrouter_provider
+        api_key_set = provider_api_key_is_set(provider)
+
+    catalog = settings.get_provider(provider)
+    model = coerce_provider_model(provider, model, base_url=catalog.base_url)
+    base_url = catalog.base_url or default_base_url(provider)
+    return {
+        "provider": provider,
+        "model": model,
+        "base_url": base_url,
+        "api_key_set": api_key_set,
+        "openrouter_provider": (openrouter_provider or "").strip(),
+    }
 
 
 def build_config_response(user_id: str | None = None) -> dict:
@@ -257,6 +344,20 @@ def build_config_response(user_id: str | None = None) -> dict:
     provider_settings = {
         name: settings.get_provider(name).to_dict() for name in UI_PROVIDERS
     }
+    roles_payload = {
+        role: _role_config_payload(
+            prefs=prefs,
+            config=config,
+            role=role,
+            settings=settings,
+        )
+        for role in AGENT_ROLES
+    }
+    navigation = roles_payload["navigation"]
+    provider = navigation["provider"]
+    model = navigation["model"]
+    base_url = navigation["base_url"]
+    api_key_set = navigation["api_key_set"]
 
     fresh_profile = os.getenv("QA_FRESH_PROFILE", "true").lower() == "true"
     cdp_url = os.getenv("CDP_URL", "")
@@ -310,13 +411,11 @@ def build_config_response(user_id: str | None = None) -> dict:
         "model": model,
         "base_url": base_url,
         "api_key_set": api_key_set,
+        "roles": roles_payload,
         "provider_keys_set": provider_keys_set,
         "provider_settings": provider_settings,
         "selected_models": selected_models,
-        "openrouter_provider": (
-            (prefs.openrouter_provider if prefs is not None else config.openrouter_provider)
-            or ""
-        ).strip(),
+        "openrouter_provider": navigation["openrouter_provider"],
         "cdp_port": int(os.getenv("CDP_PORT", "9222")),
         "cdp_url": "" if worker_online else cdp_url,
         "fresh_profile": fresh_profile,
@@ -353,30 +452,88 @@ def apply_config_update(update, user_id: str | None = None) -> dict:
     reload_runtime_env()
     settings_store = LlmSettingsStore()
 
+    role_updates: dict[str, dict] = {}
+    if getattr(update, "roles", None):
+        for role_name, role_update in update.roles.items():
+            if role_name not in AGENT_ROLES or role_update is None:
+                continue
+            role_updates[role_name] = role_update.model_dump(exclude_unset=True)
+
     if user_id:
         current = UserLlmStore(user_id).load()
-        provider = coerce_ui_provider(
-            update.provider if update.provider is not None else current.provider
+        current.ensure_roles()
+        navigation_provider = coerce_ui_provider(
+            update.provider if update.provider is not None else current.role_selection("navigation").provider
         )
     else:
-        provider = coerce_ui_provider(
+        current = None
+        navigation_provider = coerce_ui_provider(
             update.provider if update.provider is not None else load_config().llm_provider
         )
 
+    providers_to_touch: set[str] = {navigation_provider}
+    for payload in role_updates.values():
+        if payload.get("provider") is not None:
+            providers_to_touch.add(coerce_ui_provider(str(payload["provider"])))
+        elif payload.get("base_url") is not None or payload.get("model") is not None:
+            providers_to_touch.add(navigation_provider)
+
     if update.base_url is not None or update.model is not None:
+        providers_to_touch.add(navigation_provider)
         settings_store.update_catalog(
-            provider=provider,
+            provider=navigation_provider,
             base_url=update.base_url,
             model=update.model,
         )
 
+    for role_name, payload in role_updates.items():
+        provider = coerce_ui_provider(
+            str(payload.get("provider"))
+            if payload.get("provider") is not None
+            else (
+                current.role_selection(role_name).provider
+                if current is not None
+                else navigation_provider
+            )
+        )
+        providers_to_touch.add(provider)
+        if payload.get("base_url") is not None or payload.get("model") is not None:
+            settings_store.update_catalog(
+                provider=provider,
+                base_url=payload.get("base_url"),
+                model=payload.get("model"),
+            )
+
     coerced_model = None
     if update.model is not None:
-        catalog = settings_store.ensure_loaded().get_provider(provider)
+        catalog = settings_store.ensure_loaded().get_provider(navigation_provider)
         coerced_model = coerce_provider_model(
-            provider,
+            navigation_provider,
             update.model,
             base_url=update.base_url if update.base_url is not None else catalog.base_url,
+        )
+
+    for role_name, payload in role_updates.items():
+        if payload.get("model") is None:
+            continue
+        provider = coerce_ui_provider(
+            str(payload.get("provider"))
+            if payload.get("provider") is not None
+            else (
+                current.role_selection(role_name).provider
+                if current is not None
+                else navigation_provider
+            )
+        )
+        catalog = settings_store.ensure_loaded().get_provider(provider)
+        payload["model"] = coerce_provider_model(
+            provider,
+            str(payload["model"]),
+            base_url=(
+                payload.get("base_url")
+                if payload.get("base_url") is not None
+                else catalog.base_url
+            ),
         )
 
     llm_touch = (
@@ -384,40 +541,61 @@ def apply_config_update(update, user_id: str | None = None) -> dict:
         or update.model is not None
         or update.api_key is not None
         or update.openrouter_provider is not None
+        or bool(role_updates)
     )
     if user_id and llm_touch:
-        UserLlmStore(user_id).update(
-            provider=provider,
-            model=coerced_model,
-            api_key=update.api_key,
-            openrouter_provider=(
-                update.openrouter_provider if provider == "openrouter" else None
-            ),
-        )
+        store = UserLlmStore(user_id)
+        if role_updates:
+            store.update(roles=role_updates)
+        if (
+            update.provider is not None
+            or update.model is not None
+            or update.api_key is not None
+            or update.openrouter_provider is not None
+        ):
+            store.update(
+                role="navigation",
+                provider=navigation_provider if update.provider is not None else None,
+                model=coerced_model,
+                api_key=update.api_key,
+                openrouter_provider=(
+                    update.openrouter_provider if navigation_provider == "openrouter" else None
+                ),
+            )
     elif not user_id and llm_touch:
         if not ENV_FILE.exists():
             ENV_FILE.write_text("")
         if update.provider is not None:
-            set_key(str(ENV_FILE), "LLM_PROVIDER", provider)
+            set_key(str(ENV_FILE), "LLM_PROVIDER", navigation_provider)
         if coerced_model is not None:
-            set_key(str(ENV_FILE), provider_model_env_name(provider), coerced_model)
+            set_key(str(ENV_FILE), provider_model_env_name(navigation_provider), coerced_model)
         if update.api_key is not None:
-            key_env = provider_api_key_env_name(provider)
+            key_env = provider_api_key_env_name(navigation_provider)
             if key_env:
                 set_key(str(ENV_FILE), key_env, update.api_key)
-        if update.openrouter_provider is not None and provider == "openrouter":
+        if update.openrouter_provider is not None and navigation_provider == "openrouter":
             set_key(str(ENV_FILE), "OPENROUTER_PROVIDER", update.openrouter_provider.strip())
+        planning_payload = role_updates.get("planning")
+        if planning_payload:
+            if planning_payload.get("provider") is not None:
+                set_key(
+                    str(ENV_FILE),
+                    "PLANNER_LLM_PROVIDER",
+                    coerce_ui_provider(str(planning_payload["provider"])),
+                )
+            if planning_payload.get("model") is not None:
+                set_key(str(ENV_FILE), "PLANNER_MODEL", str(planning_payload["model"]))
 
     if not ENV_FILE.exists():
         ENV_FILE.write_text("")
 
     if update.base_url is not None:
-        base_url_env = provider_base_url_env_name(provider)
+        base_url_env = provider_base_url_env_name(navigation_provider)
         if base_url_env:
             set_key(
                 str(ENV_FILE),
                 base_url_env,
-                coerce_provider_base_url(provider, update.base_url),
+                coerce_provider_base_url(navigation_provider, update.base_url),
             )
     if update.fresh_profile is not None:
         set_key(str(ENV_FILE), "QA_FRESH_PROFILE", "true" if update.fresh_profile else "false")
@@ -529,34 +707,50 @@ def config_for_run(user_id: str | None = None) -> Config:
     config.llm_provider = runtime
     config.active_provider = ui_provider
     config.active_model = _active_model(config, ui_provider) or default_model_for_provider(ui_provider)
-    if runtime == "groq":
-        config.groq_model = config.active_model
-        config.openai_base_url = catalog.base_url or default_base_url("groq")
-    elif runtime == "google":
-        config.google_model = config.active_model
-        config.openai_base_url = catalog.base_url or default_base_url("google")
-    elif runtime == "openrouter":
-        config.openrouter_model = config.active_model
-        config.openai_base_url = catalog.base_url or default_base_url("openrouter")
-    else:
-        config.ollama_model = config.active_model
-        if ui_provider == "ollama-cloud":
-            config.ollama_base_url = (
-                config.ollama_cloud_base_url
-                or catalog.base_url
-                or default_base_url("ollama-cloud")
-            )
-            config.ollama_api_key = config.ollama_cloud_api_key
-        else:
-            if not config.ollama_base_url:
-                config.ollama_base_url = catalog.base_url or default_base_url("ollama")
-            config.ollama_api_key = ""
+    planner_ui = coerce_ui_provider(config.planner_llm_provider or ui_provider)
+    planner_runtime = runtime_provider(planner_ui)
+    config.planner_llm_provider = planner_runtime
+    config.active_planning_provider = planner_ui
+    config.planner_model = (
+        config.planner_model
+        or _active_model(config, planner_ui)
+        or default_model_for_provider(planner_ui)
+    )
+    _apply_role_selection_to_config_fields(
+        config,
+        ui_provider=ui_provider,
+        model=config.active_model,
+        catalog_base_url=catalog.base_url,
+        openrouter_provider=config.openrouter_provider,
+    )
+    if planner_ui != ui_provider or config.planner_model != config.active_model:
+        plan_catalog = settings.get_provider(planner_ui)
+        _apply_role_selection_to_config_fields(
+            config,
+            ui_provider=planner_ui,
+            model=config.planner_model,
+            catalog_base_url=plan_catalog.base_url,
+            openrouter_provider=config.planning_openrouter_provider or config.openrouter_provider,
+        )
+    if ui_provider == "ollama-cloud":
+        config.ollama_base_url = (
+            config.ollama_cloud_base_url
+            or catalog.base_url
+            or default_base_url("ollama-cloud")
+        )
+        config.ollama_api_key = config.ollama_cloud_api_key
+    elif runtime == "ollama":
+        if not config.ollama_base_url:
+            config.ollama_base_url = catalog.base_url or default_base_url("ollama")
+        config.ollama_api_key = ""
     return config
 
 
 def _update_has_llm_fields(update) -> bool:
     if update is None:
         return False
+    if getattr(update, "roles", None):
+        return True
     return any(
         getattr(update, field) is not None
         for field in ("provider", "base_url", "model", "api_key", "openrouter_provider")

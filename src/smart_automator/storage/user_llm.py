@@ -10,6 +10,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from ..agents.roles import AGENT_ROLES, AgentRole
 from ..db.engine import get_session
 from ..db.models import UserLlmPrefsRow
 from ..server.provider_utils import (
@@ -23,18 +24,52 @@ from ..server.provider_utils import (
 
 
 @dataclass
+class RoleLlmSelection:
+    provider: str = "groq"
+    model: str = ""
+    openrouter_provider: str = ""
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "openrouter_provider": self.openrouter_provider,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> RoleLlmSelection:
+        if not isinstance(data, dict):
+            return cls()
+        provider = coerce_ui_provider(str(data.get("provider") or "groq"))
+        model = str(data.get("model") or "").strip()
+        openrouter_provider = str(data.get("openrouter_provider") or "").strip()
+        if provider != "openrouter":
+            openrouter_provider = ""
+        if not model:
+            model = default_model_for_provider(provider)
+        return cls(
+            provider=provider,
+            model=model,
+            openrouter_provider=openrouter_provider,
+        )
+
+
+@dataclass
 class UserLlmPrefs:
     provider: str = "groq"
     models: dict[str, str] = field(default_factory=dict)
     api_keys: dict[str, str] = field(default_factory=dict)
     openrouter_provider: str = ""
+    roles: dict[str, RoleLlmSelection] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        self.ensure_roles()
         return {
             "provider": self.provider,
             "models": dict(self.models),
             "api_keys": dict(self.api_keys),
             "openrouter_provider": self.openrouter_provider,
+            "roles": {name: sel.to_dict() for name, sel in self.roles.items()},
         }
 
     @classmethod
@@ -59,12 +94,77 @@ class UserLlmPrefs:
                 if token and canonical in UI_PROVIDERS:
                     api_keys[canonical] = token
         openrouter_provider = str(data.get("openrouter_provider") or "").strip()
-        return cls(
+        roles_raw = data.get("roles")
+        roles: dict[str, RoleLlmSelection] = {}
+        if isinstance(roles_raw, dict):
+            for key, value in roles_raw.items():
+                role = str(key).strip()
+                if role in AGENT_ROLES:
+                    roles[role] = RoleLlmSelection.from_dict(value)
+        prefs = cls(
             provider=provider,
             models=models,
             api_keys=api_keys,
             openrouter_provider=openrouter_provider,
+            roles=roles,
         )
+        return prefs.ensure_roles()
+
+    def ensure_roles(self) -> UserLlmPrefs:
+        """Backfill role selections from legacy flat provider/model fields."""
+        navigation_provider = coerce_ui_provider(self.provider)
+        navigation_model = self.selected_model(navigation_provider)
+        navigation_openrouter = (
+            self.openrouter_provider if navigation_provider == "openrouter" else ""
+        )
+
+        if "navigation" not in self.roles:
+            self.roles["navigation"] = RoleLlmSelection(
+                provider=navigation_provider,
+                model=navigation_model,
+                openrouter_provider=navigation_openrouter,
+            )
+        else:
+            nav = self.roles["navigation"]
+            if not nav.model:
+                nav.model = navigation_model
+
+        if "planning" not in self.roles:
+            planner_env = os.environ.get("PLANNER_LLM_PROVIDER", "").strip()
+            if planner_env:
+                planning_provider = coerce_ui_provider(planner_env)
+            else:
+                planning_provider = navigation_provider
+            planner_model_env = os.environ.get("PLANNER_MODEL", "").strip()
+            planning_model = (
+                planner_model_env
+                or self.models.get(planning_provider, "").strip()
+                or default_model_for_provider(planning_provider)
+            )
+            planning_openrouter = (
+                self.openrouter_provider if planning_provider == "openrouter" else ""
+            )
+            self.roles["planning"] = RoleLlmSelection(
+                provider=planning_provider,
+                model=planning_model,
+                openrouter_provider=planning_openrouter,
+            )
+
+        # Keep navigation aliases in sync for legacy callers.
+        nav = self.roles["navigation"]
+        self.provider = nav.provider
+        if nav.model:
+            self.models[nav.provider] = nav.model
+        if nav.provider == "openrouter":
+            self.openrouter_provider = nav.openrouter_provider
+        return self
+
+    def role_selection(self, role: AgentRole | str) -> RoleLlmSelection:
+        if role not in self.roles:
+            self.ensure_roles()
+        if role not in self.roles:
+            self.roles[str(role)] = RoleLlmSelection()
+        return self.roles[str(role)]
 
     def selected_model(self, provider: str | None = None) -> str:
         canonical = coerce_ui_provider(provider or self.provider)
@@ -98,11 +198,32 @@ def _seed_prefs_from_env() -> UserLlmPrefs:
     if provider not in models:
         models[provider] = default_model_for_provider(provider)
     openrouter_provider = os.environ.get("OPENROUTER_PROVIDER", "").strip()
+    navigation = RoleLlmSelection(
+        provider=provider,
+        model=models.get(provider, default_model_for_provider(provider)),
+        openrouter_provider=openrouter_provider if provider == "openrouter" else "",
+    )
+    planner_env = os.environ.get("PLANNER_LLM_PROVIDER", "").strip()
+    planning_provider = coerce_ui_provider(planner_env) if planner_env else provider
+    planner_model = os.environ.get("PLANNER_MODEL", "").strip()
+    if not planner_model:
+        planner_model = models.get(planning_provider, default_model_for_provider(planning_provider))
+    planning_openrouter = (
+        openrouter_provider if planning_provider == "openrouter" else ""
+    )
     return UserLlmPrefs(
         provider=provider,
         models=models,
         api_keys=api_keys,
         openrouter_provider=openrouter_provider,
+        roles={
+            "navigation": navigation,
+            "planning": RoleLlmSelection(
+                provider=planning_provider,
+                model=planner_model,
+                openrouter_provider=planning_openrouter,
+            ),
+        },
     )
 
 
@@ -113,6 +234,7 @@ def _prefs_from_row(row: UserLlmPrefsRow) -> UserLlmPrefs:
             "models": row.models,
             "api_keys": row.api_keys,
             "openrouter_provider": row.openrouter_provider,
+            "roles": row.roles or {},
         }
     )
 
@@ -125,6 +247,7 @@ def _row_from_prefs(user_id: str, prefs: UserLlmPrefs) -> UserLlmPrefsRow:
         models=cleaned.models,
         api_keys=cleaned.api_keys,
         openrouter_provider=cleaned.openrouter_provider,
+        roles={name: sel.to_dict() for name, sel in cleaned.roles.items()},
     )
 
 
@@ -167,6 +290,7 @@ class UserLlmStore:
                     row.models = cleaned.models
                     row.api_keys = cleaned.api_keys
                     row.openrouter_provider = cleaned.openrouter_provider
+                    row.roles = {name: sel.to_dict() for name, sel in cleaned.roles.items()}
             return cleaned
 
     def update(
@@ -176,6 +300,8 @@ class UserLlmStore:
         model: str | None = None,
         api_key: str | None = None,
         openrouter_provider: str | None = None,
+        role: AgentRole | str | None = None,
+        roles: dict[str, dict[str, str | None]] | None = None,
     ) -> UserLlmPrefs:
         with self._lock:
             with get_session() as session:
@@ -192,19 +318,59 @@ class UserLlmStore:
                 else:
                     prefs = UserLlmPrefs()
 
-                if provider is not None:
-                    prefs.provider = coerce_ui_provider(provider)
-                active = prefs.provider
-                if model is not None:
-                    name = model.strip()
-                    if name:
-                        prefs.models[active] = name
-                if api_key is not None:
+                prefs.ensure_roles()
+
+                if roles:
+                    for role_name, payload in roles.items():
+                        if role_name not in AGENT_ROLES or not isinstance(payload, dict):
+                            continue
+                        selection = prefs.role_selection(role_name)
+                        if payload.get("provider") is not None:
+                            selection.provider = coerce_ui_provider(str(payload["provider"]))
+                        if payload.get("model") is not None:
+                            name = str(payload["model"]).strip()
+                            if name:
+                                selection.model = name
+                                prefs.models[selection.provider] = name
+                        if payload.get("openrouter_provider") is not None:
+                            if selection.provider == "openrouter":
+                                selection.openrouter_provider = str(
+                                    payload["openrouter_provider"] or ""
+                                ).strip()
+                            else:
+                                selection.openrouter_provider = ""
+                        if payload.get("api_key") is not None:
+                            token = str(payload["api_key"]).strip()
+                            active = selection.provider
+                            if token:
+                                prefs.api_keys[active] = token
+
+                target_role = str(role or "navigation")
+                if provider is not None or model is not None or openrouter_provider is not None:
+                    selection = prefs.role_selection(target_role)
+                    if provider is not None:
+                        selection.provider = coerce_ui_provider(provider)
+                    active = selection.provider
+                    if model is not None:
+                        name = model.strip()
+                        if name:
+                            selection.model = name
+                            prefs.models[active] = name
+                    if api_key is not None:
+                        token = api_key.strip()
+                        if token:
+                            prefs.api_keys[active] = token
+                    if openrouter_provider is not None:
+                        if active == "openrouter":
+                            selection.openrouter_provider = openrouter_provider.strip()
+                        else:
+                            selection.openrouter_provider = ""
+                elif api_key is not None:
+                    active = prefs.role_selection(target_role).provider
                     token = api_key.strip()
                     if token:
                         prefs.api_keys[active] = token
-                if openrouter_provider is not None and active == "openrouter":
-                    prefs.openrouter_provider = openrouter_provider.strip()
+
                 cleaned = UserLlmPrefs.from_dict(prefs.to_dict())
                 if row is None:
                     session.add(_row_from_prefs(self._user_id, cleaned))
@@ -213,4 +379,5 @@ class UserLlmStore:
                     row.models = cleaned.models
                     row.api_keys = cleaned.api_keys
                     row.openrouter_provider = cleaned.openrouter_provider
+                    row.roles = {name: sel.to_dict() for name, sel in cleaned.roles.items()}
             return cleaned

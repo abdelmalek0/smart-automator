@@ -13,7 +13,16 @@ import { coerceUiProvider } from './providers'
 
 const BASE = '/api'
 
+export type RoleLlmUpdatePayload = {
+  provider?: string
+  base_url?: string
+  model?: string
+  api_key?: string
+  openrouter_provider?: string
+}
+
 export type ConfigUpdatePayload = {
+  roles?: Record<string, RoleLlmUpdatePayload>
   provider?: string
   base_url?: string
   model?: string
@@ -171,7 +180,7 @@ export function getWorkerStatus(): Promise<import('./types').WorkerStatus> {
   return request('/workers/status')
 }
 
-export function checkConfig(payload?: {
+export function checkConfig(payload?: RoleLlmUpdatePayload & {
   provider?: string
   base_url?: string
   model?: string

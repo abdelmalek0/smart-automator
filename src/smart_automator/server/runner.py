@@ -14,7 +14,7 @@ from ..agents.errors import (
 )
 from ..browser.context import BrowserContext
 from ..config import normalize_browser_overrides
-from ..main import create_llm
+from ..main import create_role_llms
 from .config_service import config_for_run
 from .history_store import save_run_history
 from .paths import REPORT_DIR, SCREENSHOT_DIR
@@ -93,6 +93,8 @@ def _handle_event(run: RunState, browser_context: BrowserContext, event: dict[st
         run.completion_tokens = int(event.get("completion_tokens", 0))
         run.cache_tokens = int(event.get("cache_tokens", 0))
         run.cost_usd = event.get("cost_usd")
+        breakdown = event.get("cost_breakdown")
+        run.cost_breakdown = list(breakdown) if isinstance(breakdown, list) else []
     elif event_type == "turn_timing":
         run.turn_timing = {
             "snapshot_ms": event.get("snapshot_ms"),
@@ -160,7 +162,7 @@ def _generate_report(run: RunState, executor: Executor | None, config) -> None:
             }
             for record in context.failed_actions
         ]
-        planner_model = getattr(config, "planner_model", None) or config.active_model
+        planner_model = config.planner_model or config.active_model
         report_path = generate_run_report(
             run,
             context.history,
@@ -420,13 +422,7 @@ def run_automation(run: RunState) -> None:
         else:
             raise RuntimeError("Connect app offline")
 
-        llm = create_llm(config)
-        planner_provider = config.planner_llm_provider or config.llm_provider
-        planner_llm = (
-            create_llm(config, planner_provider)
-            if planner_provider != config.llm_provider
-            else llm
-        )
+        llm, planner_llm = create_role_llms(config)
 
         browser_context = BrowserContext(config)
         browser_context.launch(
@@ -471,7 +467,7 @@ def run_automation(run: RunState) -> None:
             run.run_id[:8],
             config.llm_provider,
             llm.model_name or "?",
-            planner_provider or config.llm_provider,
+            config.active_planning_provider or config.planner_llm_provider or config.llm_provider,
             planner_llm.model_name or "?",
         )
         run.executor = executor

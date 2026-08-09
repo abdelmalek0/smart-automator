@@ -88,6 +88,7 @@ class UserLlmPrefsRow(Base):
     models: Mapped[dict] = mapped_column(JSON, default=dict)
     api_keys: Mapped[dict] = mapped_column(JSON, default=dict)
     openrouter_provider: Mapped[str] = mapped_column(String, default="")
+    roles: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class LlmCatalogRow(Base):

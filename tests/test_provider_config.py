@@ -163,6 +163,7 @@ class TestOpenRouterProvider(unittest.TestCase):
         self.assertEqual(content, "OK")
         payload = post.call_args.kwargs["json"]
         self.assertNotIn("provider", payload)
+        self.assertEqual(payload["max_tokens"], 20000)
         self.assertEqual(llm.last_generation_id, "gen-auto-1")
 
     def test_openrouter_payload_forces_only_provider(self):
@@ -188,6 +189,7 @@ class TestOpenRouterProvider(unittest.TestCase):
         with patch.object(llm._client, "post", return_value=response) as post:
             llm.chat([{"role": "user", "content": "hi"}])
         payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["max_tokens"], 20000)
         self.assertEqual(
             payload["provider"],
             {"only": ["together"], "allow_fallbacks": False},
