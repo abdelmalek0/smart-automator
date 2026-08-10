@@ -46,6 +46,16 @@ function formatApiError(status: number, text: string): string {
   return text.trim() || `Request failed (${status})`
 }
 
+export class StartRunError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'StartRunError'
+    this.status = status
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     credentials: 'include',
@@ -128,10 +138,21 @@ export async function startRun(payload: {
   source_run_id?: string
   use_replay_script?: boolean
 }): Promise<RunSummary> {
-  return request('/runs', {
+  const res = await fetch(`${BASE}/runs`, {
     method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
+  if (res.status === 401) {
+    throw new Error('Not authenticated')
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText)
+    const message = formatApiError(res.status, text)
+    throw new StartRunError(message, res.status)
+  }
+  return res.json() as Promise<RunSummary>
 }
 
 export async function cancelRun(runId: string): Promise<void> {

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -9,6 +11,30 @@ from smart_automator.db import init_db, reset_engine
 from smart_automator.server import app as app_module
 from smart_automator.server import run_state
 from smart_automator.server.auth import dependencies as auth_dependencies
+
+
+@pytest.fixture
+def api_run_test_harness(monkeypatch):
+    """Keep sequential start_run API tests valid under run-start gating."""
+    monkeypatch.setenv("SMART_AUTOMATOR_LOCAL_BROWSER", "true")
+
+    def stub_run_automation(run) -> None:
+        run.status = "error"
+        run.summary = "stubbed test run"
+        run.finished_at = time.time()
+
+    monkeypatch.setattr(app_module, "run_automation", stub_run_automation)
+
+    class ImmediateThread:
+        def __init__(self, target=None, args=(), kwargs=None, daemon=False):
+            self._target = target
+            self._args = args or ()
+
+        def start(self) -> None:
+            if self._target:
+                self._target(*self._args)
+
+    monkeypatch.setattr(app_module.threading, "Thread", ImmediateThread)
 
 
 @pytest.fixture(autouse=True)
@@ -62,7 +88,7 @@ def anon_client() -> TestClient:
 
 
 @pytest.fixture
-def auth_client(anon_client: TestClient) -> TestClient:
+def auth_client(anon_client: TestClient, api_run_test_harness) -> TestClient:
     res = anon_client.post(
         "/api/auth/register",
         json={"username": "tester", "password": "secret-pass"},
@@ -78,7 +104,7 @@ def client(auth_client: TestClient) -> TestClient:
 
 
 @pytest.fixture
-def second_auth_client() -> TestClient:
+def second_auth_client(api_run_test_harness) -> TestClient:
     owner = TestClient(app_module.app)
     owner_res = owner.post(
         "/api/auth/register",

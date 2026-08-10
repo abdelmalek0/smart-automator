@@ -20,6 +20,7 @@ interface Props {
   task: ProjectTask
   running: boolean
   disabled: boolean
+  disabledHint?: string
   deleting?: boolean
   /** When false, this test is excluded from Run All. */
   includedInSuite?: boolean
@@ -34,6 +35,7 @@ export default function TestRow({
   task,
   running,
   disabled,
+  disabledHint,
   deleting = false,
   includedInSuite = true,
   onIncludedInSuiteChange,
@@ -119,7 +121,13 @@ export default function TestRow({
       </div>
 
       <div className="flex items-center gap-1 shrink-0 self-end sm:self-start">
-        <Button size="sm" onClick={onRun} disabled={disabled || running} aria-label="Run test">
+        <Button
+          size="sm"
+          onClick={onRun}
+          disabled={disabled || running}
+          title={disabled && disabledHint ? disabledHint : undefined}
+          aria-label="Run test"
+        >
           {running ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
           ) : (
@@ -136,6 +144,7 @@ export default function TestRow({
                 size="sm"
                 onClick={onRetrain}
                 disabled={disabled || running}
+                title={disabled && disabledHint ? disabledHint : undefined}
                 aria-label="Retrain test"
               >
                 {running ? (

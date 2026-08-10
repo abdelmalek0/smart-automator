@@ -47,6 +47,7 @@ from ..server.provider_utils import (
 from ..agents.roles import AGENT_ROLES
 from ..storage.llm_settings import LlmSettingsStore
 from ..storage.user_llm import UserLlmPrefs, UserLlmStore
+from .workers import local_browser_mode_enabled
 
 log = logging.getLogger(__name__)
 
@@ -427,6 +428,7 @@ def build_config_response(user_id: str | None = None) -> dict:
         "default_chrome_user_data": default_chrome_user_data(),
         "browser_session_mode": session_mode,
         "connect_online": worker_online,
+        "local_browser_mode": local_browser_mode_enabled(),
     }
 
 

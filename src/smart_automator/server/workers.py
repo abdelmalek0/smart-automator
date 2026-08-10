@@ -52,6 +52,61 @@ def local_browser_mode_enabled() -> bool:
     return os.getenv(LOCAL_BROWSER_ENV, "").lower() in {"1", "true", "yes"}
 
 
+ACTIVE_RUN_STATUSES = ("pending", "running", "awaiting_human")
+
+
+def connect_worker_busy(user_id: str) -> bool:
+    worker = worker_registry().get(user_id)
+    if worker is None:
+        return False
+    with worker.lease_lock:
+        active_run_id = worker.active_run_id
+        browser_state = worker.browser_state
+
+    if active_run_id:
+        from .run_state import get_run_for_user
+
+        run = get_run_for_user(user_id, active_run_id)
+        if run is None or run.status not in ACTIVE_RUN_STATUSES:
+            return False
+        return True
+
+    return browser_state not in ("idle",)
+
+
+def user_has_active_run(user_id: str) -> bool:
+    from .run_state import list_runs_for_user
+
+    return any(run.status in ACTIVE_RUN_STATUSES for run in list_runs_for_user(user_id))
+
+
+def check_run_start_allowed(user_id: str) -> None:
+    """Raise HTTPException when the user cannot start another run."""
+    from fastapi import HTTPException
+
+    if user_has_active_run(user_id):
+        raise HTTPException(
+            status_code=409,
+            detail="Another run is already in progress",
+        )
+
+    if local_browser_mode_enabled():
+        return
+
+    worker = worker_registry().get(user_id)
+    if worker is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Connect app offline",
+        )
+
+    if connect_worker_busy(user_id):
+        raise HTTPException(
+            status_code=409,
+            detail="Connect browser is busy with another run",
+        )
+
+
 @dataclass
 class WorkerToken:
     token: str
@@ -587,12 +642,14 @@ class WorkerRegistry:
                 "last_seen": None,
                 "profile_count": 0,
                 "browser_state": "offline",
+                "active_run_id": None,
             }
         return {
             "online": True,
             "last_seen": worker.last_seen,
             "profile_count": len(worker.profiles),
             "browser_state": worker.browser_state,
+            "active_run_id": worker.active_run_id,
         }
 
     def profiles_for_user(self, user_id: str) -> list[dict[str, Any]]:

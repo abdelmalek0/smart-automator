@@ -251,6 +251,7 @@ export interface Config {
   default_chrome_user_data: string
   browser_session_mode: BrowserSessionMode
   connect_online?: boolean
+  local_browser_mode?: boolean
 }
 
 export interface WorkerStatus {
@@ -258,6 +259,7 @@ export interface WorkerStatus {
   last_seen: number | null
   profile_count: number
   browser_state: string
+  active_run_id?: string | null
 }
 
 // WebSocket event types

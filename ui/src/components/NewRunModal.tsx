@@ -3,7 +3,9 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronDown, Globe, Loader2, Play } from 'lucide-react'
 import { getConfig, getRun, listProjects, startRun } from '@/api'
+import ConnectOfflineNotice from '@/components/ConnectOfflineNotice'
 import { useProjects } from '@/hooks/useProjects'
+import { useRunStartGate } from '@/hooks/useRunStartGate'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -52,13 +54,13 @@ export default function NewRunModal({
   const [maxSteps, setMaxSteps] = useState(initialValues?.max_steps ?? 100)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [saveToProject, setSaveToProject] = useState(false)
+  const [saveToProject, setSaveToProject] = useState(
+    () => Boolean(initialValues?.website_id) && !initialValues?.website_task_id,
+  )
   const [useReplayScript, setUseReplayScript] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
-  const [projectMode, setProjectMode] = useState<'new' | 'existing'>('existing')
-  const [newProjectName, setNewProjectName] = useState('')
-  const [saveProjectId, setSaveProjectId] = useState('')
-  const { projects, createProject, addTaskToProject } = useProjects()
+  const { projects, addTaskToProject } = useProjects()
+  const runStartGate = useRunStartGate()
   const { data: config } = useQuery({ queryKey: ['config'], queryFn: getConfig })
   const { data: projectList = [] } = useQuery({
     queryKey: ['projects'],
@@ -83,6 +85,18 @@ export default function NewRunModal({
   )
   const selectedProject =
     projectId !== NO_PROJECT ? projectList.find((p) => p.id === projectId) : null
+  const hasTopProject = projectId !== NO_PROJECT
+  const alreadyLinkedToTask = Boolean(initialValues?.website_task_id)
+  const saveToggleDisabled = !hasTopProject || alreadyLinkedToTask
+
+  useEffect(() => {
+    if (alreadyLinkedToTask) return
+    if (hasTopProject) {
+      setSaveToProject(true)
+    } else {
+      setSaveToProject(false)
+    }
+  }, [projectId, hasTopProject, alreadyLinkedToTask])
 
   useEffect(() => {
     if (!config || initialValues) return
@@ -124,7 +138,7 @@ export default function NewRunModal({
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!task.trim() || !successCriteria.trim()) return
+    if (!task.trim() || !successCriteria.trim() || !runStartGate.canStartRun) return
     setLoading(true)
     setError(null)
     try {
@@ -151,27 +165,18 @@ export default function NewRunModal({
           : { use_replay_script: false }),
       }
 
-      if (saveToProject) {
-        let targetProjectId = saveProjectId
-        if (projectMode === 'new' && newProjectName.trim()) {
-          const project = await createProject({ name: newProjectName.trim() })
-          targetProjectId = project.id
-          runProjectId = runProjectId ?? project.id
-        }
-        if (targetProjectId) {
-          const createdTask = await addTaskToProject({
-            projectId: targetProjectId,
-            name: payload.name,
-            task: payload.task,
-            success_criteria: payload.success_criteria,
-            headless: payload.headless,
-            max_steps: payload.max_steps,
-            cdp_url: payload.cdp_url,
-            fresh_profile: payload.fresh_profile ?? true,
-          })
-          websiteTaskId = createdTask.id
-          if (!runProjectId) runProjectId = targetProjectId
-        }
+      if (saveToProject && runProjectId) {
+        const createdTask = await addTaskToProject({
+          projectId: runProjectId,
+          name: payload.name,
+          task: payload.task,
+          success_criteria: payload.success_criteria,
+          headless: payload.headless,
+          max_steps: payload.max_steps,
+          cdp_url: payload.cdp_url,
+          fresh_profile: payload.fresh_profile ?? true,
+        })
+        websiteTaskId = createdTask.id
       }
 
       const run = await startRun({
@@ -259,6 +264,29 @@ export default function NewRunModal({
                   )}
                 </div>
               )}
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-border/80 bg-muted/20 px-3 py-2.5">
+                <div className="space-y-0.5">
+                  <Label
+                    htmlFor="save-project"
+                    className={cn('font-normal', saveToggleDisabled && 'text-muted-foreground')}
+                  >
+                    Save test to project
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    {alreadyLinkedToTask
+                      ? 'This run is already linked to a saved test.'
+                      : hasTopProject
+                        ? `Adds this run as a test in ${selectedProject?.name ?? 'the selected project'}.`
+                        : 'Choose a project above to save this test.'}
+                  </p>
+                </div>
+                <Switch
+                  id="save-project"
+                  checked={saveToProject}
+                  onCheckedChange={setSaveToProject}
+                  disabled={saveToggleDisabled}
+                />
+              </div>
             </div>
 
             <div className="space-y-2">
@@ -406,73 +434,13 @@ export default function NewRunModal({
                       className="w-full accent-primary"
                     />
                   </div>
-
-                  <div className="space-y-3 pt-1 border-t border-border">
-                    <div className="flex items-center gap-2">
-                      <Switch
-                        id="save-project"
-                        checked={saveToProject}
-                        onCheckedChange={setSaveToProject}
-                      />
-                      <Label htmlFor="save-project" className="font-normal">
-                        Save test to project
-                      </Label>
-                    </div>
-                    {saveToProject && (
-                      <div className="space-y-2">
-                        <div className="flex gap-4">
-                          <label className="flex items-center gap-1.5 cursor-pointer text-sm">
-                            <input
-                              type="radio"
-                              checked={projectMode === 'new'}
-                              onChange={() => setProjectMode('new')}
-                              className="accent-primary"
-                            />
-                            New project
-                          </label>
-                          <label
-                            className={`flex items-center gap-1.5 text-sm ${
-                              projects.length === 0
-                                ? 'opacity-40 cursor-not-allowed'
-                                : 'cursor-pointer'
-                            }`}
-                          >
-                            <input
-                              type="radio"
-                              checked={projectMode === 'existing'}
-                              onChange={() => setProjectMode('existing')}
-                              disabled={projects.length === 0}
-                              className="accent-primary"
-                            />
-                            Existing project
-                          </label>
-                        </div>
-                        {projectMode === 'new' ? (
-                          <Input
-                            value={newProjectName}
-                            onChange={(e) => setNewProjectName(e.target.value)}
-                            placeholder="Project name…"
-                          />
-                        ) : (
-                          <Select value={saveProjectId} onValueChange={setSaveProjectId}>
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select a project…" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {projects.map((p) => (
-                                <SelectItem key={p.id} value={p.id}>
-                                  {p.name}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        )}
-                      </div>
-                    )}
-                  </div>
                 </div>
               )}
             </div>
+
+            {runStartGate.blockReason === 'offline' && (
+              <ConnectOfflineNotice message={runStartGate.blockHint ?? undefined} />
+            )}
 
             {error && (
               <p className="text-destructive text-sm bg-destructive/10 border border-destructive/30 rounded-md px-3 py-2">
@@ -485,7 +453,20 @@ export default function NewRunModal({
             <Button type="button" variant="ghost" onClick={onClose}>
               Cancel
             </Button>
-            <Button type="submit" disabled={loading || !task.trim() || !successCriteria.trim()}>
+            <Button
+              type="submit"
+              disabled={
+                loading ||
+                !task.trim() ||
+                !successCriteria.trim() ||
+                !runStartGate.canStartRun
+              }
+              title={
+                runStartGate.blockReason === 'busy'
+                  ? (runStartGate.blockHint ?? undefined)
+                  : undefined
+              }
+            >
               {loading ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" />

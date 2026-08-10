@@ -104,6 +104,7 @@ export default function RunView({ runId, onRunComplete }: Props) {
       onRunComplete?.()
       queryClient.invalidateQueries({ queryKey: ['runs'] })
       queryClient.invalidateQueries({ queryKey: ['projects'] })
+      queryClient.invalidateQueries({ queryKey: ['workerStatus'] })
     }
   }, [closed, run?.status, onRunComplete, queryClient])
 
@@ -129,6 +130,7 @@ export default function RunView({ runId, onRunComplete }: Props) {
       await cancelRun(runId)
       queryClient.invalidateQueries({ queryKey: ['runs'] })
       queryClient.invalidateQueries({ queryKey: ['projects'] })
+      queryClient.invalidateQueries({ queryKey: ['workerStatus'] })
     } catch {
       // ignore
     }

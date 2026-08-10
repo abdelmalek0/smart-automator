@@ -52,6 +52,7 @@ from .models import (
 )
 from .workers import (
     WorkerConnection,
+    check_run_start_allowed,
     local_browser_mode_enabled,
     resolve_user_from_worker_token,
     worker_registry,
@@ -228,6 +229,8 @@ async def start_run(req: StartRunRequest, user: User = Depends(get_current_user)
             test_name=test_name,
         )
 
+    check_run_start_allowed(user.id)
+
     run = RunState(
         run_id=run_id,
         user_id=user.id,
@@ -349,6 +352,18 @@ def _cancel_active_run(run: RunState) -> None:
     run.finished_at = time.time()
     run.broadcast({"type": "status", "status": "cancelled"})
     run.broadcast({"type": "closed"})
+    try:
+        worker_registry().request_browser_stop(
+            run.user_id,
+            run_id=run.run_id,
+            wait=False,
+        )
+    except Exception:
+        log.debug(
+            "Failed to stop Connect browser for cancelled run %s",
+            run.run_id[:8],
+            exc_info=True,
+        )
     try:
         from .replay_store import has_replay_script as _has_replay
 

@@ -13,6 +13,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import SuiteProgressPanel from '@/components/projects/SuiteProgressPanel'
+import ConnectOfflineNotice from '@/components/ConnectOfflineNotice'
 import TestRow from '@/components/projects/TestRow'
 import TestEditorDialog from '@/components/TestEditorDialog'
 import { Button } from '@/components/ui/button'
@@ -39,6 +40,7 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
 import { useProjectSuiteRunner } from '@/hooks/useProjectSuiteRunner'
+import { useRunStartGate } from '@/hooks/useRunStartGate'
 import { useProjects } from '@/hooks/useProjects'
 import { startProjectTaskRun } from '@/lib/project-run'
 import { getProjectCardStats, projectInitials } from '@/lib/project-view'
@@ -62,9 +64,11 @@ export default function ProjectDetailPage() {
     isRemovingTask,
   } = useProjects()
   const suite = useProjectSuiteRunner()
+  const runStartGate = useRunStartGate()
 
   const project = projects.find((p) => p.id === projectId) ?? null
   const [runningId, setRunningId] = useState<string | null>(null)
+  const [runError, setRunError] = useState<string | null>(null)
   const [excludedTaskIds, setExcludedTaskIds] = useState<Set<string>>(() => new Set())
   const [editorOpen, setEditorOpen] = useState(false)
   const [editorMode, setEditorMode] = useState<'edit' | 'create'>('edit')
@@ -86,6 +90,12 @@ export default function ProjectDetailPage() {
     project && suite.state.phase !== 'idle' && suite.state.projectId === project.id,
   )
   const anySuiteRunning = suite.isRunning
+  const runActionsBlocked = !runStartGate.canStartRun
+  const connectOffline = runStartGate.blockReason === 'offline'
+  const runGateHint =
+    runActionsBlocked && runStartGate.blockReason === 'busy'
+      ? (runStartGate.blockHint ?? undefined)
+      : undefined
   const stats = project ? getProjectCardStats(project) : null
 
   // On opening a project: Runs if a suite is running, otherwise Configuration.
@@ -150,11 +160,14 @@ export default function ProjectDetailPage() {
 
   async function handleRunTask(proj: Project, task: ProjectTask) {
     setRunningId(task.id)
+    setRunError(null)
     try {
       const run = await startProjectTaskRun(proj, task)
       await queryClient.invalidateQueries({ queryKey: ['runs'] })
       await queryClient.invalidateQueries({ queryKey: ['projects'] })
       navigate(`/runs/${run.run_id}`)
+    } catch (err) {
+      setRunError(err instanceof Error ? err.message : 'Failed to start run')
     } finally {
       setRunningId(null)
     }
@@ -162,11 +175,14 @@ export default function ProjectDetailPage() {
 
   async function handleRetrainTask(proj: Project, task: ProjectTask) {
     setRunningId(task.id)
+    setRunError(null)
     try {
       const run = await startProjectTaskRun(proj, task, { forceTraining: true })
       await queryClient.invalidateQueries({ queryKey: ['runs'] })
       await queryClient.invalidateQueries({ queryKey: ['projects'] })
       navigate(`/runs/${run.run_id}`)
+    } catch (err) {
+      setRunError(err instanceof Error ? err.message : 'Failed to start run')
     } finally {
       setRunningId(null)
     }
@@ -477,7 +493,10 @@ export default function ProjectDetailPage() {
               {project.tasks.length > 0 && (
                 <Button
                   size="sm"
-                  disabled={anySuiteRunning || runningId !== null || noneIncluded}
+                  disabled={
+                    anySuiteRunning || runningId !== null || noneIncluded || runActionsBlocked
+                  }
+                  title={runGateHint}
                   onClick={handleRunAll}
                 >
                   {suiteBusy ? (
@@ -552,6 +571,17 @@ export default function ProjectDetailPage() {
 
       <ScrollArea className="flex-1">
         <div className="mx-auto w-full max-w-3xl px-4 sm:px-6 py-5">
+          {connectOffline && (
+            <ConnectOfflineNotice
+              message={runStartGate.blockHint ?? undefined}
+              className="mb-4"
+            />
+          )}
+          {runError && (
+            <p className="mb-4 text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded-md px-3 py-2">
+              {runError}
+            </p>
+          )}
           <Tabs value={activeTab} onValueChange={setActiveTab}>
             <TabsList>
               <TabsTrigger value="configuration">Configuration</TabsTrigger>
@@ -706,8 +736,11 @@ export default function ProjectDetailPage() {
                           task={task}
                           running={runningId === task.id}
                           disabled={
-                            anySuiteRunning || (runningId !== null && runningId !== task.id)
+                            anySuiteRunning ||
+                            (runningId !== null && runningId !== task.id) ||
+                            runActionsBlocked
                           }
+                          disabledHint={runGateHint}
                           deleting={isRemovingTask}
                           includedInSuite={!excludedTaskIds.has(task.id)}
                           onIncludedInSuiteChange={(included) =>
@@ -740,7 +773,10 @@ export default function ProjectDetailPage() {
                   {project.tasks.length > 0 && (
                     <Button
                       size="sm"
-                      disabled={anySuiteRunning || runningId !== null || noneIncluded}
+                      disabled={
+                        anySuiteRunning || runningId !== null || noneIncluded || runActionsBlocked
+                      }
+                      title={runGateHint}
                       onClick={handleRunAll}
                     >
                       <Play className="h-3.5 w-3.5" />
