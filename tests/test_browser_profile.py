@@ -154,6 +154,8 @@ def test_sync_chrome_profile_copies_profile_and_skips_cache(tmp_path, monkeypatc
     )
 
     mirror_path = sync_chrome_profile(str(chrome_root), "Default")
+    prefs = json.loads((mirror_path / "Default" / "Preferences").read_text(encoding="utf-8"))
+    assert prefs["profile"]["password_manager_leak_detection"] is False
     assert mirror_path.exists()
     assert (mirror_path / "Default" / "Preferences").is_file()
     assert not (mirror_path / "Default" / "Cache").exists()
@@ -250,7 +252,11 @@ def test_launch_passes_profile_directory_arg_for_custom_non_system_path() -> Non
 
     call_args = mock_playwright.chromium.launch_persistent_context.call_args
     assert call_args.args[0] == "/tmp/custom-chrome"
-    assert call_args.kwargs["args"] == ["--profile-directory=Profile 1"]
+    assert call_args.kwargs["args"] == [
+        "--disable-features=PasswordLeakDetection,PasswordManagerLeakDetection",
+        "--disable-save-password-bubble",
+        "--profile-directory=Profile 1",
+    ]
 
 
 def test_launch_uses_mirror_for_system_chrome_profile(tmp_path, monkeypatch) -> None:
@@ -293,23 +299,26 @@ def test_launch_uses_mirror_for_system_chrome_profile(tmp_path, monkeypatch) -> 
     assert "--profile-directory=" not in str(call_args.kwargs.get("args", []))
 
 
-def test_launch_skips_persistent_context_when_fresh() -> None:
+def test_launch_uses_ephemeral_persistent_context_when_fresh() -> None:
     from smart_automator.config import Config
 
     config = Config(chrome_user_data="", fresh_profile=False)
     context = BrowserContext(config)
 
     mock_playwright = MagicMock()
-    mock_browser = MagicMock()
-    mock_browser.new_context.return_value = MagicMock()
-    mock_playwright.chromium.launch.return_value = mock_browser
+    mock_persistent = MagicMock()
+    mock_persistent.browser = MagicMock()
+    mock_playwright.chromium.launch_persistent_context.return_value = mock_persistent
 
     with patch("smart_automator.browser.context.sync_playwright") as sync_pw:
         sync_pw.return_value.start.return_value = mock_playwright
         context.launch(fresh_profile=True)
 
-    mock_playwright.chromium.launch_persistent_context.assert_not_called()
-    mock_playwright.chromium.launch.assert_called_once()
+    mock_playwright.chromium.launch.assert_not_called()
+    mock_playwright.chromium.launch_persistent_context.assert_called_once()
+    launch_args = mock_playwright.chromium.launch_persistent_context.call_args.kwargs.get("args", [])
+    assert "--disable-features=PasswordLeakDetection,PasswordManagerLeakDetection" in launch_args
+    assert "--disable-save-password-bubble" in launch_args
 
 
 def test_config_response_includes_browser_session_fields(

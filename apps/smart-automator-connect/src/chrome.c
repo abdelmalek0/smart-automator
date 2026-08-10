@@ -3,6 +3,7 @@
 #endif
 
 #include "chrome.h"
+#include "chrome_prefs.h"
 
 #include "chrome_mirror.h"
 #include "http.h"
@@ -260,7 +261,8 @@ static void append_fast_start_flags(char *cmd, size_t cmd_len) {
       " --disable-background-networking"
       " --disable-default-apps"
       " --disable-component-update"
-      " --disable-features=TranslateUI,ChromeWhatsNewUI,AutofillServerCommunication,OptimizationHints"
+      " --disable-features=TranslateUI,ChromeWhatsNewUI,AutofillServerCommunication,OptimizationHints,PasswordLeakDetection,PasswordManagerLeakDetection"
+      " --disable-save-password-bubble"
       " --no-service-autorun"
       " --disable-hang-monitor"
       " --disable-session-crashed-bubble"
@@ -326,7 +328,8 @@ static int launch_chrome_process(
   char disable_default_apps[] = "--disable-default-apps";
   char disable_component_update[] = "--disable-component-update";
   char disable_features[] =
-      "--disable-features=TranslateUI,ChromeWhatsNewUI,AutofillServerCommunication,OptimizationHints";
+      "--disable-features=TranslateUI,ChromeWhatsNewUI,AutofillServerCommunication,OptimizationHints,PasswordLeakDetection,PasswordManagerLeakDetection";
+  char disable_save_password_bubble[] = "--disable-save-password-bubble";
   char no_service_autorun[] = "--no-service-autorun";
   char disable_hang_monitor[] = "--disable-hang-monitor";
   char blank_page[] = "about:blank";
@@ -356,6 +359,7 @@ static int launch_chrome_process(
   argv[argc++] = disable_default_apps;
   argv[argc++] = disable_component_update;
   argv[argc++] = disable_features;
+  argv[argc++] = disable_save_password_bubble;
   argv[argc++] = no_service_autorun;
   argv[argc++] = disable_hang_monitor;
   argv[argc++] = blank_page;
@@ -544,6 +548,16 @@ static int chrome_start_internal(
   clear_devtools_active_port(profile);
   snprintf(g_chrome_user_data, sizeof(g_chrome_user_data), "%s", profile);
   g_chrome_debug_port = 0;
+
+  {
+    char prefs_profile_dir[768];
+    if (profile_dir_ptr[0] != '\0') {
+      sa_path_join(prefs_profile_dir, sizeof(prefs_profile_dir), profile, profile_dir_ptr);
+    } else {
+      sa_path_join(prefs_profile_dir, sizeof(prefs_profile_dir), profile, "Default");
+    }
+    (void)sa_chrome_apply_automation_prefs(prefs_profile_dir);
+  }
 
   /* Port 0 = let Chrome pick a free ephemeral port and write it to DevToolsActivePort.
    * Avoids binding failures when 9222 is already taken (UI up, no CDP). */

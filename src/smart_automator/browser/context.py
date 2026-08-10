@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import tempfile
 from collections.abc import Callable
 
 from playwright.sync_api import sync_playwright, Browser, BrowserContext as PlaywrightContext
 
 from ..config import Config, resolve_chrome_user_data
+from .chrome_prefs import apply_automation_chrome_prefs, automation_chrome_args
 from .chrome_profile_mirror import resolve_persistent_launch_dir
 from .dom import DOMState, calc_branch_path_hash_set, mark_new_elements, remove_highlights
 from .page import Page
@@ -48,7 +50,7 @@ class BrowserContext:
 
         self._remote_cdp = False
         launch_kwargs: dict = {"headless": self._config.headless}
-        launch_args: list[str] = []
+        launch_args = automation_chrome_args()
         if self._config.headless:
             launch_args.extend(
                 [
@@ -72,8 +74,9 @@ class BrowserContext:
             )
             if launch_profile_dir:
                 launch_args.append(f"--profile-directory={launch_profile_dir}")
-            if launch_args:
-                launch_kwargs["args"] = launch_args
+            prefs_profile = launch_profile_dir if launch_profile_dir else "Default"
+            apply_automation_chrome_prefs(launch_dir, prefs_profile)
+            launch_kwargs["args"] = launch_args
             self._context = self._playwright.chromium.launch_persistent_context(
                 launch_dir,
                 **launch_kwargs,
@@ -83,14 +86,16 @@ class BrowserContext:
             self._browser = self._context.browser
             return
 
-        if launch_args:
-            launch_kwargs["args"] = launch_args
-
-        self._browser = self._playwright.chromium.launch(**launch_kwargs)
-        self._context = self._browser.new_context(
+        launch_kwargs["args"] = launch_args
+        launch_dir = tempfile.mkdtemp(prefix="smart-automator-chrome-")
+        apply_automation_chrome_prefs(launch_dir, "Default")
+        self._context = self._playwright.chromium.launch_persistent_context(
+            launch_dir,
+            **launch_kwargs,
             viewport={"width": self._config.viewport_width, "height": self._config.viewport_height},
             color_scheme="light",
         )
+        self._browser = self._context.browser
 
     def _check_url(self, url: str):
         if not is_url_allowed(url, self._config.allowed_urls, self._config.denied_urls):

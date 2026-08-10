@@ -25,6 +25,7 @@ set(SA_CONNECT_SOURCES
   src/util.c
   src/chrome_profiles.c
   src/chrome_mirror.c
+  src/chrome_prefs.c
   src/worker_session.c
   src/tls_http.c
   src/worker_ws.c

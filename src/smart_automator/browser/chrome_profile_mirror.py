@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from ..config import DEFAULT_CHROME_PROFILE_DIR
+from .chrome_prefs import apply_automation_chrome_prefs
 from .chrome_profiles import is_system_chrome_user_data_dir
 
 log = logging.getLogger(__name__)
@@ -90,6 +91,7 @@ def sync_chrome_profile(user_data_dir: str, profile_directory: str) -> Path:
 
     started = time.monotonic()
     shutil.copytree(source_profile, dest_profile, ignore=_copy_ignore)
+    apply_automation_chrome_prefs(str(mirror_root), "Default")
     _write_local_state(mirror_root)
     elapsed_ms = int((time.monotonic() - started) * 1000)
     log.info(
