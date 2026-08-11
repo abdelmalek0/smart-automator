@@ -29,8 +29,11 @@ export type SuiteTaskResult = {
 
 export type SuitePhase = 'idle' | 'running' | 'complete' | 'cancelled'
 
+export type SuiteMode = 'run' | 'retrain'
+
 export type SuiteState = {
   phase: SuitePhase
+  mode: SuiteMode
   projectId: string | null
   results: SuiteTaskResult[]
   currentTaskId: string | null
@@ -38,6 +41,7 @@ export type SuiteState = {
 
 const INITIAL: SuiteState = {
   phase: 'idle',
+  mode: 'run',
   projectId: null,
   results: [],
   currentTaskId: null,
@@ -55,7 +59,10 @@ function successCount(results: SuiteTaskResult[]): number {
 
 export type ProjectSuiteRunner = {
   state: SuiteState
-  runAll: (project: Project, options?: { taskIds?: string[] }) => Promise<void>
+  runAll: (
+    project: Project,
+    options?: { taskIds?: string[]; forceTraining?: boolean },
+  ) => Promise<void>
   stop: () => Promise<void>
   reset: () => void
   resultFor: (taskId: string) => SuiteTaskResult | undefined
@@ -93,12 +100,18 @@ export function SuiteRunnerProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const runAll = useCallback(
-    async (project: Project, options?: { taskIds?: string[] }) => {
+    async (
+      project: Project,
+      options?: { taskIds?: string[]; forceTraining?: boolean },
+    ) => {
       const tasks =
         options?.taskIds && options.taskIds.length > 0
           ? project.tasks.filter((t) => options.taskIds!.includes(t.id))
           : project.tasks
       if (tasks.length === 0) return
+
+      const forceTraining = options?.forceTraining ?? false
+      const mode: SuiteMode = forceTraining ? 'retrain' : 'run'
 
       abortRef.current?.abort()
       const controller = new AbortController()
@@ -111,6 +124,7 @@ export function SuiteRunnerProvider({ children }: { children: ReactNode }) {
 
       setState({
         phase: 'running',
+        mode,
         projectId: project.id,
         results: [...results],
         currentTaskId: null,
@@ -133,17 +147,19 @@ export function SuiteRunnerProvider({ children }: { children: ReactNode }) {
         results[i] = { taskId: task.id, status: 'running' }
         setState({
           phase: 'running',
+          mode,
           projectId: project.id,
           results: [...results],
           currentTaskId: task.id,
         })
 
         try {
-          const started = await startProjectTaskRun(project, task)
+          const started = await startProjectTaskRun(project, task, { forceTraining })
           currentRunIdRef.current = started.run_id
           results[i] = { ...results[i], runId: started.run_id }
           setState({
             phase: 'running',
+            mode,
             projectId: project.id,
             results: [...results],
             currentTaskId: task.id,
@@ -188,6 +204,7 @@ export function SuiteRunnerProvider({ children }: { children: ReactNode }) {
 
         setState({
           phase: 'running',
+          mode,
           projectId: project.id,
           results: [...results],
           currentTaskId: task.id,
@@ -199,6 +216,7 @@ export function SuiteRunnerProvider({ children }: { children: ReactNode }) {
 
       setState({
         phase: stoppedEarly ? 'cancelled' : 'complete',
+        mode,
         projectId: project.id,
         results: [...results],
         currentTaskId: null,

@@ -124,15 +124,21 @@ export default function SuiteProgressPanel({ project, suite, sticky = false }: P
   const skipped = total - successCount - failedCount
 
   const title = isRunning
-    ? 'Running suite'
+    ? state.mode === 'retrain'
+      ? 'Retraining suite'
+      : 'Running suite'
     : state.phase === 'cancelled'
-      ? 'Suite stopped'
-      : 'Suite complete'
+      ? state.mode === 'retrain'
+        ? 'Retrain stopped'
+        : 'Suite stopped'
+      : state.mode === 'retrain'
+        ? 'Retrain complete'
+        : 'Suite complete'
 
   const statusAnnouncement = isRunning
     ? currentName
-      ? `Running suite: ${currentName}. ${completed} of ${total} finished.`
-      : `Running suite. ${completed} of ${total} finished.`
+      ? `${state.mode === 'retrain' ? 'Retraining' : 'Running'} suite: ${currentName}. ${completed} of ${total} finished.`
+      : `${state.mode === 'retrain' ? 'Retraining' : 'Running'} suite. ${completed} of ${total} finished.`
     : `${title}. ${successCount} passed, ${failedCount} failed.`
 
   return (

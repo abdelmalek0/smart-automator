@@ -1,5 +1,6 @@
-import { Loader2, Pencil, Play, RefreshCw, Trash2 } from 'lucide-react'
+import { Loader2, MoreHorizontal, Pencil, Play, RefreshCw, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -11,7 +12,13 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { executionModeChipClass } from '@/lib/run-status'
 import type { ProjectTask } from '@/types'
 import { cn } from '@/lib/utils'
@@ -22,7 +29,6 @@ interface Props {
   disabled: boolean
   disabledHint?: string
   deleting?: boolean
-  /** When false, this test is excluded from Run All. */
   includedInSuite?: boolean
   onIncludedInSuiteChange?: (included: boolean) => void
   onRun: () => void
@@ -45,52 +51,40 @@ export default function TestRow({
   onDelete,
 }: Props) {
   const excluded = onIncludedInSuiteChange != null && !includedInSuite
+  const displayName = task.name || 'Untitled test'
 
   return (
     <div
       className={cn(
-        'flex flex-col gap-3 sm:flex-row sm:items-start rounded-xl border border-border/80 bg-card/50 px-3.5 py-3',
-        'transition-all duration-200 hover:border-primary/30 hover:bg-accent/15',
-        excluded && 'opacity-55 border-dashed',
+        'group grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 rounded-xl px-2 py-3.5 sm:px-3',
+        'transition-colors duration-150 hover:bg-accent/40 focus-within:bg-accent/40',
+        excluded && 'opacity-60',
       )}
+      role="listitem"
     >
-      <div className="flex items-start gap-3 min-w-0 flex-1">
+      <div className="flex min-w-0 items-start gap-3">
         {onIncludedInSuiteChange && (
-          <label
-            className="pt-1 shrink-0 flex items-center"
-            title={includedInSuite ? 'Included in Run All' : 'Excluded from Run All'}
+          <div
+            className="pt-0.5 shrink-0"
             onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
           >
-            <input
-              type="checkbox"
-              className={cn(
-                'h-4 w-4 rounded border-border bg-background text-primary',
-                'accent-primary cursor-pointer',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-                'disabled:cursor-not-allowed disabled:opacity-50',
-              )}
+            <Checkbox
               checked={includedInSuite}
               disabled={disabled}
-              onChange={(e) => onIncludedInSuiteChange(e.target.checked)}
+              onCheckedChange={(checked) => onIncludedInSuiteChange(checked === true)}
               aria-label={
                 includedInSuite
-                  ? `Include ${task.name || 'Untitled test'} in Run All`
-                  : `Exclude ${task.name || 'Untitled test'} from Run All`
+                  ? `Include ${displayName} in Run All`
+                  : `Exclude ${displayName} from Run All`
               }
             />
-          </label>
+          </div>
         )}
 
         <div className="min-w-0 flex-1 space-y-1">
           <div className="flex items-center gap-2 min-w-0 flex-wrap">
-            <p className="text-sm font-semibold leading-snug truncate">
-              {task.name || 'Untitled test'}
-            </p>
-            {excluded && (
-              <span className="inline-flex shrink-0 items-center rounded-full border border-border px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
-                Excluded
-              </span>
-            )}
+            <p className="text-sm font-semibold leading-snug truncate">{displayName}</p>
             {task.has_trained_replay && (
               <span
                 title="Successful training saved"
@@ -107,15 +101,29 @@ export default function TestRow({
           <p className="text-sm leading-snug line-clamp-2 text-muted-foreground">{task.task}</p>
 
           {task.success_criteria && (
-            <p className="text-xs text-muted-foreground/90 line-clamp-2">
-              <span className="text-muted-foreground/70">Criteria:</span> {task.success_criteria}
+            <p className="text-xs text-muted-foreground/80 line-clamp-1">
+              <span className="text-muted-foreground/60">Criteria:</span> {task.success_criteria}
             </p>
           )}
 
-          <div className="flex flex-wrap gap-x-3 gap-y-0.5 pt-0.5 text-[10px] text-muted-foreground">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 pt-0.5 text-[11px] text-muted-foreground">
             <span className="mono">{task.max_steps} steps</span>
-            {task.headless && <span>headless</span>}
-            {task.fresh_profile !== false && <span>fresh profile</span>}
+            {task.headless && (
+              <>
+                <span aria-hidden className="text-muted-foreground/40">
+                  ·
+                </span>
+                <span>headless</span>
+              </>
+            )}
+            {task.fresh_profile !== false && (
+              <>
+                <span aria-hidden className="text-muted-foreground/40">
+                  ·
+                </span>
+                <span>fresh profile</span>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -136,81 +144,65 @@ export default function TestRow({
           Run
         </Button>
 
-        {task.has_trained_replay && onRetrain && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={onRetrain}
-                disabled={disabled || running}
-                title={disabled && disabledHint ? disabledHint : undefined}
-                aria-label="Retrain test"
-              >
-                {running ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <RefreshCw className="h-3.5 w-3.5" />
-                )}
-                Retrain
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              Start a new training run. On pass, replaces the saved replay.
-            </TooltipContent>
-          </Tooltip>
-        )}
-
-        <Tooltip>
-          <TooltipTrigger asChild>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
             <Button
               variant="ghost"
               size="icon"
               className="h-8 w-8 text-muted-foreground"
-              onClick={onEdit}
-              disabled={disabled}
-              aria-label="Edit test"
+              disabled={disabled && deleting}
+              aria-label="Test actions"
             >
-              <Pencil className="h-3.5 w-3.5" />
+              <MoreHorizontal className="h-4 w-4" />
             </Button>
-          </TooltipTrigger>
-          <TooltipContent>Edit test</TooltipContent>
-        </Tooltip>
-
-        <AlertDialog>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <AlertDialogTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                  disabled={disabled || deleting}
-                  aria-label="Delete test"
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            {task.has_trained_replay && onRetrain && (
+              <>
+                <DropdownMenuItem
+                  onClick={onRetrain}
+                  disabled={disabled || running}
                 >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </Button>
+                  <RefreshCw className="h-4 w-4" />
+                  Retrain
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+              </>
+            )}
+            <DropdownMenuItem onClick={onEdit} disabled={disabled}>
+              <Pencil className="h-4 w-4" />
+              Edit
+            </DropdownMenuItem>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <DropdownMenuItem
+                  className="text-destructive focus:text-destructive"
+                  disabled={disabled || deleting}
+                  onSelect={(e) => e.preventDefault()}
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Delete
+                </DropdownMenuItem>
               </AlertDialogTrigger>
-            </TooltipTrigger>
-            <TooltipContent>Delete test</TooltipContent>
-          </Tooltip>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Delete &quot;{task.name || 'Untitled test'}&quot;?</AlertDialogTitle>
-              <AlertDialogDescription>
-                This removes the test from the project. Trained replay data on past runs is not
-                deleted.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction onClick={onDelete} disabled={deleting}>
-                {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                Delete
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete &quot;{displayName}&quot;?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This removes the test from the project. Trained replay data on past runs is not
+                    deleted.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction onClick={onDelete} disabled={deleting}>
+                    {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                    Delete
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </div>
   )

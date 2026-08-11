@@ -1,20 +1,21 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft,
   FileText,
   Link2,
   Loader2,
   MoreHorizontal,
-  Play,
   Plus,
   Settings2,
   Trash2,
 } from 'lucide-react'
+import { listRuns } from '@/api'
 import SuiteProgressPanel from '@/components/projects/SuiteProgressPanel'
+import ProjectRunsPanel from '@/components/projects/ProjectRunsPanel'
+import ProjectTestsPanel from '@/components/projects/ProjectTestsPanel'
 import ConnectOfflineNotice from '@/components/ConnectOfflineNotice'
-import TestRow from '@/components/projects/TestRow'
 import TestEditorDialog from '@/components/TestEditorDialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -43,7 +44,16 @@ import { useProjectSuiteRunner } from '@/hooks/useProjectSuiteRunner'
 import { useRunStartGate } from '@/hooks/useRunStartGate'
 import { useProjects } from '@/hooks/useProjects'
 import { startProjectTaskRun } from '@/lib/project-run'
-import { getProjectCardStats, projectInitials } from '@/lib/project-view'
+import {
+  countNeverRunTests,
+  latestRunsByProjectTaskId,
+} from '@/lib/project-task-status'
+import {
+  getProjectCardStats,
+  PROJECT_ACCENT_CLASSES,
+  projectAccentIndex,
+  projectInitials,
+} from '@/lib/project-view'
 import type { Project, ProjectTask } from '@/types'
 import { cn } from '@/lib/utils'
 
@@ -65,6 +75,10 @@ export default function ProjectDetailPage() {
   } = useProjects()
   const suite = useProjectSuiteRunner()
   const runStartGate = useRunStartGate()
+  const { data: runs = [] } = useQuery({
+    queryKey: ['runs'],
+    queryFn: listRuns,
+  })
 
   const project = projects.find((p) => p.id === projectId) ?? null
   const [runningId, setRunningId] = useState<string | null>(null)
@@ -97,6 +111,14 @@ export default function ProjectDetailPage() {
       ? (runStartGate.blockHint ?? undefined)
       : undefined
   const stats = project ? getProjectCardStats(project) : null
+  const latestByTask = useMemo(
+    () => (project ? latestRunsByProjectTaskId(runs, project.id) : new Map()),
+    [project, runs],
+  )
+  const neverRunCount = project ? countNeverRunTests(project.tasks, latestByTask) : 0
+  const projectAccent = project
+    ? PROJECT_ACCENT_CLASSES[projectAccentIndex(project.id || project.name)]
+    : PROJECT_ACCENT_CLASSES[0]
 
   // On opening a project: Runs if a suite is running, otherwise Configuration.
   useEffect(() => {
@@ -131,12 +153,35 @@ export default function ProjectDetailPage() {
   const includedCount = includedTaskIds.length
   const allIncluded = Boolean(project && includedCount === project.tasks.length)
   const noneIncluded = includedCount === 0
+  const includedTrainedCount = useMemo(() => {
+    if (!project) return 0
+    return project.tasks.filter(
+      (t) => !excludedTaskIds.has(t.id) && t.has_trained_replay,
+    ).length
+  }, [project, excludedTaskIds])
+  const allTrainedIncluded = Boolean(
+    stats && stats.trainedCount > 0 && includedTrainedCount === stats.trainedCount,
+  )
+  const noneTrainedIncluded = includedTrainedCount === 0
 
   function handleRunAll() {
     if (!project || noneIncluded) return
     setActiveTab('runs')
     void suite.runAll(project, {
       taskIds: allIncluded ? undefined : includedTaskIds,
+    })
+  }
+
+  function handleRetrainAll() {
+    if (!project || noneTrainedIncluded) return
+    const trainedTaskIds = project.tasks
+      .filter((t) => !excludedTaskIds.has(t.id) && t.has_trained_replay)
+      .map((t) => t.id)
+    if (trainedTaskIds.length === 0) return
+    setActiveTab('runs')
+    void suite.runAll(project, {
+      taskIds: trainedTaskIds,
+      forceTraining: true,
     })
   }
 
@@ -354,8 +399,8 @@ export default function ProjectDetailPage() {
             <div className="flex items-start gap-3 min-w-0">
               <div
                 className={cn(
-                  'flex h-10 w-10 shrink-0 items-center justify-center rounded-lg',
-                  'bg-primary/15 text-primary text-sm font-semibold',
+                  'flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-sm font-semibold',
+                  projectAccent,
                 )}
                 aria-hidden
               >
@@ -461,6 +506,9 @@ export default function ProjectDetailPage() {
                       {(stats?.trainedCount ?? 0) > 0
                         ? ` · ${stats?.trainedCount} trained`
                         : ''}
+                      {neverRunCount > 0 && (stats?.testCount ?? 0) > 0
+                        ? ` · ${neverRunCount} never run`
+                        : ''}
                     </span>
                   )}
                   {stats?.hasNotes && (
@@ -490,24 +538,13 @@ export default function ProjectDetailPage() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2 shrink-0">
-              {project.tasks.length > 0 && (
-                <Button
-                  size="sm"
-                  disabled={
-                    anySuiteRunning || runningId !== null || noneIncluded || runActionsBlocked
-                  }
-                  title={runGateHint}
-                  onClick={handleRunAll}
-                >
-                  {suiteBusy ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <Play className="h-3.5 w-3.5" />
-                  )}
-                  {allIncluded ? 'Run All' : `Run ${includedCount}`}
-                </Button>
-              )}
-              <Button size="sm" variant="outline" onClick={openAddTask} disabled={suiteBusy}>
+              <Button
+                size="sm"
+                variant="outline"
+                className="rounded-full"
+                onClick={openAddTask}
+                disabled={suiteBusy}
+              >
                 <Plus className="h-3.5 w-3.5" />
                 Add test
               </Button>
@@ -659,131 +696,68 @@ export default function ProjectDetailPage() {
                     </div>
                   </div>
                 ) : (
-                  <div className="space-y-3">
-                    {project.url ? (
-                      <p className="text-sm mono text-primary break-all">{project.url}</p>
-                    ) : (
-                      <p className="text-sm text-muted-foreground italic">No URL set</p>
-                    )}
-                    {project.context_prompt ? (
-                      <pre className="rounded-lg border border-border/60 bg-muted/30 p-3 text-xs text-muted-foreground whitespace-pre-wrap font-sans leading-relaxed">
-                        {project.context_prompt}
-                      </pre>
-                    ) : (
-                      <p className="text-sm text-muted-foreground italic">No site notes yet.</p>
-                    )}
+                  <div className="space-y-4">
+                    <div className="space-y-1.5">
+                      <p className="text-xs font-medium text-muted-foreground">URL</p>
+                      {project.url ? (
+                        <p className="text-sm mono text-primary break-all">{project.url}</p>
+                      ) : (
+                        <p className="text-sm text-muted-foreground italic">No URL set</p>
+                      )}
+                    </div>
+                    <div className="space-y-1.5">
+                      <p className="text-xs font-medium text-muted-foreground">Site notes</p>
+                      {project.context_prompt ? (
+                        <pre className="rounded-lg border border-border/60 bg-muted/30 p-3 text-xs text-muted-foreground whitespace-pre-wrap font-sans leading-relaxed">
+                          {project.context_prompt}
+                        </pre>
+                      ) : (
+                        <p className="text-sm text-muted-foreground italic">No site notes yet.</p>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
             </TabsContent>
 
-            <TabsContent value="tests" className="space-y-4 mt-4">
-              {project.tasks.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-border px-4 py-12 text-center space-y-3 animate-in fade-in-0 duration-300">
-                  <p className="text-sm text-muted-foreground max-w-md mx-auto">
-                    No tests yet. Add one here or save a run to this project from New Run.
-                  </p>
-                  <Button size="sm" onClick={openAddTask}>
-                    <Plus className="h-3.5 w-3.5" />
-                    Add test
-                  </Button>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2 px-0.5">
-                    <p className="text-xs text-muted-foreground">
-                      {includedCount} of {project.tasks.length} selected for Run All
-                      {!allIncluded && (
-                        <span className="text-muted-foreground/80">
-                          {' '}
-                          · uncheck tests to exclude them
-                        </span>
-                      )}
-                    </p>
-                    <div className="flex items-center gap-1">
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 px-2 text-xs"
-                        disabled={suiteBusy || allIncluded}
-                        onClick={selectAllTests}
-                      >
-                        Select all
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 px-2 text-xs"
-                        disabled={suiteBusy || noneIncluded}
-                        onClick={selectNoneTests}
-                      >
-                        Select none
-                      </Button>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2" role="list">
-                    {project.tasks.map((task, index) => (
-                      <div
-                        key={task.id}
-                        className="animate-in fade-in-0 slide-in-from-bottom-1 duration-300"
-                        style={{ animationDelay: `${Math.min(index, 10) * 30}ms` }}
-                        role="listitem"
-                      >
-                        <TestRow
-                          task={task}
-                          running={runningId === task.id}
-                          disabled={
-                            anySuiteRunning ||
-                            (runningId !== null && runningId !== task.id) ||
-                            runActionsBlocked
-                          }
-                          disabledHint={runGateHint}
-                          deleting={isRemovingTask}
-                          includedInSuite={!excludedTaskIds.has(task.id)}
-                          onIncludedInSuiteChange={(included) =>
-                            setTaskIncluded(task.id, included)
-                          }
-                          onRun={() => void handleRunTask(project, task)}
-                          onRetrain={() => void handleRetrainTask(project, task)}
-                          onEdit={() => openEditTask(task)}
-                          onDelete={() =>
-                            void removeTaskFromProject({ projectId: project.id, taskId: task.id })
-                          }
-                        />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+            <TabsContent value="tests" className="mt-4">
+              <ProjectTestsPanel
+                project={project}
+                suite={suite}
+                suiteBusy={suiteBusy}
+                excludedTaskIds={excludedTaskIds}
+                runningId={runningId}
+                anySuiteRunning={anySuiteRunning}
+                runActionsBlocked={runActionsBlocked}
+                runGateHint={runGateHint}
+                isRemovingTask={isRemovingTask}
+                allIncluded={allIncluded}
+                includedCount={includedCount}
+                noneIncluded={noneIncluded}
+                includedTrainedCount={includedTrainedCount}
+                allTrainedIncluded={allTrainedIncluded}
+                noneTrainedIncluded={noneTrainedIncluded}
+                trainedCount={stats?.trainedCount ?? 0}
+                onRunAll={handleRunAll}
+                onRetrainAll={handleRetrainAll}
+                onAddTest={openAddTask}
+                onSetTaskIncluded={setTaskIncluded}
+                onSelectAll={selectAllTests}
+                onSelectNone={selectNoneTests}
+                onRunTask={(proj, task) => void handleRunTask(proj, task)}
+                onRetrainTask={(proj, task) => void handleRetrainTask(proj, task)}
+                onEditTask={openEditTask}
+                onDeleteTask={(taskId) =>
+                  void removeTaskFromProject({ projectId: project.id, taskId })
+                }
+              />
             </TabsContent>
 
-            <TabsContent value="runs" className="mt-4 space-y-4">
+            <TabsContent value="runs" className="mt-4">
               {suiteActive ? (
                 <SuiteProgressPanel project={project} suite={suite} />
               ) : (
-                <div className="rounded-xl border border-dashed border-border px-4 py-14 text-center space-y-3 animate-in fade-in-0 duration-300">
-                  <p className="text-sm font-medium">No suite in progress</p>
-                  <p className="text-sm text-muted-foreground max-w-sm mx-auto">
-                    Run a suite to see live progress and results here. Select which tests to include
-                    on the Tests tab.
-                  </p>
-                  {project.tasks.length > 0 && (
-                    <Button
-                      size="sm"
-                      disabled={
-                        anySuiteRunning || runningId !== null || noneIncluded || runActionsBlocked
-                      }
-                      title={runGateHint}
-                      onClick={handleRunAll}
-                    >
-                      <Play className="h-3.5 w-3.5" />
-                      {allIncluded ? 'Run All' : `Run ${includedCount}`}
-                    </Button>
-                  )}
-                </div>
+                <ProjectRunsPanel project={project} runs={runs} />
               )}
             </TabsContent>
           </Tabs>
