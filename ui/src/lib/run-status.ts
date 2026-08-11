@@ -89,14 +89,39 @@ export function canRunUseAutomatic(run: {
   return run.status === 'pass'
 }
 
+const ACTIVE_RUN_STATUSES: RunStatus[] = ['pending', 'running', 'awaiting_human']
+
+export function isActiveRunStatus(status: RunStatus): boolean {
+  return ACTIVE_RUN_STATUSES.includes(status)
+}
+
+export function liveRunRowClass(status: RunStatus): string {
+  if (status === 'running') return 'bg-brand-blue/10 border-brand-blue'
+  if (status === 'pending' || status === 'awaiting_human') return 'bg-warning/10 border-warning'
+  return ''
+}
+
+export function liveRunStatusTextClass(status: RunStatus): string {
+  if (status === 'running') return 'text-brand-blue font-medium'
+  if (status === 'pending' || status === 'awaiting_human') return 'text-warning font-medium'
+  return ''
+}
+
+export function liveRunHoverClass(status: RunStatus): string {
+  if (status === 'running') return 'hover:bg-brand-blue/15'
+  if (status === 'pending' || status === 'awaiting_human') return 'hover:bg-warning/15'
+  return ''
+}
+
 export function statusBadgeVariant(
   status: RunStatus,
 ): 'running' | 'success' | 'destructive' | 'warning' | 'secondary' {
   switch (status) {
     case 'running':
+      return 'running'
     case 'pending':
     case 'awaiting_human':
-      return 'running'
+      return 'warning'
     case 'pass':
       return 'success'
     case 'fail':

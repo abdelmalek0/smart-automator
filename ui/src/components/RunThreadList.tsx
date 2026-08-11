@@ -12,6 +12,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { deleteRun } from '@/api'
+import { RunStatusIcon } from '@/components/RunStatusIcon'
 import { Button } from '@/components/ui/button'
 import {
   AlertDialog,
@@ -55,10 +56,14 @@ import {
 import {
   elapsedSeconds,
   formatElapsed,
+  isActiveRunStatus,
+  liveRunHoverClass,
+  liveRunRowClass,
+  liveRunStatusTextClass,
   statusLabel,
 } from '@/lib/run-status'
 import { cn } from '@/lib/utils'
-import type { Project, RunStatus, RunSummary } from '@/types'
+import type { Project, RunSummary } from '@/types'
 
 interface Props {
   runs: RunSummary[]
@@ -74,23 +79,6 @@ interface Props {
   onRequestExpandRoots?: () => void
   /** Incremented when the Recent section is expanded to open all projects/tests. */
   expandAllToken?: number
-}
-
-function StatusDot({ status }: { status: RunStatus }) {
-  const map: Record<RunStatus, string> = {
-    pending: 'bg-warning animate-pulse',
-    running: 'bg-brand-blue animate-pulse-slow',
-    awaiting_human: 'bg-warning animate-pulse',
-    pass: 'bg-success',
-    fail: 'bg-destructive',
-    error: 'bg-destructive',
-    cancelled: 'bg-muted-foreground',
-  }
-  return (
-    <span
-      className={cn('inline-block w-2 h-2 rounded-full flex-shrink-0', map[status] ?? 'bg-muted')}
-    />
-  )
 }
 
 function MetaSep() {
@@ -110,7 +98,8 @@ interface RunRowProps {
 
 function RunRow({ run, active, label, roomy = false, projects, onDelete, sourceMeta }: RunRowProps) {
   const { openNewRun } = useRunModal()
-  const finished = Boolean(run.finished_at) || !['pending', 'running', 'awaiting_human'].includes(run.status)
+  const isLive = isActiveRunStatus(run.status)
+  const finished = Boolean(run.finished_at) || !isLive
   const primary = finished ? getPrimaryRunAction(run, projects) : null
   const duration = formatElapsed(elapsedSeconds(run.started_at, run.finished_at))
 
@@ -118,7 +107,11 @@ function RunRow({ run, active, label, roomy = false, projects, onDelete, sourceM
     <div
       className={cn(
         'group relative rounded-md transition-colors border-l-2',
-        active ? 'bg-accent/40 border-primary' : 'border-transparent hover:bg-accent/30',
+        isLive && liveRunRowClass(run.status),
+        active && isLive && 'bg-accent/30 ring-1 ring-inset ring-primary/25',
+        active && !isLive && 'bg-accent/40 border-primary',
+        !active && !isLive && 'border-transparent hover:bg-accent/30',
+        !active && isLive && liveRunHoverClass(run.status),
       )}
     >
       <Link
@@ -137,9 +130,16 @@ function RunRow({ run, active, label, roomy = false, projects, onDelete, sourceM
         {sourceMeta ? (
           <p className="mb-1 truncate text-[10px] text-muted-foreground/80">{sourceMeta}</p>
         ) : null}
-        <div className="flex items-center gap-1.5 min-w-0 text-[11px] text-muted-foreground">
-          <StatusDot status={run.status} />
-          <span className="truncate">{statusLabel(run.status)}</span>
+        <div
+          className={cn(
+            'flex items-center gap-1.5 min-w-0 text-[11px]',
+            isLive ? 'text-foreground/90' : 'text-muted-foreground',
+          )}
+        >
+          <RunStatusIcon status={run.status} />
+          <span className={cn('truncate', liveRunStatusTextClass(run.status))}>
+            {statusLabel(run.status)}
+          </span>
           <MetaSep />
           <span className="mono truncate">{duration}</span>
         </div>
@@ -220,9 +220,12 @@ function CollapsePanel({ expanded, children }: { expanded: boolean; children: Re
 
 const CHILD_RAIL = 'ml-3 border-l border-border/50 pl-1.5'
 
-function LivePulse() {
+function LiveDot() {
   return (
-    <span className="inline-block w-1.5 h-1.5 rounded-full bg-brand-blue animate-pulse-slow flex-shrink-0" />
+    <span
+      className="inline-block w-2 h-2 shrink-0 rounded-full bg-brand-blue"
+      aria-hidden
+    />
   )
 }
 
@@ -279,7 +282,7 @@ function ThreadHeader({
         >
           {title}
         </span>
-        {!expanded && hasLiveRun ? <LivePulse /> : null}
+        {!expanded && hasLiveRun ? <LiveDot /> : null}
       </div>
     </button>
   )
@@ -737,5 +740,3 @@ export default function RunThreadList({
     </>
   )
 }
-
-export { StatusDot }

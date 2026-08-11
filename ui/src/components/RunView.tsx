@@ -214,8 +214,13 @@ export default function RunView({ runId, onRunComplete }: Props) {
         </div>
         <div className="flex items-center gap-2 flex-shrink-0 pt-0.5">
           {run && (
-            <Badge variant={statusBadgeVariant(run.status as RunStatus)}>
-              {isRunning && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
+            <Badge
+              variant={statusBadgeVariant(run.status as RunStatus)}
+              className={cn(run.status === 'running' && 'gap-1.5')}
+            >
+              {run.status === 'running' && (
+                <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+              )}
               {statusLabel(run.status as RunStatus)}
             </Badge>
           )}

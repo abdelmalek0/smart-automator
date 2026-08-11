@@ -13,7 +13,7 @@ const badgeVariants = cva(
         outline: 'text-foreground',
         success: 'border-transparent bg-success/15 text-success border-success/30',
         warning: 'border-transparent bg-warning/15 text-warning border-warning/30',
-        running: 'border-transparent bg-brand-blue/15 text-brand-blue border-brand-blue/30',
+        running: 'border-transparent bg-brand-blue/25 text-brand-blue border-brand-blue/40 ring-1 ring-brand-blue/30',
       },
     },
     defaultVariants: {

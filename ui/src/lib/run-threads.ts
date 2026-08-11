@@ -1,4 +1,7 @@
-import type { RunStatus, RunSummary } from '@/types'
+import { isActiveRunStatus } from '@/lib/run-status'
+import type { RunSummary } from '@/types'
+
+export { isActiveRunStatus }
 
 export interface TrainingNode {
   training: RunSummary
@@ -32,8 +35,6 @@ export interface RunThread {
 export const UNCATEGORIZED_THREAD_ID = 'uncategorized'
 export const INITIAL_TEST_RUNS_VISIBLE = 3
 export const TEST_RUNS_PAGE_SIZE = 10
-
-const ACTIVE_STATUSES: RunStatus[] = ['pending', 'running', 'awaiting_human']
 
 function sortRunsNewestFirst(runs: RunSummary[]): RunSummary[] {
   return [...runs].sort((a, b) => b.started_at - a.started_at)
@@ -202,10 +203,6 @@ export function buildRunThreads(runs: RunSummary[]): RunThread[] {
 
   threads.sort((a, b) => latestThreadActivity(b) - latestThreadActivity(a))
   return threads
-}
-
-export function isActiveRunStatus(status: RunStatus): boolean {
-  return ACTIVE_STATUSES.includes(status)
 }
 
 export function threadShouldExpand(thread: RunThread, activeRunId: string | null): boolean {

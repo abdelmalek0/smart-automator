@@ -1,10 +1,13 @@
 import { useQuery } from '@tanstack/react-query'
 import { getConfig, getWorkerStatus, listRuns } from '@/api'
+import { isActiveRunStatus } from '@/lib/run-status'
+import type { RunSummary } from '@/types'
 
-const ACTIVE_RUN_STATUSES = new Set(['pending', 'running', 'awaiting_human'])
 const BUSY_BROWSER_STATES = new Set(['starting', 'ready', 'stopping'])
 
 export type RunStartBlockReason = 'offline' | 'busy'
+
+export type AgentPhase = 'offline' | 'connected' | 'starting' | 'running' | 'awaiting_human'
 
 export type RunStartGate = {
   canStartRun: boolean
@@ -13,10 +16,37 @@ export type RunStartGate = {
   connectOnline: boolean
   hasActiveRun: boolean
   browserBusy: boolean
+  activeRun: RunSummary | null
+  agentPhase: AgentPhase
+  localBrowserMode: boolean
 }
 
-function isActiveRunStatus(status: string): boolean {
-  return ACTIVE_RUN_STATUSES.has(status)
+function resolveActiveRun(
+  runs: RunSummary[],
+  leasedRun: RunSummary | null,
+  leasedRunActive: boolean,
+): RunSummary | null {
+  if (leasedRunActive && leasedRun) return leasedRun
+  return runs.find((run) => isActiveRunStatus(run.status)) ?? null
+}
+
+function resolveAgentPhase(
+  localBrowserMode: boolean,
+  connectOnline: boolean,
+  activeRun: RunSummary | null,
+): AgentPhase {
+  if (!localBrowserMode && !connectOnline) return 'offline'
+  if (!activeRun) return 'connected'
+  switch (activeRun.status) {
+    case 'pending':
+      return 'starting'
+    case 'running':
+      return 'running'
+    case 'awaiting_human':
+      return 'awaiting_human'
+    default:
+      return 'connected'
+  }
 }
 
 export function useRunStartGate(): RunStartGate {
@@ -40,7 +70,7 @@ export function useRunStartGate(): RunStartGate {
   const hasActiveRun = runs.some((run) => isActiveRunStatus(run.status))
 
   const leasedRunId = workerStatus?.active_run_id ?? null
-  const leasedRun = leasedRunId ? runs.find((run) => run.run_id === leasedRunId) : null
+  const leasedRun = leasedRunId ? runs.find((run) => run.run_id === leasedRunId) ?? null : null
   const leasedRunActive = Boolean(leasedRun && isActiveRunStatus(leasedRun.status))
 
   const browserStateBusy = Boolean(
@@ -63,6 +93,9 @@ export function useRunStartGate(): RunStartGate {
     blockHint = 'Finish or cancel the current run before starting another.'
   }
 
+  const activeRun = resolveActiveRun(runs, leasedRun, leasedRunActive)
+  const agentPhase = resolveAgentPhase(localBrowserMode, connectOnline, activeRun)
+
   return {
     canStartRun: blockReason === null,
     blockReason,
@@ -70,5 +103,8 @@ export function useRunStartGate(): RunStartGate {
     connectOnline,
     hasActiveRun,
     browserBusy,
+    activeRun,
+    agentPhase,
+    localBrowserMode,
   }
 }

@@ -8,8 +8,10 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { useRunModal } from '@/contexts/RunModalContext'
 import { useAuth } from '@/contexts/AuthContext'
 import RunModeFilterControl from '@/components/RunModeFilterControl'
+import AgentStatusStrip from '@/components/AgentStatusStrip'
 import RunThreadList from '@/components/RunThreadList'
 import SidebarNav from '@/components/SidebarNav'
+import { useRunStartGate } from '@/hooks/useRunStartGate'
 import { useProjects } from '@/hooks/useProjects'
 import { cn } from '@/lib/utils'
 import type { RunModeFilter } from '@/lib/run-threads'
@@ -24,6 +26,7 @@ export default function Sidebar({ runs, activeRunId }: Props) {
   const [expandAllToken, setExpandAllToken] = useState(0)
   const [modeFilter, setModeFilter] = useState<RunModeFilter>('all')
   const { openNewRun } = useRunModal()
+  const runStartGate = useRunStartGate()
   const { user, logout } = useAuth()
   const { projects } = useProjects()
   const projectNames = useMemo(
@@ -33,23 +36,35 @@ export default function Sidebar({ runs, activeRunId }: Props) {
 
   return (
     <aside className="w-[300px] flex-shrink-0 bg-card/80 backdrop-blur-sm border-r border-border/60 flex flex-col h-full">
-      <div className="px-3 py-3 bg-secondary/30">
+      <div className="bg-secondary/30 border-b border-border/40">
         <Link
           to="/"
           title="Smart Automator — Browser Agent"
-          className="flex items-center gap-2 mb-3 hover:opacity-90 transition-opacity"
+          className="flex items-center gap-2.5 px-3 pt-4 pb-3 min-w-0 hover:opacity-90 transition-opacity"
         >
           <img
             src={logoUrl}
             alt="Smart Automator"
-            className="w-7 h-7 rounded-md object-cover flex-shrink-0 ring-1 ring-border/60"
+            className="w-8 h-8 rounded-md object-cover flex-shrink-0 ring-1 ring-border/60"
           />
           <span className="font-semibold text-sm tracking-tight truncate">Smart Automator</span>
         </Link>
-        <Button onClick={() => openNewRun()} className="w-full h-9" size="sm">
-          <Plus className="h-4 w-4" />
-          New Run
-        </Button>
+
+        <div className="border-t border-border/40 px-3 pt-3 pb-3 space-y-2">
+          <AgentStatusStrip embedded />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="w-full h-8 text-muted-foreground"
+            title={runStartGate.blockHint ?? 'New run'}
+            disabled={!runStartGate.canStartRun}
+            onClick={() => openNewRun()}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            New run
+          </Button>
+        </div>
       </div>
 
       <button
