@@ -14,7 +14,11 @@ from smart_automator.reporting.builder import (
     group_timeline_by_step,
 )
 from smart_automator.reporting.html_report import render_html_report
-from smart_automator.reporting.replay_script import build_replay_steps, format_replay_script
+from smart_automator.reporting.replay_script import (
+    build_replay_steps,
+    count_skipped_actions,
+    format_replay_script,
+)
 from smart_automator.reporting import generate_run_report
 from smart_automator.server.run_state import RunState
 
@@ -372,6 +376,104 @@ class TestReportBuilder(unittest.TestCase):
         steps = build_replay_steps(timeline)
         self.assertEqual(len(steps), 1)
         self.assertEqual(steps[0]["action"], "go_to_url")
+
+    def test_replay_steps_exclude_verification_failed_mini_steps(self):
+        timeline = [
+            {
+                "action": "click_element",
+                "args": {"index": 1},
+                "verification_status": "verified",
+                "element": None,
+            },
+            {
+                "action": "input_text",
+                "args": {"index": 2, "text": "wrong"},
+                "verification_status": "failed",
+                "element": None,
+            },
+            {
+                "action": "click_element",
+                "args": {"index": 3},
+                "error": "Element not found",
+                "element": None,
+            },
+        ]
+        steps = build_replay_steps(timeline)
+        self.assertEqual(len(steps), 1)
+        self.assertEqual(steps[0]["action"], "click_element")
+        self.assertEqual(steps[0]["args"]["index"], 1)
+
+    def test_replay_steps_keep_no_effect_mini_steps(self):
+        timeline = [
+            {
+                "action": "go_to_url",
+                "args": {"url": "https://example.com"},
+                "verification_status": "verified",
+                "element": None,
+            },
+            {
+                "action": "click_element",
+                "args": {"index": 2},
+                "verification_status": "no_effect",
+                "element": None,
+            },
+        ]
+        steps = build_replay_steps(timeline)
+        self.assertEqual(len(steps), 2)
+        self.assertEqual(steps[0]["action"], "go_to_url")
+        self.assertEqual(steps[1]["action"], "click_element")
+
+    def test_replay_steps_exclude_whole_failed_step(self):
+        timeline = [
+            {
+                "step": 1,
+                "action": "input_text",
+                "args": {"index": 1, "text": "bad"},
+                "verification_status": "failed",
+                "element": None,
+            },
+            {
+                "step": 2,
+                "action": "go_to_url",
+                "args": {"url": "https://example.com"},
+                "verification_status": "verified",
+                "element": None,
+            },
+        ]
+        steps = build_replay_steps(timeline)
+        self.assertEqual(len(steps), 1)
+        self.assertEqual(steps[0]["action"], "go_to_url")
+
+    def test_count_skipped_actions_includes_verification_failures(self):
+        timeline = [
+            {
+                "action": "go_to_url",
+                "args": {"url": "https://example.com"},
+                "verification_status": "verified",
+            },
+            {
+                "action": "input_text",
+                "args": {"text": "x"},
+                "verification_status": "failed",
+            },
+            {
+                "action": "click_element",
+                "args": {"index": 1},
+                "verification_status": "no_effect",
+            },
+            {
+                "action": "click_element",
+                "args": {"index": 2},
+                "error": "Element not found",
+            },
+            {
+                "action": "done",
+                "args": {},
+            },
+        ]
+        skipped_failed, skipped_done = count_skipped_actions(timeline)
+        self.assertEqual(skipped_failed, 2)
+        self.assertEqual(skipped_done, 1)
 
     def test_replay_steps_prefer_xpath_over_index(self):
         timeline = [

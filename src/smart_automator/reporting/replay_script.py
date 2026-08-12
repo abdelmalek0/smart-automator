@@ -32,6 +32,7 @@ DOM_ACTIONS = frozenset({
 })
 
 NON_REPLAYABLE = frozenset({"done", "cache_content"})
+_NON_REPLAYABLE_VERIFICATION = frozenset({"failed"})
 
 
 class ReplayLocatorError(LookupError):
@@ -97,11 +98,17 @@ def _build_replay_args(
     return build_replay_action_args(action, args, element)
 
 
+def _has_replay_failure(entry: dict[str, Any]) -> bool:
+    if entry.get("error"):
+        return True
+    return entry.get("verification_status") in _NON_REPLAYABLE_VERIFICATION
+
+
 def _is_replayable(entry: dict[str, Any]) -> bool:
     action = entry.get("action", "")
     if action in NON_REPLAYABLE:
         return False
-    return not entry.get("error")
+    return not _has_replay_failure(entry)
 
 
 def build_replay_steps(timeline: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -572,6 +579,6 @@ def count_skipped_actions(timeline: list[dict[str, Any]]) -> tuple[int, int]:
         action = entry.get("action", "")
         if action == "done":
             skipped_done += 1
-        elif entry.get("error"):
+        elif _has_replay_failure(entry):
             skipped_failed += 1
     return skipped_failed, skipped_done
