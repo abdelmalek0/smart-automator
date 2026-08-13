@@ -12,12 +12,16 @@ dependencies = [
     "loguru>=0.7.3",
     "playwright>=1.48.0",
     "pydantic>=2.10.6",
-    "pytest>=8.0.0",
     "python-dotenv>=1.0.1",
     "python-multipart>=0.0.20",
     "rich>=14.3.4",
     "sqlalchemy>=2.0.0",
     "uvicorn[standard]>=0.34.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
 ]
 
 [project.scripts]
