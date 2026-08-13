@@ -24,6 +24,15 @@ class TestReplayExecutor(unittest.TestCase):
     def _unique_locator() -> MagicMock:
         locator = MagicMock()
         locator.count.return_value = 1
+        locator.evaluate.return_value = {
+            "aria": "",
+            "placeholder": "",
+            "name": "",
+            "title": "",
+            "id": "",
+            "testid": "",
+            "text": "",
+        }
         return locator
 
     @staticmethod
@@ -281,6 +290,7 @@ class TestReplayExecutor(unittest.TestCase):
         page_wrapper = MagicMock()
         page = MagicMock()
         locator = self._unique_locator()
+        locator.evaluate.return_value["id"] = "submit-btn"
         page.locator.return_value = locator
         page_wrapper.playwright_page = page
         browser_context.get_current_page.return_value = page_wrapper
@@ -304,6 +314,7 @@ class TestReplayExecutor(unittest.TestCase):
         browser_context = MagicMock()
         page = MagicMock()
         locator = self._unique_locator()
+        locator.evaluate.return_value["id"] = "submit-btn"
         page.locator.return_value = locator
         browser_context.get_current_page.return_value.playwright_page = page
 
@@ -357,6 +368,14 @@ class TestReplayExecutor(unittest.TestCase):
         browser_context = MagicMock()
         page = MagicMock()
         locator = self._unique_locator()
+        locator.evaluate.return_value["id"] = "btn"
+
+        def evaluate(script, *args):
+            if script == "el => el.click()":
+                raise RuntimeError("js click failed")
+            return locator.evaluate.return_value
+
+        locator.evaluate.side_effect = evaluate
         locator.click.side_effect = [RuntimeError("not ready"), None]
         page.locator.return_value = locator
         browser_context.get_current_page.return_value.playwright_page = page
@@ -378,6 +397,108 @@ class TestReplayExecutor(unittest.TestCase):
         mock_sleep.assert_called_once_with(15.0)
         self.assertEqual(locator.click.call_count, 2)
         self.assertIsNone(results[0].error)
+
+    def test_click_falls_back_to_js_click_on_intercept(self):
+        browser_context = MagicMock()
+        page = MagicMock()
+        locator = self._unique_locator()
+        locator.evaluate.return_value["id"] = "submit-btn"
+        locator.click.side_effect = TimeoutError(
+            "Locator.click: Timeout 5000ms exceeded. Default Menu intercepts pointer events"
+        )
+        page.locator.return_value = locator
+        browser_context.get_current_page.return_value.playwright_page = page
+
+        steps = [
+            {
+                "action": "click_element",
+                "args": {},
+                "element": {"attributes": {"id": "submit-btn"}},
+            }
+        ]
+
+        results = execute_replay_steps(browser_context, steps)
+
+        self.assertEqual(len(results), 1)
+        self.assertIsNone(results[0].error)
+        self.assertIn(
+            "el => el.click()",
+            [call.args[0] for call in locator.evaluate.call_args_list],
+        )
+
+    def test_click_does_not_js_fallback_when_detached(self):
+        browser_context = MagicMock()
+        page = MagicMock()
+        locator = self._unique_locator()
+        locator.evaluate.return_value["id"] = "submit-btn"
+        locator.click.side_effect = RuntimeError("Element is not attached to the DOM")
+        page.locator.return_value = locator
+        browser_context.get_current_page.return_value.playwright_page = page
+
+        steps = [
+            {
+                "action": "click_element",
+                "args": {},
+                "element": {"attributes": {"id": "submit-btn"}},
+            }
+        ]
+
+        results = execute_replay_steps(browser_context, steps)
+
+        self.assertEqual(len(results), 1)
+        self.assertIsNotNone(results[0].error)
+        self.assertIn("not attached", (results[0].error or "").lower())
+        self.assertNotIn(
+            "el => el.click()",
+            [call.args[0] for call in locator.evaluate.call_args_list],
+        )
+
+    def test_click_does_not_js_fallback_when_identity_changes(self):
+        browser_context = MagicMock()
+        page = MagicMock()
+        locator = self._unique_locator()
+        matching = {
+            "aria": "",
+            "placeholder": "",
+            "name": "",
+            "title": "",
+            "id": "submit-btn",
+            "testid": "",
+            "text": "",
+        }
+        mismatched = dict(matching, id="other-btn")
+        identity_checks = {"count": 0}
+
+        def evaluate(script, *args):
+            if "getAttribute" in script:
+                identity_checks["count"] += 1
+                if identity_checks["count"] == 1:
+                    return matching
+                return mismatched
+            return None
+
+        locator.evaluate.side_effect = evaluate
+        locator.click.side_effect = TimeoutError("intercepts pointer events")
+        page.locator.return_value = locator
+        browser_context.get_current_page.return_value.playwright_page = page
+
+        steps = [
+            {
+                "action": "click_element",
+                "args": {},
+                "element": {"attributes": {"id": "submit-btn"}},
+            }
+        ]
+
+        results = execute_replay_steps(browser_context, steps)
+
+        self.assertEqual(len(results), 1)
+        self.assertIsNotNone(results[0].error)
+        self.assertIn("intercepts pointer events", results[0].error or "")
+        self.assertNotIn(
+            "el => el.click()",
+            [call.args[0] for call in locator.evaluate.call_args_list],
+        )
 
     def test_locatoreless_scroll_to_percent_uses_window(self):
         browser_context = MagicMock()
@@ -422,6 +543,93 @@ class TestReplayExecutor(unittest.TestCase):
         page.evaluate.assert_not_called()
         self.assertEqual(len(results), 1)
         self.assertIsNone(results[0].error)
+
+    def test_identity_gate_rejects_substring_accessible_name(self):
+        locator = MagicMock()
+        locator.evaluate.return_value = {
+            "aria": "",
+            "placeholder": "",
+            "name": "",
+            "title": "",
+            "text": "OK, continue",
+        }
+        step = {
+            "element": {"accessibleName": "OK"},
+        }
+
+        with self.assertRaises(ReplayLocatorError) as ctx:
+            assert_locator_matches_identity(locator, step)
+
+        self.assertIn("OK", str(ctx.exception))
+
+    def test_resolve_locator_uses_implicit_button_role(self):
+        page = MagicMock()
+        page.get_by_role.return_value = self._unique_locator()
+        step = {
+            "action": "click_element",
+            "args": {},
+            "element": {
+                "tagName": "button",
+                "accessibleName": "Continue",
+                "attributes": {},
+            },
+        }
+
+        resolved = resolve_replay_locator(page, step, poll_timeout_seconds=0)
+
+        page.get_by_role.assert_called_once_with("button", name="Continue", exact=True)
+        self.assertIs(resolved, page.get_by_role.return_value)
+
+    def test_resolve_locator_skips_react_use_id(self):
+        page = MagicMock()
+        page.locator.return_value = self._unique_locator()
+        step = {
+            "action": "click_element",
+            "args": {"xpath": "/html/body/button[1]"},
+            "element": {"attributes": {"id": ":r1:"}},
+        }
+
+        resolve_replay_locator(page, step, poll_timeout_seconds=0)
+
+        page.locator.assert_called()
+        self.assertNotEqual(page.locator.call_args[0][0], "#:r1:")
+
+    def test_resolve_locator_prefers_visible_match(self):
+        page = MagicMock()
+        ambiguous = MagicMock()
+        ambiguous.count.return_value = 2
+        visible = self._unique_locator()
+        ambiguous.filter.return_value = visible
+        page.get_by_label.return_value = ambiguous
+        step = {
+            "action": "click_element",
+            "args": {},
+            "element": {"attributes": {"aria-label": "Menu"}},
+        }
+
+        resolved = resolve_replay_locator(page, step, poll_timeout_seconds=0)
+
+        ambiguous.filter.assert_called_with(visible=True)
+        self.assertIs(resolved, visible)
+
+    def test_resolve_locator_uses_frame_path(self):
+        page = MagicMock()
+        frame = MagicMock()
+        page.frame_locator.return_value = frame
+        frame.get_by_label.return_value = self._unique_locator()
+        step = {
+            "action": "click_element",
+            "args": {},
+            "element": {
+                "attributes": {"aria-label": "Email"},
+                "framePath": ["iframe#app"],
+            },
+        }
+
+        resolve_replay_locator(page, step, poll_timeout_seconds=0)
+
+        page.frame_locator.assert_called_once_with("iframe#app")
+        frame.get_by_label.assert_called_once_with("Email", exact=True)
 
 
 if __name__ == "__main__":

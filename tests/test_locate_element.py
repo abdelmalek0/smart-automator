@@ -106,6 +106,22 @@ class TestRemapFallback(unittest.TestCase):
         self.assertIs(resolved, current)
         self.assertEqual(resolved.xpath, "/body/button[1]")
 
+    def test_does_not_fall_back_to_neighbor_at_same_index(self):
+        stale = _button(0, "Close", "/body/button[9]")
+        neighbor = _button(0, "Submit", "/body/button[1]")
+        selector_map = {0: neighbor}
+        tree = DOMElementNode(tag_name="body", xpath="/body", children=[neighbor])
+        action = Action(name="click_element", args={"index": 0})
+
+        resolved = _resolve_element_for_action(
+            action,
+            selector_map,
+            element_tree=tree,
+            original_element=stale,
+        )
+
+        self.assertIsNone(resolved)
+
     def test_returns_none_when_original_and_map_miss(self):
         stale = _button(0, "Close", "/body/button[9]")
         selector_map: dict[int, DOMElementNode] = {}

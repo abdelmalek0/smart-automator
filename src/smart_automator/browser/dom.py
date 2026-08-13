@@ -8,6 +8,7 @@ from typing import Any
 from playwright.sync_api import Frame, Page as PlaywrightPage
 
 from .util import cap_text_length
+from .locators import is_unstable_id
 
 # Vendored from nanobrowser chrome-extension/public/buildDomTree.js
 BUILD_DOM_TREE_SCRIPT_PATH = Path(__file__).parent / "assets" / "buildDomTree.js"
@@ -50,7 +51,7 @@ _SAFE_CSS_ATTRIBUTES = frozenset({
     "target",
 })
 
-_DYNAMIC_CSS_ATTRIBUTES = frozenset({"data-id", "data-qa", "data-cy", "data-testid"})
+_DYNAMIC_CSS_ATTRIBUTES = frozenset({"data-qa", "data-cy", "data-testid", "data-test"})
 
 
 @dataclass
@@ -203,13 +204,6 @@ class DOMElementNode:
 
             css_selector = self.convert_simple_xpath_to_css_selector()
 
-            class_value = self.attributes.get("class")
-            if class_value and include_dynamic_attributes:
-                valid_class_name = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]*$")
-                for class_name in class_value.strip().split():
-                    if class_name.strip() and valid_class_name.match(class_name):
-                        css_selector += f".{class_name}"
-
             safe_attributes = set(_SAFE_CSS_ATTRIBUTES)
             if include_dynamic_attributes:
                 safe_attributes |= _DYNAMIC_CSS_ATTRIBUTES
@@ -218,6 +212,8 @@ class DOMElementNode:
                 if attribute == "class" or not attribute.strip():
                     continue
                 if attribute not in safe_attributes:
+                    continue
+                if attribute == "id" and value and is_unstable_id(str(value)):
                     continue
 
                 safe_attribute = attribute.replace(":", "\\:")
@@ -232,8 +228,7 @@ class DOMElementNode:
 
             return css_selector
         except Exception:
-            tag_name = self.tag_name or "*"
-            return f"{tag_name}[highlightIndex='{self.highlight_index}']"
+            return self.convert_simple_xpath_to_css_selector() or (self.tag_name or "*")
 
 
 @dataclass

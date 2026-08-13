@@ -18,6 +18,7 @@ from .dom import (
     remove_highlights,
 )
 from .history import is_file_uploader
+from .locators import click_with_fallback, identity_values_equal
 from .util import is_url_allowed
 from .views import ScrollRegion, URLNotAllowedError
 
@@ -1067,16 +1068,22 @@ class Page:
         if not handle:
             raise ValueError(self._format_element_not_found_error(element))
         self._scroll_into_view_if_needed(handle, raise_on_failure=True)
+
+        def _verify_click_identity() -> None:
+            expected = (
+                self._element_identity_text(element)
+                if isinstance(element, DOMElementNode)
+                else ""
+            )
+            if expected and not self._handle_matches_element(handle, element):
+                raise LookupError("click target identity mismatch")
+
         try:
-            handle.click(timeout=2000)
+            click_with_fallback(handle, verify=_verify_click_identity)
             self._maybe_wait_after_interaction()
             self._check_and_handle_navigation()
         except URLNotAllowedError:
             raise
-        except Exception:
-            self._evaluate_on_handle(handle, "el => el.click()", swallow_destroyed=True)
-            self._maybe_wait_after_interaction()
-            self._check_and_handle_navigation()
         self._cached_state = None
 
     def input_text(self, element: DOMElementNode, text: str):
@@ -1315,21 +1322,21 @@ class Page:
     def _handle_matches_element(self, handle: ElementHandle, element: DOMElementNode) -> bool:
         expected = self._element_identity_text(element)
         if not expected:
-            return True
+            return False
         try:
             actual = handle.evaluate(
                 """el => {
                     const label = (el.getAttribute('aria-label') || el.getAttribute('title') || '').trim();
-                    const text = (el.innerText || el.textContent || '').trim();
+                    const text = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
                     const value = ('value' in el && el.value) ? String(el.value).trim() : '';
                     return (label || text || value || '').toLowerCase();
                 }"""
             )
         except Exception:
-            return True
+            return False
         if not actual:
-            return True
-        return actual == expected or expected in actual or actual in expected
+            return False
+        return identity_values_equal(expected, str(actual))
 
     def _query_in_shadow_root(
         self,
@@ -1340,24 +1347,45 @@ class Page:
         if xpath:
             try:
                 full_xpath = xpath if xpath.startswith("/") else f"/{xpath}"
-                js_handle = host.evaluate_handle(
+                match_count = host.evaluate(
                     """(hostEl, xpathExpr) => {
                         const root = hostEl.shadowRoot;
-                        if (!root) return null;
+                        if (!root) return 0;
                         const result = document.evaluate(
                             xpathExpr,
                             root,
                             null,
-                            XPathResult.FIRST_ORDERED_NODE_TYPE,
+                            XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
                             null,
                         );
-                        return result.singleNodeValue;
+                        return result.snapshotLength;
                     }""",
                     full_xpath,
                 )
-                handle = js_handle.as_element()
-                if handle and self._handle_matches_element(handle, element):
-                    return handle
+                handles: list[ElementHandle] = []
+                for index in range(int(match_count or 0)):
+                    js_handle = host.evaluate_handle(
+                        """(hostEl, xpathExpr, idx) => {
+                            const root = hostEl.shadowRoot;
+                            if (!root) return null;
+                            const result = document.evaluate(
+                                xpathExpr,
+                                root,
+                                null,
+                                XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+                                null,
+                            );
+                            return result.snapshotItem(idx);
+                        }""",
+                        full_xpath,
+                        index,
+                    )
+                    handle = js_handle.as_element()
+                    if handle:
+                        handles.append(handle)
+                matched = self._select_unique_handle(handles, element)
+                if matched is not None:
+                    return matched
             except Exception:
                 pass
 
@@ -1371,6 +1399,7 @@ class Page:
                     }""",
                     css_selector,
                 )
+                css_handles: list[ElementHandle] = []
                 for index in range(int(match_count or 0)):
                     handle = host.evaluate_handle(
                         """(hostEl, selector, idx) => {
@@ -1382,11 +1411,31 @@ class Page:
                         css_selector,
                         index,
                     ).as_element()
-                    if handle and self._handle_matches_element(handle, element):
-                        return handle
+                    if handle:
+                        css_handles.append(handle)
+                matched = self._select_unique_handle(css_handles, element)
+                if matched is not None:
+                    return matched
             except Exception:
                 pass
 
+        return None
+
+    def _select_unique_handle(
+        self,
+        handles: list[ElementHandle],
+        element: DOMElementNode,
+    ) -> ElementHandle | None:
+        if not handles:
+            return None
+        expected = self._element_identity_text(element)
+        if len(handles) == 1:
+            if not expected or self._handle_matches_element(handles[0], element):
+                return handles[0]
+            return None
+        matches = [handle for handle in handles if self._handle_matches_element(handle, element)]
+        if len(matches) == 1:
+            return matches[0]
         return None
 
     def _query_unique_handle(
@@ -1403,11 +1452,12 @@ class Page:
         if xpath:
             try:
                 full_xpath = xpath if xpath.startswith("/") else f"/{xpath}"
-                handle = frame.query_selector(f"xpath={full_xpath}")
-                if handle and self._handle_matches_element(handle, element):
-                    return handle
+                matches = frame.query_selector_all(f"xpath={full_xpath}")
             except Exception:
-                pass
+                matches = []
+            matched = self._select_unique_handle(list(matches or []), element)
+            if matched is not None:
+                return matched
 
         css_selector = element.enhanced_css_selector_for_element(self._include_dynamic_attributes)
         if css_selector:
@@ -1415,11 +1465,6 @@ class Page:
                 matches = frame.query_selector_all(css_selector)
             except Exception:
                 matches = []
-            if len(matches) == 1 and self._handle_matches_element(matches[0], element):
-                return matches[0]
-            if len(matches) > 1:
-                for handle in matches:
-                    if self._handle_matches_element(handle, element):
-                        return handle
+            return self._select_unique_handle(list(matches or []), element)
 
         return None

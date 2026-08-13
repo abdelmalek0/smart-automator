@@ -334,7 +334,7 @@ class TestReportBuilder(unittest.TestCase):
             self.assertIn("/html/body/button[1]", content)
             self.assertIn("click_element", content)
             self.assertIn("Playwright replay", content)
-            self.assertIn(".click()", content)
+            self.assertIn(".click(", content)
             self.assertIn("sync_playwright", content)
 
     def test_replay_steps_include_executed_actions_without_success_flag(self):
@@ -536,9 +536,13 @@ class TestReportBuilder(unittest.TestCase):
         self.assertIn('"""Playwright replay — run abc-123- (pass)."""', script)
         self.assertIn("from playwright.sync_api import sync_playwright", script)
         self.assertIn("# Excluded: 1 errored, 1 done", script)
+        self.assertIn("resolve_unique", script)
+        self.assertIn("click_resolved", script)
         self.assertIn("page.goto('https://example.com/login')", script)
-        self.assertIn("page.get_by_label('Email', exact=True).fill('user@example.com')", script)
-        self.assertIn("page.locator('#submit').click()", script)
+        self.assertIn("get_by_label('Email', exact=True)", script)
+        self.assertIn("fill('user@example.com')", script)
+        self.assertIn("locator('#submit')", script)
+        self.assertIn("click_resolved(locator)", script)
         self.assertIn('if __name__ == "__main__":', script)
 
     def test_format_replay_script_escapes_strings(self):
@@ -567,7 +571,7 @@ class TestReportBuilder(unittest.TestCase):
         self.assertIn("Automatic Execution", html)
         self.assertIn("Playwright replay", html)
         self.assertIn("sync_playwright", html)
-        self.assertIn(".click()", html)
+        self.assertIn(".click(", html)
 
 
 if __name__ == "__main__":

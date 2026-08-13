@@ -234,21 +234,25 @@ class TestPageSettle(unittest.TestCase):
         destroyed = RuntimeError(
             "Page.evaluate: Execution context was destroyed, most likely because of a navigation"
         )
-        handle.evaluate.side_effect = destroyed
+
+        def evaluate(script, *args):
+            if script == "el => el.click()":
+                raise destroyed
+            return None
+
+        handle.evaluate.side_effect = evaluate
 
         with (
             patch.object(page, "_locate_element_with_retry", return_value=handle),
             patch.object(page, "_scroll_into_view_if_needed"),
-            patch.object(page, "_evaluate_on_handle", return_value=None) as mock_evaluate,
             patch.object(page, "_maybe_wait_after_interaction") as mock_wait,
             patch.object(page, "_check_and_handle_navigation") as mock_nav,
         ):
             page.click_element(element)
 
-        mock_evaluate.assert_called_once_with(
-            handle,
+        self.assertIn(
             "el => el.click()",
-            swallow_destroyed=True,
+            [call.args[0] for call in handle.evaluate.call_args_list],
         )
         mock_wait.assert_called_once()
         mock_nav.assert_called_once()

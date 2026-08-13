@@ -31,8 +31,8 @@ from ..browser.dom import DOMElementNode
 from ..browser.history import (
     DOMHistoryElement,
     convert_dom_element_to_history_element,
-    find_history_element_in_tree,
     is_file_uploader,
+    resolve_history_element_in_tree,
 )
 from ..browser.views import BrowserState, ScrollRegion, URLNotAllowedError
 from .schemas import Action
@@ -65,10 +65,9 @@ def _resolve_element_for_action(
     if original_element is not None:
         if isinstance(element_tree, DOMElementNode):
             history = convert_dom_element_to_history_element(original_element)
-            remapped = find_history_element_in_tree(history, element_tree)
+            remapped = resolve_history_element_in_tree(history, element_tree)
             if remapped is not None:
                 return remapped
-        # Fall back to xpath match in the current selector map.
         for candidate in selector_map.values():
             if (
                 isinstance(candidate, DOMElementNode)
@@ -76,9 +75,6 @@ def _resolve_element_for_action(
                 and candidate.xpath == original_element.xpath
             ):
                 return candidate
-        fallback = selector_map.get(action.index)
-        if isinstance(fallback, DOMElementNode):
-            return fallback
         return None
     candidate = selector_map.get(action.index)
     return candidate if isinstance(candidate, DOMElementNode) else None

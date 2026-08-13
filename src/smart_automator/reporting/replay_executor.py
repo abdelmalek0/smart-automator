@@ -7,6 +7,7 @@ from playwright.sync_api import Locator, Page as PlaywrightPage
 
 from ..agent.context import ActionResult
 from ..browser.context import BrowserContext
+from ..browser.locators import click_with_fallback
 from .replay_script import (
     _playwright_keyboard_key,
     _split_replay_locator_candidates,
@@ -51,7 +52,7 @@ def _resolve_locator(
     page: PlaywrightPage,
     step: dict[str, Any],
     *,
-    poll_timeout_seconds: float = 2.0,
+    poll_timeout_seconds: float = 15.0,
 ) -> Locator:
     return resolve_replay_locator(
         page,
@@ -147,7 +148,10 @@ def _execute_replay_step(page: PlaywrightPage, browser_context: BrowserContext, 
 
         if action == "click_element":
             assert locator is not None
-            locator.click()
+            click_with_fallback(
+                locator,
+                verify=lambda: assert_locator_matches_identity(locator, step),
+            )
             return ActionResult(
                 extracted_content=f"Clicked {step.get('element_label') or 'element'}",
                 include_in_memory=True,

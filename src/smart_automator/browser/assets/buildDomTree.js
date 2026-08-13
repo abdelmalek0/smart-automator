@@ -559,6 +559,10 @@ window.buildDomTree = (
     const tagName = element.tagName.toLowerCase();
     const style = getCachedComputedStyle(element);
 
+    if (element.hasAttribute('hidden') || element.getAttribute('aria-hidden') === 'true') {
+      return false;
+    }
+
     // Define interactive cursors
     const interactiveCursors = new Set([
       'pointer', // Link/clickable elements
@@ -645,7 +649,7 @@ window.buildDomTree = (
     // Define explicit disable attributes and properties
     const explicitDisableTags = new Set([
       'disabled', // Standard disabled attribute
-      // 'aria-disabled',      // ARIA disabled state
+      'hidden',
       'readonly', // Read-only state
       // 'aria-readonly',     // ARIA read-only state
       // 'aria-hidden',       // Hidden from accessibility

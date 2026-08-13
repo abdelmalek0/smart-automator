@@ -23,7 +23,7 @@ _HUMAN_CAPTURE_SCRIPT = """
   const ATTRS = [
     'title', 'type', 'checked', 'name', 'role', 'value', 'placeholder',
     'data-date-format', 'data-state', 'alt', 'aria-checked', 'aria-label',
-    'aria-expanded', 'href', 'id',
+    'aria-expanded', 'href', 'id', 'data-testid', 'data-cy', 'data-test', 'data-qa',
   ];
 
   function isInteractiveElement(element) {
@@ -54,17 +54,33 @@ _HUMAN_CAPTURE_SCRIPT = """
     const segments = [];
     let current = element;
     while (current && current.nodeType === Node.ELEMENT_NODE) {
+      const tag = current.tagName.toLowerCase();
       let index = 1;
       let sibling = current.previousElementSibling;
       while (sibling) {
         if (sibling.tagName === current.tagName) index += 1;
         sibling = sibling.previousElementSibling;
       }
-      const tag = current.tagName.toLowerCase();
-      segments.unshift(index > 1 ? `${tag}[${index}]` : tag);
+      let hasSameTagSibling = index > 1;
+      sibling = current.nextElementSibling;
+      while (!hasSameTagSibling && sibling) {
+        if (sibling.tagName === current.tagName) hasSameTagSibling = true;
+        sibling = sibling.nextElementSibling;
+      }
+      segments.unshift(hasSameTagSibling ? `${tag}[${index}]` : tag);
       current = current.parentElement;
     }
     return segments.join('/');
+  }
+
+  function framePath(element) {
+    const frames = [];
+    let win = element.ownerDocument && element.ownerDocument.defaultView;
+    while (win && win.frameElement) {
+      frames.unshift(getXPath(win.frameElement));
+      win = win.parent;
+    }
+    return frames;
   }
 
   function collectAttributes(element) {
@@ -77,7 +93,7 @@ _HUMAN_CAPTURE_SCRIPT = """
   }
 
   function visibleText(element) {
-    const text = (element.innerText || element.textContent || '').replace(/\s+/g, ' ').trim();
+    const text = (element.innerText || element.textContent || '').replace(/\\s+/g, ' ').trim();
     return text ? text.slice(0, 120) : '';
   }
 
@@ -86,6 +102,7 @@ _HUMAN_CAPTURE_SCRIPT = """
     return {
       tagName: element.tagName.toLowerCase(),
       xpath: getXPath(element),
+      framePath: framePath(element),
       attributes: collectAttributes(element),
       value: element.value ?? '',
       inputType: element.type ?? '',
@@ -463,6 +480,7 @@ class HumanActionRecorder:
             highlight_index=None,
             attributes=dict(payload.get("attributes") or {}),
             accessible_name=accessible_name,
+            frame_path=list(payload.get("framePath") or payload.get("frame_path") or []),
         )
         css_selector = enhanced_css_selector_for_history_element(element)
         if css_selector:

@@ -70,22 +70,41 @@ class TestFindElementByXpath(unittest.TestCase):
 class TestResolveHistoryElement(unittest.TestCase):
     def test_id_fallback_when_hash_match_fails(self):
         historical = DOMHistoryElement(
-            tag_name="flt-semantics",
+            tag_name="button",
             xpath="html/body/other",
             highlight_index=1,
-            attributes={"id": "flt-semantic-node-38", "aria-label": "Abdul Bassit"},
+            attributes={"id": "submit-btn"},
         )
         target = DOMElementNode(
-            tag_name="flt-semantics",
+            tag_name="button",
             xpath="html/body/changed",
             highlight_index=3,
-            attributes={"id": "flt-semantic-node-38", "style": "transform: matrix(1,0,0,1,0,8)"},
+            attributes={"id": "submit-btn"},
         )
         root = DOMElementNode(tag_name="body", xpath="html/body", children=[target])
         target.parent = root
 
         found = resolve_history_element_in_tree(historical, root)
         self.assertIs(found, target)
+
+    def test_flutter_id_is_not_used_for_remap(self):
+        historical = DOMHistoryElement(
+            tag_name="flt-semantics",
+            xpath="html/body/other",
+            highlight_index=1,
+            attributes={"id": "flt-semantic-node-38"},
+        )
+        target = DOMElementNode(
+            tag_name="flt-semantics",
+            xpath="html/body/changed",
+            highlight_index=3,
+            attributes={"id": "flt-semantic-node-38"},
+        )
+        root = DOMElementNode(tag_name="body", xpath="html/body", children=[target])
+        target.parent = root
+
+        found = resolve_history_element_in_tree(historical, root)
+        self.assertIsNone(found)
 
     def test_aria_label_fallback_before_xpath(self):
         historical = DOMHistoryElement(
@@ -198,7 +217,7 @@ class TestNavigatorReplayRemapping(unittest.TestCase):
             tag_name="flt-semantics",
             xpath="html/body/new",
             highlight_index=4,
-            attributes={"id": "flt-semantic-node-38"},
+            attributes={"id": "flt-semantic-node-38", "aria-label": "Abdul Bassit"},
         )
         root = DOMElementNode(tag_name="body", xpath="html/body", children=[element])
         element.parent = root
@@ -311,8 +330,8 @@ class TestNavigatorReplayRemapping(unittest.TestCase):
             tag_name="input",
             xpath="html/body/input[1]",
             highlight_index=0,
-            attributes={"aria-label": "Email"},
-            css_selector="input[aria-label='Email']",
+            attributes={},
+            css_selector="html > body > input:nth-of-type(1)",
         )
         raw_action = {"input_text": {"index": 0, "text": "user"}}
         element = DOMElementNode(tag_name="input", xpath="html/body/input[1]", highlight_index=None)
