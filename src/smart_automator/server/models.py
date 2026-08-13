@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from smart_automator.config import normalize_browser_overrides
 
@@ -72,6 +72,64 @@ class WebsiteTaskCreateRequest(BaseModel):
         )
         self.cdp_url = cdp or None
         self.fresh_profile = fresh
+        return self
+
+
+PROJECT_TESTS_PACK_KIND = "smart-automator.project-tests"
+PROJECT_TESTS_PACK_VERSION = 1
+PROJECT_PACK_KIND = "smart-automator.project"
+PROJECT_PACK_VERSION = 1
+
+
+class ProjectTestExportItem(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    task: str
+    success_criteria: str
+    name: Optional[str] = None
+
+
+class ProjectTestsPack(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    version: int
+    kind: str
+    tests: list[ProjectTestExportItem]
+
+    @model_validator(mode="after")
+    def _validate_pack(self):
+        if self.kind != PROJECT_TESTS_PACK_KIND:
+            raise ValueError("Invalid pack kind")
+        if self.version != PROJECT_TESTS_PACK_VERSION:
+            raise ValueError("Unsupported pack version")
+        if not self.tests:
+            raise ValueError("At least one test is required")
+        return self
+
+
+class ProjectExportData(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    name: str
+    description: str = ""
+    url: str = ""
+    context_prompt: str = ""
+
+
+class ProjectPack(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    version: int
+    kind: str
+    project: ProjectExportData
+    tests: list[ProjectTestExportItem] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_pack(self):
+        if self.kind != PROJECT_PACK_KIND:
+            raise ValueError("Invalid pack kind")
+        if self.version != PROJECT_PACK_VERSION:
+            raise ValueError("Unsupported pack version")
         return self
 
 

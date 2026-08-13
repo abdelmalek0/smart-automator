@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { FolderKanban, Loader2, Plus, Search } from 'lucide-react'
+import { FolderKanban, Loader2, Plus, Search, Upload } from 'lucide-react'
 import CreateProjectDialog from '@/components/projects/CreateProjectDialog'
 import ProjectListRow from '@/components/projects/ProjectListRow'
 import { Button } from '@/components/ui/button'
@@ -12,6 +12,7 @@ import {
   filterAndSortProjects,
   type ProjectFilter,
 } from '@/lib/project-view'
+import { parseProjectPack } from '@/lib/project-pack'
 import { cn } from '@/lib/utils'
 
 const FILTERS: { id: ProjectFilter; label: string }[] = [
@@ -29,14 +30,45 @@ export default function ProjectsPage() {
     createProject,
     updateProject,
     deleteProject,
+    importProject,
     isCreating,
     isDeleting,
+    isImportingProject,
   } = useProjects()
   const suite = useProjectSuiteRunner()
 
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<ProjectFilter>('all')
   const [createOpen, setCreateOpen] = useState(false)
+  const [importError, setImportError] = useState<string | null>(null)
+  const importFileRef = useRef<HTMLInputElement>(null)
+
+  async function handleImportFile(file: File) {
+    setImportError(null)
+    try {
+      const text = await file.text()
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(text)
+      } catch {
+        throw new Error('Invalid project file')
+      }
+      const pack = parseProjectPack(parsed)
+      const project = await importProject(pack)
+      navigate(`/projects/${project.id}`)
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : 'Could not import project')
+    } finally {
+      if (importFileRef.current) {
+        importFileRef.current.value = ''
+      }
+    }
+  }
+
+  function openImport() {
+    setImportError(null)
+    importFileRef.current?.click()
+  }
 
   const visible = useMemo(
     () => filterAndSortProjects(projects, query, 'name-asc', filter),
@@ -45,6 +77,19 @@ export default function ProjectsPage() {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
+      <input
+        ref={importFileRef}
+        type="file"
+        accept="application/json,.json"
+        className="sr-only"
+        aria-label="Import project JSON"
+        onChange={(event) => {
+          const file = event.target.files?.[0]
+          if (file) {
+            void handleImportFile(file)
+          }
+        }}
+      />
       <ScrollArea className="flex-1">
         <div className="mx-auto w-full max-w-3xl px-4 sm:px-8 pt-10 pb-16">
           {/* Header: title + search + new */}
@@ -65,6 +110,20 @@ export default function ProjectsPage() {
                 />
               </div>
               <Button
+                variant="outline"
+                size="sm"
+                className="h-9 rounded-full px-4 shrink-0"
+                disabled={isImportingProject}
+                onClick={openImport}
+              >
+                {isImportingProject ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Upload className="h-4 w-4" />
+                )}
+                Import
+              </Button>
+              <Button
                 onClick={() => setCreateOpen(true)}
                 size="sm"
                 className="h-9 rounded-full px-4 shrink-0"
@@ -74,6 +133,15 @@ export default function ProjectsPage() {
               </Button>
             </div>
           </div>
+
+          {importError && (
+            <div
+              role="alert"
+              className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive mb-4"
+            >
+              {importError}
+            </div>
+          )}
 
           {/* Filter pills */}
           {!isLoading && projects.length > 0 && (
@@ -136,6 +204,19 @@ export default function ProjectsPage() {
               <Button onClick={() => setCreateOpen(true)} className="rounded-full">
                 <Plus className="h-4 w-4" />
                 New project
+              </Button>
+              <Button
+                variant="outline"
+                onClick={openImport}
+                disabled={isImportingProject}
+                className="rounded-full"
+              >
+                {isImportingProject ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Upload className="h-4 w-4" />
+                )}
+                Import
               </Button>
             </div>
           )}

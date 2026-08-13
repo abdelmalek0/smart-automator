@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -7,9 +7,11 @@ import {
   Link2,
   Loader2,
   MoreHorizontal,
+  PenLine,
   Plus,
   Settings2,
   Trash2,
+  Upload,
 } from 'lucide-react'
 import { listRuns } from '@/api'
 import SuiteProgressPanel from '@/components/projects/SuiteProgressPanel'
@@ -27,6 +29,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import {
@@ -44,6 +47,7 @@ import { useProjectSuiteRunner } from '@/hooks/useProjectSuiteRunner'
 import { useRunStartGate } from '@/hooks/useRunStartGate'
 import { useProjects } from '@/hooks/useProjects'
 import { startProjectTaskRun } from '@/lib/project-run'
+import { parseProjectTestsPack } from '@/lib/project-tests-pack'
 import {
   countNeverRunTests,
   latestRunsByProjectTaskId,
@@ -69,9 +73,11 @@ export default function ProjectDetailPage() {
     addTaskToProject,
     updateProjectTask,
     removeTaskFromProject,
+    importProjectTests,
     isUpdating,
     isDeleting,
     isRemovingTask,
+    isImportingTests,
   } = useProjects()
   const suite = useProjectSuiteRunner()
   const runStartGate = useRunStartGate()
@@ -98,6 +104,8 @@ export default function ProjectDetailPage() {
   const [savingConfig, setSavingConfig] = useState(false)
   const [configError, setConfigError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState('configuration')
+  const [importPackError, setImportPackError] = useState<string | null>(null)
+  const importFileRef = useRef<HTMLInputElement>(null)
 
   const suiteBusy = Boolean(project && suite.isRunning && suite.state.projectId === project.id)
   const suiteActive = Boolean(
@@ -159,9 +167,6 @@ export default function ProjectDetailPage() {
       (t) => !excludedTaskIds.has(t.id) && t.has_trained_replay,
     ).length
   }, [project, excludedTaskIds])
-  const allTrainedIncluded = Boolean(
-    stats && stats.trainedCount > 0 && includedTrainedCount === stats.trainedCount,
-  )
   const noneTrainedIncluded = includedTrainedCount === 0
 
   function handleRunAll() {
@@ -201,6 +206,34 @@ export default function ProjectDetailPage() {
   function selectNoneTests() {
     if (!project) return
     setExcludedTaskIds(new Set(project.tasks.map((t) => t.id)))
+  }
+
+  async function handleImportTestsFile(file: File) {
+    if (!project) return
+    setImportPackError(null)
+    setActiveTab('tests')
+    try {
+      const text = await file.text()
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(text)
+      } catch {
+        throw new Error('Invalid tests file')
+      }
+      const pack = parseProjectTestsPack(parsed)
+      await importProjectTests({ projectId: project.id, pack })
+    } catch (err) {
+      setImportPackError(err instanceof Error ? err.message : 'Could not import tests')
+    } finally {
+      if (importFileRef.current) {
+        importFileRef.current.value = ''
+      }
+    }
+  }
+
+  function openImportTests() {
+    setImportPackError(null)
+    importFileRef.current?.click()
   }
 
   async function handleRunTask(proj: Project, task: ProjectTask) {
@@ -379,6 +412,19 @@ export default function ProjectDetailPage() {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
+      <input
+        ref={importFileRef}
+        type="file"
+        accept="application/json,.json"
+        className="sr-only"
+        aria-label="Import tests JSON"
+        onChange={(event) => {
+          const file = event.target.files?.[0]
+          if (file) {
+            void handleImportTestsFile(file)
+          }
+        }}
+      />
       <div className="flex-shrink-0 border-b border-border/60 px-4 sm:px-6 pt-5 pb-4">
         <div className="mx-auto w-full max-w-3xl space-y-4">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -514,7 +560,7 @@ export default function ProjectDetailPage() {
                   {stats?.hasNotes && (
                     <span className="inline-flex items-center gap-1">
                       <FileText className="h-3 w-3" aria-hidden />
-                      Notes
+                      Project context
                     </span>
                   )}
                   {suiteActive && activeTab !== 'runs' && (
@@ -561,14 +607,30 @@ export default function ProjectDetailPage() {
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
-                    <DropdownMenuItem onClick={startRename}>Rename</DropdownMenuItem>
+                    <DropdownMenuItem onClick={startRename}>
+                      <PenLine className="h-4 w-4" />
+                      Rename
+                    </DropdownMenuItem>
                     <DropdownMenuItem onClick={startEditDescription}>
+                      <FileText className="h-4 w-4" />
                       Edit description
                     </DropdownMenuItem>
                     <DropdownMenuItem onClick={startEditConfig}>
                       <Settings2 className="h-4 w-4" />
                       Edit configuration
                     </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={openImportTests}
+                      disabled={isImportingTests || suiteBusy}
+                    >
+                      {isImportingTests ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Upload className="h-4 w-4" />
+                      )}
+                      Import tests
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
                     <AlertDialogTrigger asChild>
                       <DropdownMenuItem
                         className="text-destructive focus:text-destructive"
@@ -584,7 +646,7 @@ export default function ProjectDetailPage() {
                   <AlertDialogHeader>
                     <AlertDialogTitle>Delete &quot;{project.name}&quot;?</AlertDialogTitle>
                     <AlertDialogDescription>
-                      This removes the project, its context prompt, and all saved tests.
+                      This removes the project, its project context, and all saved tests.
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>
@@ -643,7 +705,7 @@ export default function ProjectDetailPage() {
                   <div>
                     <p className="text-sm font-semibold">Project configuration</p>
                     <p className="text-xs text-muted-foreground mt-0.5">
-                      Shared URL and site notes injected into every test in this project.
+                      Shared URL and project context injected into every test in this project.
                     </p>
                   </div>
                   {!editingConfig && (
@@ -667,7 +729,7 @@ export default function ProjectDetailPage() {
                       />
                     </div>
                     <div className="space-y-1.5">
-                      <Label htmlFor={`notes-${project.id}`}>Site notes</Label>
+                      <Label htmlFor={`notes-${project.id}`}>Project context</Label>
                       <Textarea
                         id={`notes-${project.id}`}
                         value={contextDraft}
@@ -706,13 +768,13 @@ export default function ProjectDetailPage() {
                       )}
                     </div>
                     <div className="space-y-1.5">
-                      <p className="text-xs font-medium text-muted-foreground">Site notes</p>
+                      <p className="text-xs font-medium text-muted-foreground">Project context</p>
                       {project.context_prompt ? (
                         <pre className="rounded-lg border border-border/60 bg-muted/30 p-3 text-xs text-muted-foreground whitespace-pre-wrap font-sans leading-relaxed">
                           {project.context_prompt}
                         </pre>
                       ) : (
-                        <p className="text-sm text-muted-foreground italic">No site notes yet.</p>
+                        <p className="text-sm text-muted-foreground italic">No project context yet.</p>
                       )}
                     </div>
                   </div>
@@ -731,16 +793,17 @@ export default function ProjectDetailPage() {
                 runActionsBlocked={runActionsBlocked}
                 runGateHint={runGateHint}
                 isRemovingTask={isRemovingTask}
+                isImportingTests={isImportingTests}
+                importError={importPackError}
                 allIncluded={allIncluded}
                 includedCount={includedCount}
                 noneIncluded={noneIncluded}
                 includedTrainedCount={includedTrainedCount}
-                allTrainedIncluded={allTrainedIncluded}
                 noneTrainedIncluded={noneTrainedIncluded}
-                trainedCount={stats?.trainedCount ?? 0}
                 onRunAll={handleRunAll}
                 onRetrainAll={handleRetrainAll}
                 onAddTest={openAddTask}
+                onImportClick={openImportTests}
                 onSetTaskIncluded={setTaskIncluded}
                 onSelectAll={selectAllTests}
                 onSelectNone={selectNoneTests}

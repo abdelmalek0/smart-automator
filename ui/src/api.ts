@@ -1,3 +1,5 @@
+import type { ProjectPack } from './lib/project-pack'
+import type { ProjectTestsPack } from './lib/project-tests-pack'
 import type {
   ChromeProfile,
   Config,
@@ -299,4 +301,21 @@ export async function updateProjectTask(
 
 export async function deleteProjectTask(projectId: string, taskId: string): Promise<void> {
   await request(`/websites/${projectId}/tasks/${taskId}`, { method: 'DELETE' })
+}
+
+export async function importProject(pack: ProjectPack): Promise<Project> {
+  return request('/websites/import', {
+    method: 'POST',
+    body: JSON.stringify(pack),
+  })
+}
+
+export async function importProjectTests(
+  projectId: string,
+  pack: ProjectTestsPack,
+): Promise<Project> {
+  return request(`/websites/${projectId}/tasks/import`, {
+    method: 'POST',
+    body: JSON.stringify(pack),
+  })
 }

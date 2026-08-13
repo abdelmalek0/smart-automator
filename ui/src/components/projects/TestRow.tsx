@@ -1,4 +1,4 @@
-import { Loader2, MoreHorizontal, Pencil, Play, RefreshCw, Trash2 } from 'lucide-react'
+import { Download, Loader2, MoreHorizontal, Pencil, Play, RefreshCw, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -33,6 +33,7 @@ interface Props {
   onIncludedInSuiteChange?: (included: boolean) => void
   onRun: () => void
   onRetrain?: () => void
+  onExport?: () => void
   onEdit: () => void
   onDelete: () => void
 }
@@ -47,6 +48,7 @@ export default function TestRow({
   onIncludedInSuiteChange,
   onRun,
   onRetrain,
+  onExport,
   onEdit,
   onDelete,
 }: Props) {
@@ -58,7 +60,6 @@ export default function TestRow({
       className={cn(
         'group grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 rounded-xl px-2 py-3.5 sm:px-3',
         'transition-colors duration-150 hover:bg-accent/40 focus-within:bg-accent/40',
-        excluded && 'opacity-60',
       )}
       role="listitem"
     >
@@ -82,7 +83,12 @@ export default function TestRow({
           </div>
         )}
 
-        <div className="min-w-0 flex-1 space-y-1">
+        <div
+          className={cn(
+            'min-w-0 flex-1 space-y-1',
+            excluded && 'text-muted-foreground/70',
+          )}
+        >
           <div className="flex items-center gap-2 min-w-0 flex-wrap">
             <p className="text-sm font-semibold leading-snug truncate">{displayName}</p>
             {task.has_trained_replay && (
@@ -150,7 +156,7 @@ export default function TestRow({
               variant="ghost"
               size="icon"
               className="h-8 w-8 text-muted-foreground"
-              disabled={disabled && deleting}
+              disabled={deleting}
               aria-label="Test actions"
             >
               <MoreHorizontal className="h-4 w-4" />
@@ -173,6 +179,12 @@ export default function TestRow({
               <Pencil className="h-4 w-4" />
               Edit
             </DropdownMenuItem>
+            {onExport && (
+              <DropdownMenuItem onClick={onExport} disabled={deleting}>
+                <Download className="h-4 w-4" />
+                Export
+              </DropdownMenuItem>
+            )}
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <DropdownMenuItem

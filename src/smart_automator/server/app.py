@@ -43,6 +43,8 @@ from .models import (
     ConfigUpdate,
     LoginRequest,
     PricingEntryModel,
+    ProjectTestsPack,
+    ProjectPack,
     ReplayUpdateRequest,
     StartRunRequest,
     WebsiteCreateRequest,
@@ -508,6 +510,36 @@ async def create_website(req: WebsiteCreateRequest, user: User = Depends(get_cur
     return website_to_api_dict(website)
 
 
+@app.post("/api/websites/import", status_code=201)
+async def import_website(req: ProjectPack, user: User = Depends(get_current_user)):
+    if not req.project.name.strip():
+        raise HTTPException(status_code=400, detail="Name is required")
+    store = _websites(user)
+    website = store.create_website(
+        req.project.name,
+        req.project.url,
+        req.project.context_prompt,
+        description=req.project.description,
+    )
+    for item in req.tests:
+        if not item.task.strip():
+            raise HTTPException(status_code=400, detail="Task is required")
+        if not item.success_criteria.strip():
+            raise HTTPException(status_code=400, detail="Success criteria is required")
+        created = store.add_task(
+            website.id,
+            task=item.task,
+            success_criteria=item.success_criteria,
+            name=item.name,
+        )
+        if not created:
+            raise HTTPException(status_code=500, detail="Failed to import test")
+    imported = store.get_website(website.id)
+    if not imported:
+        raise HTTPException(status_code=500, detail="Failed to import project")
+    return website_to_api_dict(imported)
+
+
 @app.get("/api/websites/{website_id}")
 async def api_get_website(website_id: str, user: User = Depends(get_current_user)):
     website = _websites(user).get_website(website_id)
@@ -539,6 +571,34 @@ async def delete_website(website_id: str, user: User = Depends(get_current_user)
     if not _websites(user).delete_website(website_id):
         raise HTTPException(status_code=404, detail="Website not found")
     return {"ok": True}
+
+
+@app.post("/api/websites/{website_id}/tasks/import")
+async def import_website_tasks(
+    website_id: str,
+    req: ProjectTestsPack,
+    user: User = Depends(get_current_user),
+):
+    store = _websites(user)
+    if not store.get_website(website_id):
+        raise HTTPException(status_code=404, detail="Website not found")
+    for item in req.tests:
+        if not item.task.strip():
+            raise HTTPException(status_code=400, detail="Task is required")
+        if not item.success_criteria.strip():
+            raise HTTPException(status_code=400, detail="Success criteria is required")
+        created = store.add_task(
+            website_id,
+            task=item.task,
+            success_criteria=item.success_criteria,
+            name=item.name,
+        )
+        if not created:
+            raise HTTPException(status_code=404, detail="Website not found")
+    website = store.get_website(website_id)
+    if not website:
+        raise HTTPException(status_code=404, detail="Website not found")
+    return website_to_api_dict(website)
 
 
 @app.post("/api/websites/{website_id}/tasks", status_code=201)

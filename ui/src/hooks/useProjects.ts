@@ -4,10 +4,14 @@ import {
   createProjectTask,
   deleteProject,
   deleteProjectTask,
+  importProject,
+  importProjectTests,
   listProjects,
   updateProject,
   updateProjectTask,
 } from '@/api'
+import type { ProjectPack } from '@/lib/project-pack'
+import type { ProjectTestsPack } from '@/lib/project-tests-pack'
 import type { ProjectTask } from '@/types'
 
 const QUERY_KEY = ['projects'] as const
@@ -78,6 +82,22 @@ export function useProjects() {
     onSuccess: invalidate,
   })
 
+  const importTestsMutation = useMutation({
+    mutationFn: ({
+      projectId,
+      pack,
+    }: {
+      projectId: string
+      pack: ProjectTestsPack
+    }) => importProjectTests(projectId, pack),
+    onSuccess: invalidate,
+  })
+
+  const importProjectMutation = useMutation({
+    mutationFn: (pack: ProjectPack) => importProject(pack),
+    onSuccess: invalidate,
+  })
+
   return {
     projects,
     isLoading,
@@ -89,10 +109,14 @@ export function useProjects() {
     addTaskToProject: addTaskMutation.mutateAsync,
     updateProjectTask: updateTaskMutation.mutateAsync,
     removeTaskFromProject: removeTaskMutation.mutateAsync,
+    importProjectTests: importTestsMutation.mutateAsync,
+    importProject: importProjectMutation.mutateAsync,
     isCreating: createProjectMutation.isPending,
     isUpdating: updateProjectMutation.isPending,
     isDeleting: deleteProjectMutation.isPending,
     isSavingTask: addTaskMutation.isPending || updateTaskMutation.isPending,
     isRemovingTask: removeTaskMutation.isPending,
+    isImportingTests: importTestsMutation.isPending,
+    isImportingProject: importProjectMutation.isPending,
   }
 }

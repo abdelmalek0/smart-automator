@@ -81,7 +81,7 @@ export default function CreateProjectDialog({
           <DialogHeader>
             <DialogTitle>New project</DialogTitle>
             <DialogDescription>
-              Give it a clear name and short description. You can add URL and site notes later.
+              Give it a clear name and short description. You can add URL and project context later.
             </DialogDescription>
           </DialogHeader>
 
@@ -120,7 +120,7 @@ export default function CreateProjectDialog({
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="project-notes">Site notes</Label>
+              <Label htmlFor="project-notes">Project context</Label>
               <Textarea
                 id="project-notes"
                 value={notes}

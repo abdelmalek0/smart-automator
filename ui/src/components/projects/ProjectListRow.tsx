@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import { Loader2, MoreHorizontal, Trash2 } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Download, FolderOpen, Loader2, MoreHorizontal, PenLine, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -26,6 +26,7 @@ import {
   projectAccentIndex,
   projectListMeta,
 } from '@/lib/project-view'
+import { downloadProjectPack } from '@/lib/project-pack'
 import type { Project } from '@/types'
 import { cn } from '@/lib/utils'
 
@@ -191,10 +192,18 @@ export default function ProjectListRow({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem asChild>
-                <Link to={`/projects/${project.id}`}>Open</Link>
+              <DropdownMenuItem onClick={() => navigate(`/projects/${project.id}`)}>
+                <FolderOpen className="h-4 w-4" />
+                Open
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={startRename}>Rename</DropdownMenuItem>
+              <DropdownMenuItem onClick={startRename}>
+                <PenLine className="h-4 w-4" />
+                Rename
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => downloadProjectPack(project)}>
+                <Download className="h-4 w-4" />
+                Export
+              </DropdownMenuItem>
               <AlertDialogTrigger asChild>
                 <DropdownMenuItem
                   className="text-destructive focus:text-destructive"
@@ -210,7 +219,7 @@ export default function ProjectListRow({
             <AlertDialogHeader>
               <AlertDialogTitle>Delete &quot;{project.name}&quot;?</AlertDialogTitle>
               <AlertDialogDescription>
-                This removes the project, its context prompt, and all saved tests.
+                This removes the project, its project context, and all saved tests.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
