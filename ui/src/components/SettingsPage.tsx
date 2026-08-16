@@ -18,6 +18,14 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
 
 const PROFILE_APP_DEFAULT = '__app_default__'
 const PROFILE_CUSTOM = '__custom__'
@@ -447,55 +455,79 @@ export default function SettingsPage() {
             </p>
 
             <div className="space-y-2">
-              {pricing.length === 0 && (
-                <p className="text-sm text-muted-foreground italic py-4">
-                  No entries yet — click Add Row to add a model.
-                </p>
-              )}
-              {pricing.map((row, i) => (
-                <div key={i} className="grid grid-cols-[100px_1fr_72px_72px_72px_32px] gap-2 items-center">
-                  <Select
-                    value={row.provider}
-                    onValueChange={(v) => updatePricingRow(i, 'provider', v)}
-                  >
-                    <SelectTrigger className="h-8 text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="groq">groq</SelectItem>
-                      <SelectItem value="google">google</SelectItem>
-                      <SelectItem value="openrouter">openrouter</SelectItem>
-                      <SelectItem value="ollama-cloud">ollama-cloud</SelectItem>
-                      <SelectItem value="ollama">ollama</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <Input
-                    value={row.model}
-                    onChange={(e) => updatePricingRow(i, 'model', e.target.value)}
-                    placeholder="model-name"
-                    className="h-8 text-xs mono"
-                  />
-                  {(['input', 'output', 'cache_read'] as const).map((field) => (
-                    <Input
-                      key={field}
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={row[field]}
-                      onChange={(e) => updatePricingRow(i, field, e.target.value)}
-                      className="h-8 text-xs mono text-right"
-                    />
-                  ))}
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                    onClick={() => setPricing((p) => p.filter((_, j) => j !== i))}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </div>
-              ))}
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-[140px]">Provider</TableHead>
+                    <TableHead>Model</TableHead>
+                    <TableHead className="w-[88px] text-right">Input</TableHead>
+                    <TableHead className="w-[88px] text-right">Output</TableHead>
+                    <TableHead className="w-[100px] text-right">Cache Read</TableHead>
+                    <TableHead className="w-10" />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {pricing.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={6} className="text-sm text-muted-foreground italic py-6 text-center">
+                        No entries yet — click Add Row to add a model.
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    pricing.map((row, i) => (
+                      <TableRow key={i}>
+                        <TableCell>
+                          <Select
+                            value={row.provider}
+                            onValueChange={(v) => updatePricingRow(i, 'provider', v)}
+                          >
+                            <SelectTrigger className="h-8 text-xs">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="groq">groq</SelectItem>
+                              <SelectItem value="google">google</SelectItem>
+                              <SelectItem value="openrouter">openrouter</SelectItem>
+                              <SelectItem value="ollama-cloud">ollama-cloud</SelectItem>
+                              <SelectItem value="ollama">ollama</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </TableCell>
+                        <TableCell>
+                          <Input
+                            value={row.model}
+                            onChange={(e) => updatePricingRow(i, 'model', e.target.value)}
+                            placeholder="model-name"
+                            className="h-8 text-xs mono"
+                          />
+                        </TableCell>
+                        {(['input', 'output', 'cache_read'] as const).map((field) => (
+                          <TableCell key={field}>
+                            <Input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={row[field]}
+                              onChange={(e) => updatePricingRow(i, field, e.target.value)}
+                              className="h-8 text-xs mono text-right"
+                            />
+                          </TableCell>
+                        ))}
+                        <TableCell>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                            onClick={() => setPricing((p) => p.filter((_, j) => j !== i))}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
               <Button
                 variant="outline"
                 size="sm"
