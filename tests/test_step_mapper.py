@@ -72,6 +72,24 @@ class TestStepMapper(unittest.TestCase):
         ])
         self.assertIn("click_element [2]: verified", text)
 
+    def test_scroll_to_text_error_marks_step_failed(self):
+        step = navigator_to_step(
+            11,
+            {
+                "current_state": {"next_goal": "Scroll to find Refund button"},
+                "actions": [Action(name="scroll_to_text", args={"text": "Refund"})],
+                "action_results": [
+                    ActionResult(
+                        error="Text 'Refund' (occurrence 1) not found",
+                        action_name="scroll_to_text",
+                        verification_status="failed",
+                    )
+                ],
+            },
+        )
+        self.assertEqual(step["status"], "fail")
+        self.assertEqual(step["action"], "scroll_to_text")
+
 
 if __name__ == "__main__":
     unittest.main()

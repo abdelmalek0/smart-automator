@@ -114,6 +114,32 @@ class TestVerificationPredicates(unittest.TestCase):
         self.assertIn("click_element [2]", hint)
         self.assertIn("input_text [1]", hint)
 
+    def test_scroll_to_text_not_found_is_failed(self):
+        snap = PageSnapshot(url="https://a", title="A", scroll_y=0)
+        result = ActionResult(extracted_content="Text 'Refund' (occurrence 1) not found")
+        apply_verification(
+            Action(name="scroll_to_text", args={"text": "Refund"}),
+            result,
+            before=snap,
+            after=snap,
+            before_element=None,
+            after_element=None,
+        )
+        self.assertEqual(result.verification_status, VERIFICATION_FAILED)
+
+    def test_scroll_to_text_error_is_failed(self):
+        snap = PageSnapshot(url="https://a", title="A", scroll_y=0)
+        result = ActionResult(error="Text 'Refund' (occurrence 1) not found")
+        apply_verification(
+            Action(name="scroll_to_text", args={"text": "Refund"}),
+            result,
+            before=snap,
+            after=snap,
+            before_element=None,
+            after_element=None,
+        )
+        self.assertEqual(result.verification_status, VERIFICATION_FAILED)
+
 
 class TestExecuteMultiVerification(unittest.TestCase):
     def test_chains_multiple_input_text_actions(self):
@@ -162,6 +188,33 @@ class TestExecuteMultiVerification(unittest.TestCase):
                     results = registry.execute_multi(actions, context, browser_state=state)
 
         self.assertEqual(len(results), 2)
+
+
+class TestScrollToTextAction(unittest.TestCase):
+    def test_missing_text_returns_error(self):
+        from smart_automator.actions.builder import ActionBuilder
+
+        context = AgentContext("test", MagicMock(), MagicMock())
+        page = MagicMock()
+        page.scroll_to_text.return_value = False
+        context.browser_context.get_current_page.return_value = page
+        registry = ActionBuilder(context).build_default_actions()
+        result = registry.execute(Action(name="scroll_to_text", args={"text": "Refund"}), {})
+        self.assertIsNotNone(result.error)
+        self.assertIn("not found", result.error)
+        page.scroll_to_text.assert_called_once_with("Refund", 1)
+
+    def test_found_text_is_not_an_error(self):
+        from smart_automator.actions.builder import ActionBuilder
+
+        context = AgentContext("test", MagicMock(), MagicMock())
+        page = MagicMock()
+        page.scroll_to_text.return_value = True
+        context.browser_context.get_current_page.return_value = page
+        registry = ActionBuilder(context).build_default_actions()
+        result = registry.execute(Action(name="scroll_to_text", args={"text": "Refund"}), {})
+        self.assertIsNone(result.error)
+        self.assertIn("Scrolled to text", result.extracted_content or "")
 
 
 if __name__ == "__main__":

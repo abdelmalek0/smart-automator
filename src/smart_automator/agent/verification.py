@@ -251,6 +251,10 @@ def apply_verification(
         "scroll_to_text",
     }:
         content = (result.extracted_content or "").lower()
+        if action.name == "scroll_to_text" and "not found" in content:
+            result.verification_status = VERIFICATION_FAILED
+            result.verification_evidence = "target text not found"
+            return result
         if (
             before.scroll_changed(after)
             or "already" in content

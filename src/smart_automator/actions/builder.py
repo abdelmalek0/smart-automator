@@ -805,6 +805,8 @@ class ActionBuilder:
                 if found
                 else f"Text '{text}' (occurrence {nth}) not found"
             )
+            if not found:
+                return ActionResult(error=msg, include_in_memory=True)
             return ActionResult(extracted_content=msg, include_in_memory=True)
 
         def send_keys(args, _selector_map):
