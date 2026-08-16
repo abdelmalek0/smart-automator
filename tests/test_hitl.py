@@ -470,6 +470,133 @@ class HumanActionRecorderTests(unittest.TestCase):
         self.assertIsNotNone(element)
         self.assertTrue(element.css_selector)
 
+    def test_click_payload_records_stable_root_chain(self):
+        context = _make_context()
+        recorder = HumanActionRecorder(context)
+        recorder._active = True
+        recorder._handle_capture_event(
+            {
+                "eventType": "click",
+                "tagName": "button",
+                "xpath": "html/body/form/button[1]",
+                "attributes": {"type": "submit"},
+                "stableRoot": "#login-form",
+                "relativeXPath": "./button[1]",
+            }
+        )
+        element = recorder.recorded[0][2].interacted_element
+        self.assertEqual(element.stable_root, "#login-form")
+        self.assertEqual(element.relative_xpath, "./button[1]")
+        self.assertEqual(element.locator_chain[0]["kind"], "relative")
+        self.assertEqual(element.to_dict()["stableRoot"], "#login-form")
+
+    def test_unlabeled_click_records_nth_pinpoint(self):
+        context = _make_context()
+        recorder = HumanActionRecorder(context)
+        recorder._active = True
+        recorder._handle_capture_event(
+            {
+                "eventType": "click",
+                "tagName": "button",
+                "xpath": "html/body/button",
+                "attributes": {"type": "submit", "class": "primary-button"},
+                "nth": {
+                    "selector": "button",
+                    "index": 1,
+                    "count": 1,
+                    "parentTag": "body",
+                    "siblingCount": 1,
+                    "prevTag": "",
+                    "nextTag": "",
+                },
+            }
+        )
+        element = recorder.recorded[0][2].interacted_element
+        nth = element.locator_chain[0]
+        self.assertEqual(nth["kind"], "nth")
+        self.assertEqual(nth["selector"], "button")
+        self.assertNotIn(".", nth["selector"])
+        self.assertEqual(nth["index"], 1)
+        self.assertEqual(nth["count"], 1)
+        self.assertEqual(nth["parentTag"], "body")
+        self.assertEqual(nth["siblingCount"], 1)
+        self.assertEqual(element.duplicate_set["count"], 1)
+
+    def test_unlabeled_click_without_nth_payload_still_has_chain(self):
+        context = _make_context()
+        recorder = HumanActionRecorder(context)
+        recorder._active = True
+        recorder._handle_capture_event(
+            {
+                "eventType": "click",
+                "tagName": "button",
+                "xpath": "html/body/button",
+                "attributes": {"type": "submit"},
+            }
+        )
+        element = recorder.recorded[0][2].interacted_element
+        self.assertTrue(element.locator_chain)
+        self.assertEqual(element.locator_chain[0]["kind"], "nth")
+        self.assertEqual(element.locator_chain[0]["selector"], "button")
+        self.assertEqual(element.locator_chain[0]["count"], 1)
+
+    def test_duplicate_label_falls_back_to_nth(self):
+        context = _make_context()
+        recorder = HumanActionRecorder(context)
+        recorder._active = True
+        recorder._handle_capture_event(
+            {
+                "eventType": "click",
+                "tagName": "button",
+                "xpath": "html/body/div[1]/button",
+                "attributes": {"aria-label": "Close"},
+                "identityUnique": {"ariaLabel": False},
+                "nth": {
+                    "selector": "button",
+                    "index": 1,
+                    "count": 2,
+                    "parentTag": "div",
+                    "siblingCount": 1,
+                    "prevTag": "",
+                    "nextTag": "",
+                },
+            }
+        )
+        element = recorder.recorded[0][2].interacted_element
+        nth = element.locator_chain[0]
+        self.assertEqual(nth["kind"], "first")
+        self.assertEqual(nth["count"], 2)
+        self.assertEqual(nth["index"], 1)
+        self.assertEqual(nth["parentTag"], "div")
+
+    def test_last_of_set_records_last_kind(self):
+        context = _make_context()
+        recorder = HumanActionRecorder(context)
+        recorder._active = True
+        recorder._handle_capture_event(
+            {
+                "eventType": "click",
+                "tagName": "button",
+                "xpath": "html/body/div[3]/button",
+                "attributes": {"type": "button"},
+                "nth": {
+                    "selector": "button",
+                    "index": 3,
+                    "count": 3,
+                    "kind": "last",
+                    "parentTag": "div",
+                    "siblingCount": 1,
+                    "prevTag": "",
+                    "nextTag": "",
+                },
+            }
+        )
+        element = recorder.recorded[0][2].interacted_element
+        last = element.locator_chain[0]
+        self.assertEqual(last["kind"], "last")
+        self.assertEqual(last["count"], 3)
+        self.assertEqual(element.duplicate_set["position"], "last")
+
     def test_maps_input_payload_to_action_result(self):
         context = _make_context()
         recorder = HumanActionRecorder(context)

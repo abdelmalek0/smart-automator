@@ -47,9 +47,29 @@ class TestStableIndexResolution(unittest.TestCase):
 
         zero = _button(12, "0", "/body/button[4]")
         wrong = MagicMock()
-        wrong.evaluate.return_value = "3"
+        wrong.evaluate.return_value = {
+            "aria": "3",
+            "placeholder": "",
+            "name": "",
+            "title": "",
+            "alt": "",
+            "id": "",
+            "testid": "",
+            "text": "3",
+            "svgTitle": "",
+        }
         right = MagicMock()
-        right.evaluate.return_value = "0"
+        right.evaluate.return_value = {
+            "aria": "0",
+            "placeholder": "",
+            "name": "",
+            "title": "",
+            "alt": "",
+            "id": "",
+            "testid": "",
+            "text": "0",
+            "svgTitle": "",
+        }
 
         frame = MagicMock()
         frame.query_selector.return_value = None

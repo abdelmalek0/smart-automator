@@ -1,4 +1,10 @@
-"""Shared locator policy for live actions, history remap, and Playwright replay."""
+"""Shared locator policy: capture a unique chain, PIN live nodes, FIND on replay.
+
+PIN (live, this observation): resolve the observed node via unique xpath/handle,
+then gate on recorded identity. FIND (remap/replay): apply the captured chain
+only. Unlabeled duplicates use nested/fork identity or a cardinality-gated
+duplicate set (nth of N). Silent wrong click is worse than a miss.
+"""
 
 from __future__ import annotations
 
@@ -23,7 +29,9 @@ INTERACTIVE_LEAF_SELECTOR = (
 )
 IDENTITY_LOCATOR_KINDS = frozenset({
     "testid", "css", "role", "label", "placeholder", "text", "relative",
+    "nth", "first", "last",
 })
+COUNTED_SET_KINDS = frozenset({"nth", "first", "last"})
 DEFAULT_RESOLVE_POLL_SECONDS = 15.0
 DEFAULT_RESOLVE_POLL_INTERVAL = 0.2
 ELEMENT_CLICK_TIMEOUT_MS = 5000
@@ -46,6 +54,45 @@ _DESTROYED_CONTEXT_MARKERS = (
     "frame was detached",
     "target closed",
 )
+NEIGHBOR_FINGERPRINT_JS = """el => {
+    const parent = el.parentElement;
+    const parentTag = parent ? parent.tagName.toLowerCase() : '';
+    const siblings = parent
+        ? Array.from(parent.children).filter((node) => node.nodeType === 1)
+        : [];
+    const idx = siblings.indexOf(el);
+    const prevTag = idx > 0 ? siblings[idx - 1].tagName.toLowerCase() : '';
+    const nextTag = (idx >= 0 && idx < siblings.length - 1)
+        ? siblings[idx + 1].tagName.toLowerCase()
+        : '';
+    return {
+        parentTag,
+        siblingCount: siblings.length,
+        prevTag,
+        nextTag,
+    };
+}"""
+IDENTITY_SNAPSHOT_JS = """el => {
+    const aria = (el.getAttribute('aria-label') || '').trim();
+    const placeholder = (el.getAttribute('placeholder') || '').trim();
+    const name = (el.getAttribute('name') || '').trim();
+    const title = (el.getAttribute('title') || '').trim();
+    const alt = (el.getAttribute('alt') || '').trim();
+    const id = (el.getAttribute('id') || '').trim();
+    const testid = (
+        el.getAttribute('data-testid')
+        || el.getAttribute('data-cy')
+        || el.getAttribute('data-test')
+        || el.getAttribute('data-qa')
+        || ''
+    ).trim();
+    const labelledBy = (el.getAttribute('aria-labelledby') || '').trim();
+    const text = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+    const svgTitle = (el.querySelector && el.querySelector('title, desc'))
+        ? (el.querySelector('title, desc').textContent || '').replace(/\\s+/g, ' ').trim()
+        : '';
+    return { aria, placeholder, name, title, alt, id, testid, labelledBy, text, svgTitle };
+}"""
 
 _FLUTTER_ID_IN_CSS = re.compile(r'\[id="flt-semantic-node-\d+"\]')
 _UNSTABLE_ID_IN_CSS = re.compile(
@@ -92,7 +139,10 @@ def is_non_retryable_click_error(exc: BaseException) -> bool:
     if type(exc).__name__ == "URLNotAllowedError":
         return True
     message = str(exc).lower()
-    return any(marker in message for marker in _NON_RETRYABLE_CLICK_MARKERS)
+    return any(
+        marker in message
+        for marker in _NON_RETRYABLE_CLICK_MARKERS + _DESTROYED_CONTEXT_MARKERS
+    )
 
 
 def _is_destroyed_context_error(exc: BaseException) -> bool:
@@ -130,7 +180,7 @@ def click_with_fallback(
             target.evaluate(JS_CLICK_JS)
         except Exception as js_exc:
             if _is_destroyed_context_error(js_exc):
-                return
+                raise js_exc from exc
             raise
 
 
@@ -269,11 +319,210 @@ def recorded_element_identity(step: dict[str, Any]) -> dict[str, str]:
     element_id = (attrs.get("id") or "").strip()
     if element_id and not is_unstable_id(element_id):
         identity.setdefault("id", element_id)
+    nested = (
+        _element_mapping(element).get("nestedIdentity")
+        or _element_mapping(element).get("nested_identity")
+        or attrs.get("alt")
+        or ""
+    )
+    nested_text = str(nested).strip()
+    if nested_text:
+        identity.setdefault("nestedIdentity", nested_text)
     return identity
+
+
+def identity_from_element_fields(
+    tag_name: str,
+    attrs: dict[str, str],
+    *,
+    accessible_name: str | None = None,
+    nested_identity: str | None = None,
+) -> dict[str, str]:
+    payload: dict[str, Any] = {
+        "tagName": tag_name,
+        "attributes": attrs,
+    }
+    if accessible_name:
+        payload["accessibleName"] = accessible_name
+    if nested_identity:
+        payload["nestedIdentity"] = nested_identity
+    return recorded_element_identity({"element": payload})
+
+
+def actual_identity_snapshot_matches(
+    expected: dict[str, str],
+    actual: dict[str, Any],
+) -> None:
+    """Raise ReplayLocatorError if snapshot attrs do not exactly match expected."""
+    if not expected:
+        return
+    attr_map = {
+        "aria-label": "aria",
+        "placeholder": "placeholder",
+        "name": "name",
+        "title": "title",
+        "id": "id",
+        "testid": "testid",
+        "alt": "alt",
+    }
+    for key, expected_value in expected.items():
+        if key in {"accessibleName", "nestedIdentity"}:
+            candidates = [
+                (actual.get("aria") or "").strip(),
+                (actual.get("title") or "").strip(),
+                (actual.get("alt") or "").strip(),
+                (actual.get("svgTitle") or "").strip(),
+                (actual.get("text") or "").strip(),
+            ]
+            if any(
+                identity_values_equal(expected_value, candidate)
+                for candidate in candidates
+                if candidate
+            ):
+                continue
+            raise ReplayLocatorError(
+                f"Resolved element {key} does not match recorded "
+                f"{expected_value!r} (aria={actual.get('aria')!r}, text={actual.get('text')!r})"
+            )
+        actual_key = attr_map.get(key)
+        if not actual_key:
+            continue
+        got = (actual.get(actual_key) or "").strip()
+        if not identity_values_equal(expected_value, got):
+            raise ReplayLocatorError(
+                f"Resolved element {key}={got!r} does not match recorded {expected_value!r}"
+            )
+
+
+def stable_class_tokens(class_attr: str | None) -> tuple[str, ...]:
+    tokens: list[str] = []
+    for token in (class_attr or "").split():
+        if token and not is_hashed_css_class(token):
+            tokens.append(token)
+    return tuple(tokens)
+
+
+def duplicate_set_selector(
+    tag_name: str,
+    *,
+    role: str | None = None,
+) -> str:
+    tag = (tag_name or "*").strip() or "*"
+    if role and role != inferred_role(tag, {}):
+        return f'{tag}[role="{role}"]'
+    return tag
+
+
+def unlabeled_set_kind(index: int, count: int) -> str:
+    """Prefer first/last at the ends of a multi-item set; nth otherwise."""
+    if count >= 2 and index == 1:
+        return "first"
+    if count >= 2 and index == count:
+        return "last"
+    return "nth"
+
+
+def effective_unlabeled_kind(kind: str, params: dict[str, Any]) -> str:
+    if kind in {"first", "last"}:
+        return kind
+    if kind != "nth":
+        return kind
+    try:
+        index = int(params.get("index") or 0)
+        count = int(params.get("count") or 0)
+    except (TypeError, ValueError):
+        return "nth"
+    return unlabeled_set_kind(index, count)
+
+
+def nth_count_replayable(actual: int | None, expected: int) -> bool:
+    return actual is not None and expected >= 1 and actual >= expected
+
+
+def has_neighbor_fingerprint(params: dict[str, Any]) -> bool:
+    return any(
+        key in params for key in ("parentTag", "siblingCount", "prevTag", "nextTag")
+    )
+
+
+def neighbor_fingerprint_matches(expected: dict[str, Any], actual: dict[str, Any]) -> bool:
+    if "parentTag" in expected:
+        got = str(actual.get("parentTag") or "").strip().lower()
+        if got != str(expected.get("parentTag") or "").strip().lower():
+            return False
+    if expected.get("siblingCount") not in (None, ""):
+        try:
+            if int(actual.get("siblingCount")) != int(expected["siblingCount"]):
+                return False
+        except (TypeError, ValueError):
+            return False
+    if "prevTag" in expected:
+        got = str(actual.get("prevTag") or "").strip().lower()
+        if got != str(expected.get("prevTag") or "").strip().lower():
+            return False
+    if "nextTag" in expected:
+        got = str(actual.get("nextTag") or "").strip().lower()
+        if got != str(expected.get("nextTag") or "").strip().lower():
+            return False
+    return True
+
+
+def locator_chain_from_element(element: dict[str, Any] | None) -> list[dict[str, Any]]:
+    mapping = _element_mapping(element)
+    raw = mapping.get("locatorChain") or mapping.get("locator_chain") or []
+    if not isinstance(raw, list):
+        return []
+    chain: list[dict[str, Any]] = []
+    for item in raw:
+        if isinstance(item, dict) and item.get("kind"):
+            chain.append(dict(item))
+    return chain
+
+
+def duplicate_set_from_element(element: dict[str, Any] | None) -> dict[str, Any] | None:
+    mapping = _element_mapping(element)
+    raw = mapping.get("duplicateSet") or mapping.get("duplicate_set")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        index = int(raw.get("index") or 0)
+        count = int(raw.get("count") or 0)
+    except (TypeError, ValueError):
+        return None
+    selector = str(raw.get("selector") or "").strip()
+    if index < 1 or count < 1 or not selector:
+        return None
+    result: dict[str, Any] = {
+        "selector": selector,
+        "index": index,
+        "count": count,
+        "tag": str(raw.get("tag") or ""),
+        "role": str(raw.get("role") or ""),
+        "position": str(raw.get("position") or unlabeled_set_kind(index, count)),
+    }
+    if "parentTag" in raw or "parent_tag" in raw:
+        result["parentTag"] = str(raw.get("parentTag") or raw.get("parent_tag") or "")
+    if "siblingCount" in raw or "sibling_count" in raw:
+        sibling_count = raw.get("siblingCount", raw.get("sibling_count"))
+        if sibling_count not in (None, ""):
+            try:
+                result["siblingCount"] = int(sibling_count)
+            except (TypeError, ValueError):
+                pass
+    if "prevTag" in raw or "prev_tag" in raw:
+        result["prevTag"] = str(raw.get("prevTag") or raw.get("prev_tag") or "")
+    if "nextTag" in raw or "next_tag" in raw:
+        result["nextTag"] = str(raw.get("nextTag") or raw.get("next_tag") or "")
+    return result
 
 
 def step_has_recorded_identity(step: dict[str, Any]) -> bool:
     if recorded_element_identity(step):
+        return True
+    element = step.get("element") if isinstance(step, dict) else None
+    if locator_chain_from_element(element):
+        return True
+    if duplicate_set_from_element(element):
         return True
     args = step.get("args") or {}
     css = args.get("css_selector")
@@ -313,6 +562,39 @@ def split_locator_candidates(
             return
         seen.add(key)
         bucket.append((kind, params))
+
+    recorded_chain = locator_chain_from_element(element)
+    if recorded_chain:
+        for item in recorded_chain:
+            kind = str(item.get("kind") or "")
+            params = {str(k): v for k, v in item.items() if k != "kind"}
+            if kind:
+                _add(identity, kind, params)
+        duplicate = duplicate_set_from_element(element)
+        if duplicate:
+            position = str(duplicate.get("position") or unlabeled_set_kind(
+                duplicate["index"], duplicate["count"]
+            ))
+            if position not in COUNTED_SET_KINDS:
+                position = unlabeled_set_kind(duplicate["index"], duplicate["count"])
+            nth_params = {
+                "selector": duplicate["selector"],
+                "index": duplicate["index"],
+                "count": duplicate["count"],
+            }
+            for key in ("parentTag", "siblingCount", "prevTag", "nextTag"):
+                if key in duplicate:
+                    nth_params[key] = duplicate[key]
+            _add(identity, position, nth_params)
+        css = args.get("css_selector") or element.get("cssSelector") or element.get("css_selector")
+        xpath = args.get("xpath") or element.get("xpath")
+        if css:
+            cleaned = sanitize_css_selector(str(css))
+            if cleaned.strip() and not css_has_identity_attrs(cleaned):
+                _add(positional, "css", {"selector": cleaned})
+        if xpath:
+            _add(positional, "xpath", {"xpath": normalize_xpath(str(xpath))})
+        return identity, positional
 
     testid = testid_from_attrs(attrs)
     if testid:
@@ -412,6 +694,8 @@ def apply_locator(
         return scope.get_by_text(params["text"], exact=True)
     if kind == "relative":
         return scope.locator(params["root"]).locator(f"xpath={params['xpath']}")
+    if kind in COUNTED_SET_KINDS:
+        return scope.locator(params["selector"])
     return page.locator("body")
 
 
@@ -477,6 +761,32 @@ def try_resolve_from_candidates(
 ) -> Locator | None:
     for kind, params in candidates:
         locator = apply_locator(page, kind, params, step=step)
+        effective = effective_unlabeled_kind(kind, params)
+        if effective in COUNTED_SET_KINDS:
+            visible = _visible_locator(locator)
+            count = _count(visible)
+            if count is None:
+                count = _count(locator)
+                visible = locator
+            expected_count = int(params.get("count") or 0)
+            if not nth_count_replayable(count, expected_count):
+                continue
+            if effective == "first":
+                return visible.first
+            if effective == "last":
+                return visible.last
+            index = int(params.get("index") or 0)
+            if index < 1 or count is None or index > count:
+                continue
+            chosen = visible.nth(index - 1)
+            if has_neighbor_fingerprint(params):
+                try:
+                    actual = chosen.evaluate(NEIGHBOR_FINGERPRINT_JS)
+                except Exception:
+                    continue
+                if not isinstance(actual, dict) or not neighbor_fingerprint_matches(params, actual):
+                    continue
+            return chosen
         allow_leaf = leaf_selector if kind in IDENTITY_LOCATOR_KINDS else None
         unique = unique_locator_or_none(locator, leaf_selector=allow_leaf)
         if unique is not None:
@@ -538,59 +848,12 @@ def assert_locator_matches_identity(locator: Locator, step: dict[str, Any]) -> N
         return
 
     try:
-        actual = locator.evaluate(
-            """el => {
-                const aria = (el.getAttribute('aria-label') || '').trim();
-                const placeholder = (el.getAttribute('placeholder') || '').trim();
-                const name = (el.getAttribute('name') || '').trim();
-                const title = (el.getAttribute('title') || '').trim();
-                const id = (el.getAttribute('id') || '').trim();
-                const testid = (
-                    el.getAttribute('data-testid')
-                    || el.getAttribute('data-cy')
-                    || el.getAttribute('data-test')
-                    || el.getAttribute('data-qa')
-                    || ''
-                ).trim();
-                const text = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
-                return { aria, placeholder, name, title, id, testid, text };
-            }"""
-        )
+        actual = locator.evaluate(IDENTITY_SNAPSHOT_JS)
     except Exception as exc:
         raise ReplayLocatorError(
             f"Could not verify resolved element identity: {exc}"
         ) from exc
-
-    attr_map = {
-        "aria-label": "aria",
-        "placeholder": "placeholder",
-        "name": "name",
-        "title": "title",
-        "id": "id",
-        "testid": "testid",
-    }
-    for key, expected_value in expected.items():
-        if key == "accessibleName":
-            aria = (actual.get("aria") or "").strip()
-            title = (actual.get("title") or "").strip()
-            text = (actual.get("text") or "").strip()
-            if any(
-                identity_values_equal(expected_value, candidate)
-                for candidate in (aria, title, text)
-            ):
-                continue
-            raise ReplayLocatorError(
-                f"Resolved element accessible name does not match recorded "
-                f"{expected_value!r} (aria={aria!r}, text={text!r})"
-            )
-        actual_key = attr_map.get(key)
-        if not actual_key:
-            continue
-        got = (actual.get(actual_key) or "").strip()
-        if not identity_values_equal(expected_value, got):
-            raise ReplayLocatorError(
-                f"Resolved element {key}={got!r} does not match recorded {expected_value!r}"
-            )
+    actual_identity_snapshot_matches(expected, actual if isinstance(actual, dict) else {})
 
 
 def format_locator_expr(kind: str, params: dict[str, Any], *, root: str = "page") -> str:
@@ -619,6 +882,25 @@ def format_locator_expr(kind: str, params: dict[str, Any], *, root: str = "page"
             f"{root}.locator({params['root']!r}).locator("
             f"{('xpath=' + params['xpath'])!r})"
         )
+    if kind in COUNTED_SET_KINDS:
+        selector = params.get("selector")
+        count = int(params.get("count") or 0)
+        effective = effective_unlabeled_kind(kind, params)
+        if effective == "first":
+            return f"resolve_first({root}, {selector!r}, count={count})"
+        if effective == "last":
+            return f"resolve_last({root}, {selector!r}, count={count})"
+        index = int(params.get("index") or 1)
+        neighbors = {
+            key: params[key]
+            for key in ("parentTag", "siblingCount", "prevTag", "nextTag")
+            if key in params
+        }
+        neighbor_arg = f", neighbors={neighbors!r}" if neighbors else ""
+        return (
+            f"resolve_nth({root}, {selector!r}, index={index}, count={count}"
+            f"{neighbor_arg})"
+        )
     return f"{root}.locator('body')  # fallback — no stable locator captured"
 
 
@@ -638,11 +920,98 @@ def playwright_locator_expr(step: dict[str, Any]) -> str:
     return format_locator_expr(kind, params, root=root)
 
 
+NTH_RESOLVE_HELPER = f'''
+NEIGHBOR_FINGERPRINT_JS = {NEIGHBOR_FINGERPRINT_JS!r}
+
+def _neighbors_match(expected, actual):
+    if not expected:
+        return True
+    if not isinstance(actual, dict):
+        return False
+    if "parentTag" in expected:
+        got = str(actual.get("parentTag") or "").strip().lower()
+        if got != str(expected.get("parentTag") or "").strip().lower():
+            return False
+    if expected.get("siblingCount") not in (None, ""):
+        try:
+            if int(actual.get("siblingCount")) != int(expected["siblingCount"]):
+                return False
+        except (TypeError, ValueError):
+            return False
+    if "prevTag" in expected:
+        got = str(actual.get("prevTag") or "").strip().lower()
+        if got != str(expected.get("prevTag") or "").strip().lower():
+            return False
+    if "nextTag" in expected:
+        got = str(actual.get("nextTag") or "").strip().lower()
+        if got != str(expected.get("nextTag") or "").strip().lower():
+            return False
+    return True
+
+def resolve_nth(scope, selector, index, count, neighbors=None):
+    """Return the counted nth match when the set did not shrink and neighbors agree."""
+    locator = scope.locator(selector)
+    try:
+        visible = locator.filter(visible=True)
+    except TypeError:
+        visible = locator
+    try:
+        actual_count = visible.count()
+    except Exception:
+        return None
+    if actual_count is None or count < 1 or actual_count < count:
+        return None
+    if index < 1 or index > actual_count:
+        return None
+    chosen = visible.nth(index - 1)
+    if neighbors:
+        try:
+            actual = chosen.evaluate(NEIGHBOR_FINGERPRINT_JS)
+        except Exception:
+            return None
+        if not _neighbors_match(neighbors, actual):
+            return None
+    return chosen
+
+def resolve_first(scope, selector, count):
+    """Return the first match when the set did not shrink."""
+    locator = scope.locator(selector)
+    try:
+        visible = locator.filter(visible=True)
+    except TypeError:
+        visible = locator
+    try:
+        actual_count = visible.count()
+    except Exception:
+        return None
+    if actual_count is None or count < 1 or actual_count < count:
+        return None
+    return visible.first
+
+def resolve_last(scope, selector, count):
+    """Return the last match when the set did not shrink."""
+    locator = scope.locator(selector)
+    try:
+        visible = locator.filter(visible=True)
+    except TypeError:
+        visible = locator
+    try:
+        actual_count = visible.count()
+    except Exception:
+        return None
+    if actual_count is None or count < 1 or actual_count < count:
+        return None
+    return visible.last
+'''.strip()
+
+
 RESOLVE_UNIQUE_HELPER = '''
 def resolve_unique(page, builders):
     """Return the first locator that uniquely matches a visible element."""
     for build in builders:
         locator = build()
+        if locator is None:
+            continue
         try:
             visible = locator.filter(visible=True)
         except TypeError:

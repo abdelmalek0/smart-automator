@@ -223,12 +223,12 @@ class TestPageSettle(unittest.TestCase):
                 page.get_scroll_info()
         self.assertEqual(pw_page.evaluate.call_count, 3)
 
-    def test_click_element_treats_destroyed_context_on_fallback_as_navigation(self):
+    def test_click_element_fails_closed_when_js_click_destroys_context(self):
+        from smart_automator.browser.dom import DOMElementNode
+
         pw_page = MagicMock()
         page = Page(pw_page, page_id=0)
-        element = MagicMock()
-        element.highlight_index = 1
-        element.xpath = "/body/button[1]"
+        element = DOMElementNode(tag_name="button", xpath="/body/button[1]", highlight_index=1)
         handle = MagicMock()
         handle.click.side_effect = RuntimeError("click timeout")
         destroyed = RuntimeError(
@@ -248,14 +248,12 @@ class TestPageSettle(unittest.TestCase):
             patch.object(page, "_maybe_wait_after_interaction") as mock_wait,
             patch.object(page, "_check_and_handle_navigation") as mock_nav,
         ):
-            page.click_element(element)
+            with self.assertRaises(RuntimeError) as ctx:
+                page.click_element(element)
 
-        self.assertIn(
-            "el => el.click()",
-            [call.args[0] for call in handle.evaluate.call_args_list],
-        )
-        mock_wait.assert_called_once()
-        mock_nav.assert_called_once()
+        self.assertIn("destroyed", str(ctx.exception).lower())
+        mock_wait.assert_not_called()
+        mock_nav.assert_not_called()
 
 
 if __name__ == "__main__":

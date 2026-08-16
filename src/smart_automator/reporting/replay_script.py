@@ -6,6 +6,7 @@ from ..browser.locators import (
     CLICK_RESOLVED_HELPER,
     DEFAULT_RESOLVE_POLL_INTERVAL,
     DEFAULT_RESOLVE_POLL_SECONDS,
+    NTH_RESOLVE_HELPER,
     RESOLVE_UNIQUE_HELPER,
     ReplayLocatorError,
     assert_locator_matches_identity,
@@ -289,6 +290,9 @@ def format_replay_script(
     lines = [
         f'"""Playwright replay — run {run_id[:8]} ({status})."""',
         "from playwright.sync_api import sync_playwright",
+        "",
+        "",
+        NTH_RESOLVE_HELPER,
         "",
         "",
         RESOLVE_UNIQUE_HELPER,

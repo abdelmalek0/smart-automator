@@ -10,10 +10,107 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..browser.history import DOMHistoryElement, enhanced_css_selector_for_history_element
+from ..browser.locators import (
+    css_id_selector,
+    duplicate_set_selector,
+    inferred_role,
+    is_unstable_id,
+    testid_from_attrs,
+    unlabeled_set_kind,
+)
 from .context import ActionResult, AgentContext, PendingHitlHandoff
 from .history import AgentStepRecord, BrowserStateHistory
 
 log = logging.getLogger(__name__)
+
+
+def _hitl_identity_allowed(unique: dict[str, Any] | None, key: str) -> bool:
+    if unique is None:
+        return True
+    return bool(unique.get(key))
+
+
+def _nth_locator_from_hitl(
+    element: DOMHistoryElement,
+    payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    raw = {}
+    if isinstance(payload, dict):
+        candidate = payload.get("nth") or payload.get("duplicateSet") or payload.get("duplicate_set")
+        if isinstance(candidate, dict):
+            raw = candidate
+    role_attr = (element.attributes.get("role") or "").strip() or None
+    selector = str(raw.get("selector") or "").strip()
+    if not selector:
+        selector = duplicate_set_selector(element.tag_name, role=role_attr)
+    try:
+        index = int(raw.get("index") or 1)
+        count = int(raw.get("count") or 1)
+    except (TypeError, ValueError):
+        index, count = 1, 1
+    index = max(1, index)
+    count = max(count, index)
+    kind = str(raw.get("kind") or raw.get("position") or unlabeled_set_kind(index, count))
+    if kind not in {"first", "last", "nth"}:
+        kind = unlabeled_set_kind(index, count)
+    item: dict[str, Any] = {
+        "kind": kind,
+        "selector": selector,
+        "index": index,
+        "count": count,
+    }
+    for key in ("parentTag", "siblingCount", "prevTag", "nextTag"):
+        if key in raw:
+            item[key] = raw[key]
+    return item
+
+
+def _locator_chain_from_hitl_element(
+    element: DOMHistoryElement,
+    payload: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    attrs = element.attributes or {}
+    unique = None
+    nth_raw = None
+    if isinstance(payload, dict):
+        unique_payload = payload.get("identityUnique") or payload.get("identity_unique")
+        if isinstance(unique_payload, dict):
+            unique = unique_payload
+        nth_raw = payload.get("nth") or payload.get("duplicateSet") or payload.get("duplicate_set")
+
+    testid = testid_from_attrs(attrs)
+    if testid and _hitl_identity_allowed(unique, "testid"):
+        return [{"kind": "testid", "attr": testid[0], "value": testid[1]}]
+    element_id = (attrs.get("id") or "").strip()
+    if element_id and not is_unstable_id(element_id) and _hitl_identity_allowed(unique, "id"):
+        return [{"kind": "css", "selector": css_id_selector(element_id)}]
+    if element.stable_root and element.relative_xpath:
+        return [{
+            "kind": "relative",
+            "root": element.stable_root,
+            "xpath": element.relative_xpath,
+        }]
+    if label := (attrs.get("aria-label") or "").strip():
+        if _hitl_identity_allowed(unique, "ariaLabel"):
+            return [{"kind": "label", "label": label}]
+    if placeholder := (attrs.get("placeholder") or "").strip():
+        if _hitl_identity_allowed(unique, "placeholder"):
+            return [{"kind": "placeholder", "placeholder": placeholder}]
+    if nested := (element.nested_identity or "").strip():
+        if _hitl_identity_allowed(unique, "nested"):
+            return [{"kind": "text", "text": nested}]
+    role = inferred_role(element.tag_name, attrs)
+    name = (element.accessible_name or "").strip()
+    use_name = (
+        _hitl_identity_allowed(unique, "roleName")
+        if unique is not None
+        else not isinstance(nth_raw, dict)
+    )
+    if role and name and use_name:
+        return [{"kind": "role", "role": role, "name": name}]
+    if name and use_name:
+        return [{"kind": "text", "text": name}]
+    return [_nth_locator_from_hitl(element, payload)]
 
 _HUMAN_CAPTURE_SCRIPT = """
 (() => {
@@ -49,28 +146,243 @@ _HUMAN_CAPTURE_SCRIPT = """
     return element;
   }
 
+  function getElementPosition(currentElement) {
+    if (!currentElement.parentElement) return 0;
+    const tagName = currentElement.nodeName.toLowerCase();
+    const siblings = Array.from(currentElement.parentElement.children).filter(
+      (sib) => sib.nodeName.toLowerCase() === tagName,
+    );
+    if (siblings.length === 1) return 0;
+    return siblings.indexOf(currentElement) + 1;
+  }
+
   function getXPath(element) {
     if (!element || element.nodeType !== Node.ELEMENT_NODE) return '';
     const segments = [];
     let current = element;
     while (current && current.nodeType === Node.ELEMENT_NODE) {
       const tag = current.tagName.toLowerCase();
-      let index = 1;
-      let sibling = current.previousElementSibling;
-      while (sibling) {
-        if (sibling.tagName === current.tagName) index += 1;
-        sibling = sibling.previousElementSibling;
-      }
-      let hasSameTagSibling = index > 1;
-      sibling = current.nextElementSibling;
-      while (!hasSameTagSibling && sibling) {
-        if (sibling.tagName === current.tagName) hasSameTagSibling = true;
-        sibling = sibling.nextElementSibling;
-      }
-      segments.unshift(hasSameTagSibling ? `${tag}[${index}]` : tag);
+      const position = getElementPosition(current);
+      segments.unshift(position > 0 ? `${tag}[${position}]` : tag);
       current = current.parentElement;
     }
     return segments.join('/');
+  }
+
+  function isUnstableId(value) {
+    if (!value) return true;
+    if (value.startsWith('flt-semantic-node-')) return true;
+    if (/^mui-\\d+$/.test(value)) return true;
+    if (/^ember\\d+$/.test(value)) return true;
+    if (/^:r[\\w-]*:$/i.test(value)) return true;
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) return true;
+    if (/^[a-f0-9]{8,}$/i.test(value)) return true;
+    return false;
+  }
+
+  function relativeXPath(ancestorXPath, nodeXPath) {
+    const ancestor = (ancestorXPath || '').replace(/^\\/+|\\/+$/g, '');
+    const node = (nodeXPath || '').replace(/^\\/+|\\/+$/g, '');
+    if (!ancestor || !node) return '';
+    if (node === ancestor) return '.';
+    const prefix = ancestor + '/';
+    if (node.startsWith(prefix)) return './' + node.slice(prefix.length);
+    return '';
+  }
+
+  function cssIdSelector(elementId) {
+    if (/^[A-Za-z_][\\w-]*$/.test(elementId)) return '#' + elementId;
+    return '[id="' + elementId.replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"') + '"]';
+  }
+
+  function stableRootFor(element) {
+    let current = element.parentElement;
+    const nodeXPath = getXPath(element);
+    while (current && current.nodeType === Node.ELEMENT_NODE) {
+      for (const attr of ['data-testid', 'data-cy', 'data-test', 'data-qa']) {
+        const value = (current.getAttribute(attr) || '').trim();
+        if (value) {
+          const rel = relativeXPath(getXPath(current), nodeXPath);
+          if (rel) return { stableRoot: '[' + attr + '="' + value + '"]', relativeXPath: rel };
+        }
+      }
+      const elementId = (current.getAttribute('id') || '').trim();
+      if (elementId && !isUnstableId(elementId)) {
+        const rel = relativeXPath(getXPath(current), nodeXPath);
+        if (rel) return { stableRoot: cssIdSelector(elementId), relativeXPath: rel };
+      }
+      current = current.parentElement;
+    }
+    return {};
+  }
+
+  function nestedIdentity(element) {
+    const alt = (element.getAttribute('alt') || '').trim();
+    if (alt) return alt;
+    const title = (element.getAttribute('title') || '').trim();
+    if (title) return title;
+    const svgTitle = element.querySelector && element.querySelector('svg title, title, desc');
+    if (svgTitle) {
+      const text = (svgTitle.textContent || '').replace(/\\s+/g, ' ').trim();
+      if (text) return text;
+    }
+    const img = element.querySelector && element.querySelector('img[alt]');
+    if (img) {
+      const imgAlt = (img.getAttribute('alt') || '').trim();
+      if (imgAlt) return imgAlt;
+    }
+    return '';
+  }
+
+  function isDisplayed(element) {
+    if (!(element instanceof Element)) return false;
+    const style = window.getComputedStyle(element);
+    if (!style || style.display === 'none' || style.visibility === 'hidden') return false;
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function inferredRole(tag, attrs) {
+    const explicit = ((attrs && attrs.role) || '').trim().toLowerCase();
+    if (explicit && explicit !== 'presentation' && explicit !== 'none' && explicit !== 'generic') {
+      return explicit;
+    }
+    tag = (tag || '').toLowerCase();
+    if (tag === 'input') {
+      const inputType = ((attrs && attrs.type) || 'text').toLowerCase() || 'text';
+      const types = {
+        button: 'button', submit: 'button', reset: 'button', checkbox: 'checkbox',
+        radio: 'radio', range: 'slider', file: 'button',
+      };
+      return types[inputType] || 'textbox';
+    }
+    const tags = { button: 'button', a: 'link', select: 'combobox', textarea: 'textbox', summary: 'button' };
+    return tags[tag] || '';
+  }
+
+  function duplicateSetSelector(tag, roleAttr) {
+    tag = (tag || '*').toLowerCase() || '*';
+    const role = (roleAttr || '').trim();
+    if (role && role !== inferredRole(tag, {})) return tag + '[role="' + role + '"]';
+    return tag;
+  }
+
+  function neighborFingerprint(element) {
+    const parent = element.parentElement;
+    const parentTag = parent ? parent.tagName.toLowerCase() : '';
+    const siblings = parent
+      ? Array.from(parent.children).filter((node) => node.nodeType === 1)
+      : [];
+    const idx = siblings.indexOf(element);
+    return {
+      parentTag,
+      siblingCount: siblings.length,
+      prevTag: idx > 0 ? siblings[idx - 1].tagName.toLowerCase() : '',
+      nextTag: (idx >= 0 && idx < siblings.length - 1) ? siblings[idx + 1].tagName.toLowerCase() : '',
+    };
+  }
+
+  function nthPinpoint(element) {
+    const tag = element.tagName.toLowerCase();
+    const roleAttr = (element.getAttribute('role') || '').trim();
+    const selector = duplicateSetSelector(tag, roleAttr);
+    let matches;
+    try {
+      matches = Array.from(document.querySelectorAll(selector)).filter(isDisplayed);
+    } catch (err) {
+      matches = [];
+    }
+    let index = matches.indexOf(element) + 1;
+    let count = matches.length;
+    if (index < 1) {
+      try {
+        matches = Array.from(document.querySelectorAll(selector));
+      } catch (err) {
+        matches = [];
+      }
+      index = matches.indexOf(element) + 1;
+      count = matches.length;
+      if (index < 1) {
+        index = 1;
+        count = Math.max(count, 1);
+      }
+    }
+    const position = (count >= 2 && index === 1)
+      ? 'first'
+      : (count >= 2 && index === count)
+        ? 'last'
+        : 'nth';
+    return { selector, index, count, kind: position, position, ...neighborFingerprint(element) };
+  }
+
+  function attrMatches(attr, value) {
+    if (!value) return 0;
+    const escaped = String(value).replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"');
+    try {
+      return document.querySelectorAll('[' + attr + '="' + escaped + '"]').length;
+    } catch (err) {
+      return 0;
+    }
+  }
+
+  function accessibleNameOf(element) {
+    const aria = (element.getAttribute('aria-label') || '').trim();
+    if (aria) return aria;
+    const nested = nestedIdentity(element);
+    if (nested) return nested;
+    return visibleText(element);
+  }
+
+  function roleNameUnique(element, role, name) {
+    if (!role || !name) return false;
+    const matches = [];
+    for (const el of document.querySelectorAll('*')) {
+      if (!isDisplayed(el)) continue;
+      const attrs = {
+        role: el.getAttribute('role') || '',
+        type: el.getAttribute('type') || '',
+      };
+      if (inferredRole(el.tagName.toLowerCase(), attrs) !== role) continue;
+      if (accessibleNameOf(el) !== name) continue;
+      matches.push(el);
+      if (matches.length > 1) return false;
+    }
+    return matches.length === 1 && matches[0] === element;
+  }
+
+  function identityUnique(element, attrs, nested, name) {
+    const unique = {};
+    for (const attr of ['data-testid', 'data-cy', 'data-test', 'data-qa']) {
+      const value = (attrs[attr] || '').trim();
+      if (value) {
+        unique.testid = attrMatches(attr, value) === 1;
+        break;
+      }
+    }
+    const elementId = (attrs.id || '').trim();
+    if (elementId && !isUnstableId(elementId)) {
+      unique.id = attrMatches('id', elementId) === 1;
+    }
+    if ((attrs['aria-label'] || '').trim()) {
+      unique.ariaLabel = attrMatches('aria-label', attrs['aria-label']) === 1;
+    }
+    if ((attrs.placeholder || '').trim()) {
+      unique.placeholder = attrMatches('placeholder', attrs.placeholder) === 1;
+    }
+    if (nested) {
+      let count = 0;
+      for (const el of document.querySelectorAll('*')) {
+        if (nestedIdentity(el) === nested) {
+          count += 1;
+          if (count > 1) break;
+        }
+      }
+      unique.nested = count === 1;
+    }
+    const role = inferredRole(element.tagName.toLowerCase(), attrs);
+    if (role && name) unique.roleName = roleNameUnique(element, role, name);
+    if (name) unique.name = unique.roleName || false;
+    return unique;
   }
 
   function framePath(element) {
@@ -99,14 +411,23 @@ _HUMAN_CAPTURE_SCRIPT = """
 
   function elementPayload(element, extra = {}) {
     if (!element || element.nodeType !== Node.ELEMENT_NODE) return null;
+    const roots = stableRootFor(element);
+    const nested = nestedIdentity(element);
+    const attrs = collectAttributes(element);
+    const label = visibleText(element) || nested;
     return {
       tagName: element.tagName.toLowerCase(),
       xpath: getXPath(element),
       framePath: framePath(element),
-      attributes: collectAttributes(element),
+      attributes: attrs,
       value: element.value ?? '',
       inputType: element.type ?? '',
-      label: visibleText(element),
+      label,
+      nestedIdentity: nested,
+      stableRoot: roots.stableRoot || '',
+      relativeXPath: roots.relativeXPath || '',
+      nth: nthPinpoint(element),
+      identityUnique: identityUnique(element, attrs, nested, label),
       ...extra,
     };
   }
@@ -474,6 +795,7 @@ class HumanActionRecorder:
 
     def _element_from_payload(self, payload: dict[str, Any]) -> DOMHistoryElement:
         accessible_name = self._element_label(payload) or None
+        nested = str(payload.get("nestedIdentity") or payload.get("nested_identity") or "").strip() or None
         element = DOMHistoryElement(
             tag_name=payload.get("tagName", ""),
             xpath=payload.get("xpath", ""),
@@ -481,10 +803,23 @@ class HumanActionRecorder:
             attributes=dict(payload.get("attributes") or {}),
             accessible_name=accessible_name,
             frame_path=list(payload.get("framePath") or payload.get("frame_path") or []),
+            stable_root=str(payload.get("stableRoot") or payload.get("stable_root") or "").strip() or None,
+            relative_xpath=str(payload.get("relativeXPath") or payload.get("relative_xpath") or "").strip() or None,
+            nested_identity=nested,
         )
         css_selector = enhanced_css_selector_for_history_element(element)
         if css_selector:
             element.css_selector = css_selector
+        element.locator_chain = _locator_chain_from_hitl_element(element, payload)
+        counted = next(
+            (item for item in element.locator_chain if item.get("kind") in {"nth", "first", "last"}),
+            None,
+        )
+        if counted:
+            element.duplicate_set = {
+                key: value for key, value in counted.items() if key != "kind"
+            }
+            element.duplicate_set["position"] = counted["kind"]
         return element
 
     def _dom_action_args(self, element: DOMHistoryElement, **extra: Any) -> dict[str, Any]:

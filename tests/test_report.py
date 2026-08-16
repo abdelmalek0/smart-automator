@@ -545,6 +545,56 @@ class TestReportBuilder(unittest.TestCase):
         self.assertIn("click_resolved(locator)", script)
         self.assertIn('if __name__ == "__main__":', script)
 
+    def test_format_replay_script_nth_checks_count_and_neighbors(self):
+        steps = [
+            {
+                "index": 1,
+                "action": "click_element",
+                "args": {},
+                "element": {
+                    "tagName": "button",
+                    "locatorChain": [{
+                        "kind": "nth",
+                        "selector": "button",
+                        "index": 2,
+                        "count": 3,
+                        "parentTag": "div",
+                        "siblingCount": 1,
+                        "prevTag": "",
+                        "nextTag": "",
+                    }],
+                },
+            }
+        ]
+        script = format_replay_script(steps, run_id="nth-1", status="pass")
+        self.assertIn("resolve_nth", script)
+        self.assertIn("index=2", script)
+        self.assertIn("count=3", script)
+        self.assertIn("'parentTag': 'div'", script)
+        self.assertNotIn(".nth(0)  # expect", script)
+
+    def test_format_replay_script_last_uses_resolve_last(self):
+        steps = [
+            {
+                "index": 1,
+                "action": "click_element",
+                "args": {},
+                "element": {
+                    "tagName": "button",
+                    "locatorChain": [{
+                        "kind": "last",
+                        "selector": "button",
+                        "index": 3,
+                        "count": 3,
+                    }],
+                },
+            }
+        ]
+        script = format_replay_script(steps, run_id="last-1", status="pass")
+        self.assertIn("resolve_last(page, 'button', count=3)", script)
+        self.assertNotIn("resolve_nth(page,", script)
+        self.assertNotIn(".nth(2)", script)
+
     def test_format_replay_script_escapes_strings(self):
         steps = [
             {

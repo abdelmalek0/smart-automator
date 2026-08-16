@@ -87,6 +87,40 @@ class TestLocateElement(unittest.TestCase):
         self.assertEqual(locate.call_count, 2)
         self.page.wait_for_page_stable.assert_called_once()
 
+    def test_select_unique_handle_rejects_identity_mismatch(self):
+        element = _button(0, "Close", "/body/button[1]")
+        handle = MagicMock()
+        handle.evaluate.return_value = {
+            "aria": "Submit",
+            "placeholder": "",
+            "name": "",
+            "title": "",
+            "alt": "",
+            "id": "",
+            "testid": "",
+            "text": "Submit",
+            "svgTitle": "",
+        }
+        matched = self.page._select_unique_handle([handle], element)
+        self.assertIsNone(matched)
+
+    def test_select_unique_handle_accepts_exact_aria(self):
+        element = _button(0, "Close", "/body/button[1]")
+        handle = MagicMock()
+        handle.evaluate.return_value = {
+            "aria": "Close",
+            "placeholder": "",
+            "name": "",
+            "title": "",
+            "alt": "",
+            "id": "",
+            "testid": "",
+            "text": "Close",
+            "svgTitle": "",
+        }
+        matched = self.page._select_unique_handle([handle], element)
+        self.assertIs(matched, handle)
+
 
 class TestRemapFallback(unittest.TestCase):
     def test_falls_back_to_current_selector_map_when_original_xpath_gone(self):

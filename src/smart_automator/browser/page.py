@@ -17,8 +17,14 @@ from .dom import (
     inject_build_dom_tree_script,
     remove_highlights,
 )
-from .history import is_file_uploader
-from .locators import click_with_fallback, identity_values_equal
+from .history import extract_nested_identity, is_file_uploader
+from .locators import (
+    IDENTITY_SNAPSHOT_JS,
+    ReplayLocatorError,
+    actual_identity_snapshot_matches,
+    click_with_fallback,
+    identity_from_element_fields,
+)
 from .util import is_url_allowed
 from .views import ScrollRegion, URLNotAllowedError
 
@@ -1070,12 +1076,7 @@ class Page:
         self._scroll_into_view_if_needed(handle, raise_on_failure=True)
 
         def _verify_click_identity() -> None:
-            expected = (
-                self._element_identity_text(element)
-                if isinstance(element, DOMElementNode)
-                else ""
-            )
-            if expected and not self._handle_matches_element(handle, element):
+            if not self._handle_matches_element(handle, element):
                 raise LookupError("click target identity mismatch")
 
         try:
@@ -1309,34 +1310,32 @@ class Page:
 
         return self._query_unique_handle(frame, element, shadow_hosts)
 
-    def _element_identity_text(self, element: DOMElementNode) -> str:
-        text = element.get_all_text_till_next_clickable_element().strip().lower()
-        if text:
-            return text
-        for attr in ("aria-label", "title", "placeholder", "value", "name"):
-            value = element.attributes.get(attr, "").strip().lower()
-            if value:
-                return value
-        return ""
+    def _identity_expected(self, element: DOMElementNode) -> dict[str, str]:
+        accessible = element.get_all_text_till_next_clickable_element().strip() or None
+        nested = extract_nested_identity(element)
+        return identity_from_element_fields(
+            element.tag_name,
+            element.attributes,
+            accessible_name=accessible,
+            nested_identity=nested,
+        )
 
     def _handle_matches_element(self, handle: ElementHandle, element: DOMElementNode) -> bool:
-        expected = self._element_identity_text(element)
+        expected = self._identity_expected(element)
         if not expected:
-            return False
+            return True
         try:
-            actual = handle.evaluate(
-                """el => {
-                    const label = (el.getAttribute('aria-label') || el.getAttribute('title') || '').trim();
-                    const text = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
-                    const value = ('value' in el && el.value) ? String(el.value).trim() : '';
-                    return (label || text || value || '').toLowerCase();
-                }"""
-            )
+            actual = handle.evaluate(IDENTITY_SNAPSHOT_JS)
         except Exception:
             return False
-        if not actual:
+        try:
+            actual_identity_snapshot_matches(
+                expected,
+                actual if isinstance(actual, dict) else {},
+            )
+        except ReplayLocatorError:
             return False
-        return identity_values_equal(expected, str(actual))
+        return True
 
     def _query_in_shadow_root(
         self,
@@ -1428,10 +1427,12 @@ class Page:
     ) -> ElementHandle | None:
         if not handles:
             return None
-        expected = self._element_identity_text(element)
+        expected = self._identity_expected(element)
         if len(handles) == 1:
             if not expected or self._handle_matches_element(handles[0], element):
                 return handles[0]
+            return None
+        if not expected:
             return None
         matches = [handle for handle in handles if self._handle_matches_element(handle, element)]
         if len(matches) == 1:
