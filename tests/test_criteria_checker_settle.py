@@ -36,8 +36,8 @@ class TestCriteriaCheckerSettle(unittest.TestCase):
         )
 
         with patch(
-            "smart_automator.agents.criteria_checker.collect_accessible_names",
-            return_value=[],
+            "smart_automator.utils.prompts.collect_accessible_names_section",
+            return_value="",
         ):
             message = CriteriaCheckerAgent.build_state_message(context)
 

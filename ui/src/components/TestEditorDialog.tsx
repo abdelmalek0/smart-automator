@@ -325,12 +325,15 @@ export default function TestEditorDialog({
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="test-criteria">Success criteria</Label>
+              <p className="text-[11px] text-muted-foreground">
+                Present (on the final page) or referential (now vs a value seen earlier).
+              </p>
               <Textarea
                 id="test-criteria"
                 value={criteria}
                 onChange={(e) => setCriteria(e.target.value)}
                 rows={2}
-                placeholder="How do we know it passed?"
+                placeholder="e.g. Confirmation is visible. Or: total matches the amount shown when the item was added."
                 disabled={saving}
               />
             </div>

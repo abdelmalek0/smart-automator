@@ -10,6 +10,14 @@ _SUBMIT_PATTERN = re.compile(
 )
 _INPUT_TAGS = frozenset({"input", "textarea", "select"})
 _INTERACTIVE_TAGS = frozenset({"button", "a", "input", "textarea", "select"})
+_IGNORED_ROLES = frozenset({"presentation", "none", "generic"})
+_TEXT_BEARING_TAGS = frozenset({
+    "p", "h1", "h2", "h3", "h4", "h5", "h6",
+    "li", "td", "th", "dt", "dd", "label",
+    "blockquote", "figcaption", "caption", "pre",
+    "span", "em", "strong", "small", "b", "i",
+    "flt-semantics",
+})
 _MAX_VISIBLE_TEXT_CHARS = 4000
 _VISIBLE_TEXT_BUDGET_RATIO = 0.35
 _MIN_VISIBLE_TEXT_LEN = 2
@@ -28,6 +36,50 @@ def _element_label(node: DOMElementNode) -> str:
         if value:
             return value.lower()
     return ""
+
+
+def _has_element_children(node: DOMElementNode) -> bool:
+    return any(isinstance(child, DOMElementNode) for child in node.children)
+
+
+def _is_leaf_text_div(node: DOMElementNode) -> bool:
+    return node.tag_name.lower() == "div" and not _has_element_children(node)
+
+
+def _is_text_bearing(node: DOMElementNode) -> bool:
+    return node.tag_name.lower() in _TEXT_BEARING_TAGS or _is_leaf_text_div(node)
+
+
+def _has_accessible_identity(node: DOMElementNode) -> bool:
+    if (node.attributes.get("aria-label") or "").strip():
+        return True
+    role = (node.attributes.get("role") or "").strip().lower()
+    if role and role not in _IGNORED_ROLES:
+        return True
+    if node.tag_name.lower() != "flt-semantics":
+        return False
+    if (node.attributes.get("title") or "").strip():
+        return True
+    return bool(node.get_all_text_till_next_clickable_element().strip())
+
+
+def _should_keep_static_text(parent: DOMElementNode | None) -> bool:
+    if parent is None:
+        return False
+    if _has_accessible_identity(parent):
+        return True
+    if not parent.is_visible:
+        return False
+    if parent.is_top_element:
+        return True
+    return _is_text_bearing(parent)
+
+
+def _has_direct_text_child(node: DOMElementNode) -> bool:
+    return any(
+        isinstance(child, DOMTextNode) and bool(child.text.strip())
+        for child in node.children
+    )
 
 
 def _priority_score(node: DOMElementNode) -> int:
@@ -123,6 +175,18 @@ def _collect_clickable_lines(
                     line += " (offscreen)"
                 priority = _priority_score(node)
                 collected.append((priority, node.highlight_index, node.is_in_viewport, line))
+            elif _should_keep_static_text(node):
+                emitted_attr = False
+                for attr in ("aria-label", "title"):
+                    value = (node.attributes.get(attr) or "").strip()
+                    if value:
+                        collected.append((0, -1, True, f"{depth_str}{value}"))
+                        emitted_attr = True
+                        break
+                if not emitted_attr and not _has_direct_text_child(node):
+                    aggregated = node.get_all_text_till_next_clickable_element().strip()
+                    if aggregated:
+                        collected.append((0, -1, True, f"{depth_str}{aggregated}"))
 
             for child in node.children:
                 process_node(child, next_depth)
@@ -130,7 +194,7 @@ def _collect_clickable_lines(
         elif isinstance(node, DOMTextNode):
             if node.has_parent_with_highlight_index():
                 return
-            if node.parent and node.parent.is_visible and node.parent.is_top_element:
+            if _should_keep_static_text(node.parent):
                 collected.append((0, -1, True, f"{depth_str}{node.text}"))
 
     process_node(root, 0)
@@ -176,19 +240,23 @@ def _filter_visible_text_lines(
     return filtered
 
 
+def _reserved_visible_text_budget(max_chars: int, *, no_interactives: bool, text_lines: list[str]) -> int:
+    if not text_lines:
+        return 0
+    if no_interactives:
+        return min(_MAX_VISIBLE_TEXT_CHARS, max_chars)
+    return min(_MAX_VISIBLE_TEXT_CHARS, int(max_chars * _VISIBLE_TEXT_BUDGET_RATIO))
+
+
 def _render_visible_text_section(
     text_lines: list[str],
     *,
     char_budget: int,
-    no_interactives: bool,
 ) -> tuple[list[str], int]:
     if not text_lines or char_budget <= 0:
         return [], 0
 
-    if no_interactives:
-        text_budget = min(_MAX_VISIBLE_TEXT_CHARS, char_budget)
-    else:
-        text_budget = min(_MAX_VISIBLE_TEXT_CHARS, int(char_budget * _VISIBLE_TEXT_BUDGET_RATIO))
+    text_budget = min(_MAX_VISIBLE_TEXT_CHARS, char_budget)
     if text_budget <= 0:
         return [], 0
 
@@ -247,8 +315,16 @@ def bounded_clickable_elements_to_string(
     total_count = len(element_lines)
     offscreen_total = sum(1 for item in element_lines if not item[2])
 
+    clickable_labels = _collect_clickable_labels(root)
+    filtered_text = _filter_visible_text_lines(text_lines, clickable_labels)
+    reserved_for_text = _reserved_visible_text_budget(
+        max_chars,
+        no_interactives=total_count == 0,
+        text_lines=filtered_text,
+    )
+
     rendered: list[str] = []
-    char_budget = max_chars
+    char_budget = max(max_chars - reserved_for_text, 0)
     shown = 0
 
     if total_count > 0:
@@ -280,14 +356,15 @@ def bounded_clickable_elements_to_string(
                 " Use scroll actions if the needed control is not listed "
                 "(truncated or not yet mounted)."
             )
-            rendered.append(note)
+            if char_budget > 0 and len(note) <= char_budget:
+                rendered.append(note)
+                char_budget -= len(note) + 1
+            elif reserved_for_text <= 0:
+                rendered.append(note)
 
-    clickable_labels = _collect_clickable_labels(root)
-    filtered_text = _filter_visible_text_lines(text_lines, clickable_labels)
     visible_section, _ = _render_visible_text_section(
         filtered_text,
-        char_budget=char_budget,
-        no_interactives=total_count == 0,
+        char_budget=reserved_for_text + max(char_budget, 0),
     )
     if visible_section:
         if rendered:

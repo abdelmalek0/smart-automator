@@ -811,10 +811,23 @@ window.buildDomTree = (
     const ignoredRoles = new Set(['presentation', 'none', 'generic']);
     const role = (element.getAttribute('role') || '').trim().toLowerCase();
     if (role && !ignoredRoles.has(role)) return true;
-    // Flutter semantics nodes often carry labels without a standard role.
-    if (element.tagName && element.tagName.toLowerCase() === 'flt-semantics') {
+
+    const tagName = element.tagName && element.tagName.toLowerCase();
+    const textBearingTags = new Set([
+      'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+      'li', 'td', 'th', 'dt', 'dd', 'label',
+      'blockquote', 'figcaption', 'caption', 'pre',
+      'span', 'em', 'strong', 'small', 'b', 'i',
+      'flt-semantics',
+    ]);
+    const isLeafDiv =
+      tagName === 'div' &&
+      !Array.from(element.childNodes).some((child) => child.nodeType === Node.ELEMENT_NODE);
+    if (textBearingTags.has(tagName) || isLeafDiv) {
       const title = (element.getAttribute('title') || '').trim();
       if (title) return true;
+      const text = (element.textContent || '').replace(/\s+/g, ' ').trim();
+      if (text) return true;
     }
     return false;
   }
@@ -1081,7 +1094,10 @@ window.buildDomTree = (
       element.hasAttribute('onclick') ||
       element.hasAttribute('role') ||
       element.hasAttribute('tabindex') ||
-      element.hasAttribute('aria-') ||
+      element.hasAttribute('aria-label') ||
+      element.hasAttribute('aria-labelledby') ||
+      element.hasAttribute('title') ||
+      tagName === 'flt-semantics' ||
       element.hasAttribute('data-action') ||
       element.getAttribute('contenteditable') === 'true';
 
@@ -1474,9 +1490,10 @@ window.buildDomTree = (
       children: [],
     };
 
-    // Get attributes for interactive elements or potential text containers
+    // Get attributes for interactive elements, labeled static nodes, or containers
     if (
       isInteractiveCandidate(node) ||
+      hasMeaningfulAccessibleIdentity(node) ||
       node.tagName.toLowerCase() === 'iframe' ||
       node.tagName.toLowerCase() === 'body'
     ) {

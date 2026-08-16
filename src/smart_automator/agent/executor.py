@@ -29,6 +29,7 @@ from ..config import Config
 from ..llm.base import BaseLLM
 from ..agents.action_critic import ActionCriticAgent
 from .context import AgentContext, AgentOptions, AgentStepInfo
+from .findings import criteria_retention_keywords, is_referential_criteria
 from .history import AgentStepHistory
 from .hitl import HitlController
 from .messages.service import MessageManager, MessageManagerSettings
@@ -155,6 +156,8 @@ class Executor:
         )
         self._context.run_id = run_id
         self._context.success_criteria = self._success_criteria
+        self._context.referential_criteria = is_referential_criteria(self._success_criteria)
+        self._context.criteria_keywords = criteria_retention_keywords(self._success_criteria)
         self._context.hitl_enabled = not config.headless
         self._last_error: str | None = None
         self._last_nav_result: dict | None = None
@@ -533,6 +536,8 @@ class Executor:
             success_criteria=context.success_criteria,
             state_message=state_message,
             final_answer=final_answer or context.final_answer or "",
+            excerpts=list(context.screen_excerpts),
+            referential=bool(context.referential_criteria),
         )
         preview = state_message.strip()
         if len(preview) > 4000:
@@ -641,7 +646,7 @@ class Executor:
             if needs_current_state:
                 self._navigator.add_state_message_to_memory(
                     show_highlights=False,
-                    wait_for_stable=False,
+                    wait_for_stable=True,
                 )
                 if context.hitl_interrupt:
                     self._navigator.remove_last_state_message_from_memory()

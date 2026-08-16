@@ -1,4 +1,4 @@
-"""Harvest accessible names from the live DOM for verification (criteria) observation."""
+"""Harvest accessible names from the live DOM for verification observation."""
 
 from __future__ import annotations
 
@@ -7,10 +7,13 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .page import Page
 
+# InnerText fallback cap — long enough for labeled amount rows.
+_MAX_INNER_TEXT_CHARS = 400
+
 # Framework-agnostic: aria-label, role labels, Flutter flt-semantics, etc.
 # Playwright page.evaluate accepts a single arg — pack limits as one object.
 _COLLECT_ACCESSIBLE_NAMES_JS = """
-({ maxNames, maxChars }) => {
+({ maxNames, maxChars, maxInnerText }) => {
   const ignoredRoles = new Set(['presentation', 'none', 'generic']);
   const seen = new Set();
   const labels = [];
@@ -20,25 +23,28 @@ _COLLECT_ACCESSIBLE_NAMES_JS = """
   );
   for (const el of nodes) {
     if (labels.length >= maxNames || totalChars >= maxChars) break;
+    const isFlutterSemantics = el.tagName && el.tagName.toLowerCase() === 'flt-semantics';
     const style = window.getComputedStyle(el);
-    if (
-      style.visibility === 'hidden' ||
-      style.display === 'none' ||
-      style.opacity === '0'
-    ) {
+    if (style.visibility === 'hidden' || style.display === 'none') {
+      continue;
+    }
+    if (!isFlutterSemantics && style.opacity === '0') {
       continue;
     }
     const rect = el.getBoundingClientRect();
-    if (rect.width <= 0 && rect.height <= 0) continue;
+    if (rect.width <= 0 && rect.height <= 0 && !isFlutterSemantics) continue;
 
     let label = (el.getAttribute('aria-label') || '').trim();
     if (!label) {
-      const role = (el.getAttribute('role') || '').trim().toLowerCase();
-      if (!role || ignoredRoles.has(role)) continue;
       label = (el.getAttribute('title') || '').trim();
-      if (!label) {
-        const text = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
-        if (text && text.length <= 120) label = text;
+    }
+    if (!label) {
+      const role = (el.getAttribute('role') || '').trim().toLowerCase();
+      const allowText = isFlutterSemantics || (role && !ignoredRoles.has(role));
+      if (!allowText) continue;
+      const text = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+      if (text) {
+        label = text.length <= maxInnerText ? text : text.slice(0, maxInnerText);
       }
     }
     if (!label) continue;
@@ -63,7 +69,11 @@ def collect_accessible_names(
     try:
         result = page._evaluate_on_page(
             _COLLECT_ACCESSIBLE_NAMES_JS,
-            {"maxNames": max_names, "maxChars": max_chars},
+            {
+                "maxNames": max_names,
+                "maxChars": max_chars,
+                "maxInnerText": _MAX_INNER_TEXT_CHARS,
+            },
         )
     except Exception:
         return []
@@ -92,4 +102,15 @@ def format_accessible_names_section(names: list[str]) -> str:
         "[Accessible names]\n"
         f"{body}\n"
         "Note: accessible names are read-only page labels for verification — not clickable.\n"
+    )
+
+
+def collect_accessible_names_section(
+    page: "Page",
+    *,
+    max_names: int = 200,
+    max_chars: int = 12000,
+) -> str:
+    return format_accessible_names_section(
+        collect_accessible_names(page, max_names=max_names, max_chars=max_chars)
     )

@@ -274,6 +274,7 @@ def build_report_data(
         "status": run.status,
         "summary": run.summary,
         "criteria_verdict": run.criteria_verdict,
+        "screen_excerpts": list(run.screen_excerpts or []),
         "headless": run.headless,
         "max_steps": run.max_steps,
         "cdp_url": run.cdp_url,

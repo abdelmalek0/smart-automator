@@ -371,6 +371,25 @@ export default function RunView({ runId, onRunComplete }: Props) {
               </div>
             )}
 
+            {run?.screen_excerpts && run.screen_excerpts.length > 0 && !isRunning && (
+              <div className="rounded-lg px-4 py-3 border border-border text-sm">
+                <strong>Earlier screens</strong>
+                <ul className="mt-2 space-y-2 text-xs text-muted-foreground">
+                  {run.screen_excerpts.map((excerpt, index) => (
+                    <li key={`${excerpt.step}-${excerpt.url}-${index}`}>
+                      <p>
+                        step {excerpt.step}
+                        {excerpt.title ? ` · ${excerpt.title}` : ''}
+                      </p>
+                      <pre className="mt-1 whitespace-pre-wrap font-sans opacity-90">
+                        {excerpt.text}
+                      </pre>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             <div ref={bottomRef} />
           </div>
         </ScrollArea>

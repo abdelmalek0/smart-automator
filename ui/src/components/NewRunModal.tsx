@@ -317,13 +317,14 @@ export default function NewRunModal({
             <div className="space-y-2">
               <Label htmlFor="success-criteria">Success criteria</Label>
               <p className="text-xs text-muted-foreground">
-                What should be true on the page when done (observations, not steps).
+                What should be true when done. Present: visible on the final page.
+                Referential: a value now should match one seen earlier (it is recorded from the page automatically).
               </p>
               <Textarea
                 id="success-criteria"
                 value={successCriteria}
                 onChange={(e) => setSuccessCriteria(e.target.value)}
-                placeholder="e.g. Order confirmation page shows with order total visible."
+                placeholder="e.g. Order confirmation shows a total. Or: checkout total matches the amount shown when the item was added."
                 rows={3}
                 required
               />

@@ -37,6 +37,13 @@ export interface CriteriaVerdict {
   reason: string
 }
 
+export interface ScreenExcerpt {
+  step: number
+  url: string
+  title: string
+  text: string
+}
+
 export interface CostBreakdownEntry {
   role: 'navigation' | 'planning' | string
   provider: string
@@ -140,6 +147,7 @@ export interface RunDetails extends RunSummary {
   progress?: RunProgress
   app_context?: Record<string, unknown>
   turn_timing?: TurnTiming
+  screen_excerpts?: ScreenExcerpt[]
 }
 
 export interface ProjectTask {

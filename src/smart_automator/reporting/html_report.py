@@ -119,6 +119,24 @@ def _render_summary_strip(data: dict[str, Any]) -> str:
         if verdict.get("evidence"):
             context_lines.append(f'<p class="context-prompt muted">Evidence: {_esc(verdict["evidence"])}</p>')
 
+    excerpts = data.get("screen_excerpts") or []
+    if excerpts:
+        context_lines.append('<p class="context-line">Earlier screens:</p>')
+        for excerpt in excerpts:
+            step = excerpt.get("step", "")
+            title = excerpt.get("title", "")
+            url = excerpt.get("url", "")
+            text = excerpt.get("text", "")
+            context_lines.append(
+                f'<p class="context-prompt muted">step {_esc(step)}'
+                f' {_esc(title)} {_esc(url)}</p>'
+            )
+            if text:
+                preview = text if len(str(text)) <= 400 else str(text)[:400] + "…"
+                context_lines.append(
+                    f'<p class="context-prompt muted">{_esc(preview)}</p>'
+                )
+
     return f"""
     <div class="summary-strip">
       <div class="header-line">{header_line}</div>

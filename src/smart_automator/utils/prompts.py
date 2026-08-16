@@ -1,9 +1,14 @@
 from datetime import datetime
 
 from ..agent.context import AgentContext
+from ..agent.findings import format_capture_hint
 from ..agent.messages.utils import wrap_untrusted_content
+from ..browser.accessible_names import collect_accessible_names_section
 from ..browser.observation import bounded_clickable_elements_to_string
 from ..browser.views import BrowserState
+
+NAVIGATOR_MAX_ACCESSIBLE_NAMES = 80
+NAVIGATOR_MAX_ACCESSIBLE_CHARS = 4000
 
 SECURITY_SUMMARY = """
 # Security (read once):
@@ -42,7 +47,7 @@ Rules:
 - If page is loading or no elements listed, use wait (seconds or duration, e.g. 3).
 - After submit/login/continue with no page change, re-check field values — do not wait.
 - Use done ONLY when the CURRENT page visibly confirms the ultimate task is complete and success criteria are observed on the page.
-- Success criteria describe what should be true on the page when finished — verify them by reading [Visible text] and indexed elements; they are NOT additional browser actions.
+- Success criteria describe what should be true when finished — verify present observations on the page; earlier screen copy is recorded automatically when a later comparison may be needed.
 - Derive actions from the task and <plan> next_steps only — never click/type/navigate solely because a criterion mentions text.
 - If a <plan> exists, follow next_steps from the latest <plan> message only; ignore superseded or older plans.
 - evaluation_previous_goal must be Failed unless the last action clearly succeeded on this page.
@@ -82,14 +87,15 @@ def get_planner_system_prompt() -> str:
  - Derive next_steps from the task only — success criteria are observations to verify at completion, not extra steps to perform
 
 # SUCCESS CRITERIA:
-- Success criteria describe what should be true on the page when finished; they are not additional steps.
+- Success criteria describe what should be true when finished; they are not additional steps.
 - Use success criteria only when validating done/final_answer against the CURRENT browser state.
+- If criteria compare a current value to an earlier screen, the current page must show the NOW side; do not treat navigator memory as the past value.
 
 # TASK COMPLETION VALIDATION:
 When determining if a task is "done":
 1. Read the task description carefully and compare against the CURRENT browser state shown
 2. Verify all aspects of the task have been completed successfully on the current page — not from navigator memory alone
-3. Verify success criteria are visibly met on the current page before setting done=true
+3. Verify success criteria against the current page (and earlier screen copy for past values) before setting done=true
 4. If the navigator called done and the CURRENT page already shows the task outcomes and success criteria, prefer done=true — do not invent extra steps from criteria wording alone
 5. If the navigator called done but the page still needs work, set done=false and give concrete next_steps
 6. If sign in is required and credentials are missing from the task, mark as done and ask user to sign in
@@ -129,6 +135,9 @@ def build_browser_state_message(
     include_action_results: bool = True,
     max_elements: int | None = None,
     max_chars: int | None = None,
+    include_accessible_names: bool = True,
+    max_accessible_names: int | None = None,
+    max_accessible_chars: int | None = None,
 ) -> str:
     raw_elements, shown_count, total_count = bounded_clickable_elements_to_string(
         browser_state.element_tree,
@@ -186,7 +195,7 @@ def build_browser_state_message(
             f"{elements_text}\n"
             "[End of page]\n"
             "Note: indexed [N] elements are actionable (including `(offscreen)` — click/input scrolls into view). "
-            "[Visible text] is read-only page copy "
+            "[Visible text] and [Accessible names] are read-only page copy "
             "for progress and success checks — not clickable.\n"
         )
     else:
@@ -202,6 +211,9 @@ def build_browser_state_message(
             "\nSuccess criteria to verify (read-only — not actions):\n"
             f"{context.success_criteria.strip()}\n"
         )
+    capture_hint = format_capture_hint(bool(getattr(context, "referential_criteria", False)))
+    if capture_hint:
+        criteria_section += f"{capture_hint}\n"
 
     step_info = ""
     if context.step_info:
@@ -233,6 +245,14 @@ def build_browser_state_message(
         if tab.id != browser_state.tab_id
     ]
 
+    accessible_section = _accessible_names_block(
+        context,
+        include=include_accessible_names,
+        max_names=max_accessible_names,
+        max_chars=max_accessible_chars,
+    )
+    accessible_suffix = f"\n{accessible_section}" if accessible_section else ""
+
     return f"""
 [Task history memory ends]
 [Current state starts here]
@@ -242,5 +262,25 @@ Other available tabs:
 {chr(10).join(other_tabs) if other_tabs else "  (none)"}
 Interactive elements from top layer of the current page:
 {formatted_elements}{criteria_section}{step_info}
-{action_results_desc}
+{action_results_desc}{accessible_suffix}
 """
+
+
+def _accessible_names_block(
+    context: AgentContext,
+    *,
+    include: bool,
+    max_names: int | None,
+    max_chars: int | None,
+) -> str:
+    if not include:
+        return ""
+    try:
+        page = context.browser_context.get_current_page()
+        return collect_accessible_names_section(
+            page,
+            max_names=max_names if max_names is not None else NAVIGATOR_MAX_ACCESSIBLE_NAMES,
+            max_chars=max_chars if max_chars is not None else NAVIGATOR_MAX_ACCESSIBLE_CHARS,
+        )
+    except Exception:
+        return ""

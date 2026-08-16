@@ -188,6 +188,21 @@ def _set_terminal_status(run: RunState, status: str, summary: str) -> None:
     run.broadcast({"type": "done", "status": status, "summary": summary})
 
 
+def _context_list(context, attr: str) -> list:
+    value = getattr(context, attr, None)
+    return list(value) if isinstance(value, list) else []
+
+
+def _serialize_excerpts(context) -> list[dict[str, Any]]:
+    payload: list[dict[str, Any]] = []
+    for excerpt in _context_list(context, "screen_excerpts"):
+        if hasattr(excerpt, "to_dict"):
+            payload.append(excerpt.to_dict())
+        elif isinstance(excerpt, dict):
+            payload.append(dict(excerpt))
+    return payload
+
+
 def _apply_criteria_verdict(
     run: RunState,
     executor: Executor,
@@ -198,6 +213,7 @@ def _apply_criteria_verdict(
     if isinstance(existing, dict) and "passed" in existing:
         verdict = dict(existing)
         run.criteria_verdict = verdict
+        run.screen_excerpts = _serialize_excerpts(context)
         if verdict.get("passed"):
             summary = (
                 verdict.get("reason")
@@ -220,6 +236,8 @@ def _apply_criteria_verdict(
         state_message=state_message,
         final_answer=context.final_answer or "",
         test_name=run.name,
+        excerpts=_context_list(context, "screen_excerpts"),
+        referential=bool(getattr(context, "referential_criteria", False)),
     )
     # Persist a truncated copy of what the grader saw for debugging false fails.
     preview = state_message.strip()
@@ -228,6 +246,7 @@ def _apply_criteria_verdict(
     if preview:
         verdict["observation_preview"] = preview
     run.criteria_verdict = verdict
+    run.screen_excerpts = _serialize_excerpts(context)
     if verdict.get("passed"):
         summary = (
             verdict.get("reason")
@@ -261,12 +280,24 @@ def _save_run_replay_data(run: RunState, executor: Executor) -> None:
     save_run_replay(run.run_id, replay_steps, replay_script)
 
 
+def _replay_stop_reason(results: list, steps: list[dict[str, Any]]) -> str | None:
+    total = len(steps)
+    for index, result in enumerate(results):
+        error = getattr(result, "error", None)
+        if error:
+            return f"Replay stopped at step {index + 1}/{total}: {error}"
+    if len(results) < total:
+        return f"Replay stopped after {len(results)}/{total} steps."
+    return None
+
+
 def _script_replay_with_events(
     run: RunState,
     browser_context: BrowserContext,
     steps: list[dict[str, Any]],
     *,
     action_retry_wait_seconds: float = 0.0,
+    executor: Executor | None = None,
 ) -> list:
     from ..agent.context import ActionResult
 
@@ -312,6 +343,27 @@ def _script_replay_with_events(
 
         if result.error:
             break
+
+        context = executor.context if executor is not None else None
+        if context is not None and getattr(context, "referential_criteria", False):
+            try:
+                if context.step_info is None:
+                    from ..agent.context import AgentStepInfo
+
+                    context.step_info = AgentStepInfo(
+                        step_number=index,
+                        max_steps=max(len(steps), 1),
+                    )
+                else:
+                    context.step_info.step_number = index
+                CriteriaCheckerAgent.build_state_message(context)
+            except Exception:
+                log.debug(
+                    "[run:%s] replay screen excerpt capture failed at step %s",
+                    run.run_id[:8],
+                    index + 1,
+                    exc_info=True,
+                )
 
     return results
 
@@ -481,13 +533,19 @@ def run_automation(run: RunState) -> None:
 
         if replay_script_data is not None:
             browser_context.remove_highlight()
+            replay_steps = replay_script_data.get("replay_steps") or []
             replay_results = _script_replay_with_events(
                 run,
                 browser_context,
-                replay_script_data.get("replay_steps") or [],
+                replay_steps,
                 action_retry_wait_seconds=config.replay_action_retry_wait_seconds,
+                executor=executor,
             )
             if run.status == "cancelled" or run._cancelled.is_set():
+                return
+            stop_reason = _replay_stop_reason(replay_results, replay_steps)
+            if stop_reason:
+                _set_terminal_status(run, "fail", stop_reason)
                 return
             _apply_criteria_verdict(run, executor, llm)
             return

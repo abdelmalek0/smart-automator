@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from ..actions.builder import NavigatorActionRegistry, parse_actions
 from ..actions.schemas import Action
 from ..agent.context import ActionResult, AgentContext
+from ..agent.findings import capture_screen_excerpt
 from ..agent.history import AgentStepRecord, BrowserStateHistory
 from ..agent.messages.utils import coerce_navigator_response, fix_actions, preview_text
 from ..agent.submit_hint import build_submit_completeness_hint
@@ -105,6 +106,13 @@ class NavigatorAgent(BaseAgent):
             should_abort=self._hitl_should_abort,
         )
         state_message = build_browser_state_message(self._context, browser_state)
+        self._context.last_observation_text = state_message
+        capture_screen_excerpt(
+            self._context,
+            state_message,
+            url=browser_state.url,
+            title=browser_state.title,
+        )
         message_manager.add_state_message(state_message)
         self._context.state_message_added = True
         return browser_state

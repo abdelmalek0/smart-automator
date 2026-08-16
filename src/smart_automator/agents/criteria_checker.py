@@ -4,9 +4,11 @@ import logging
 
 from typing import TYPE_CHECKING
 
-from ..browser.accessible_names import (
-    collect_accessible_names,
-    format_accessible_names_section,
+from ..agent.findings import (
+    ScreenExcerpt,
+    capture_screen_excerpt,
+    format_excerpts_for_checker,
+    missing_historical_excerpts_note,
 )
 from ..utils.prompts import build_browser_state_message
 from .base import BaseAgent
@@ -26,17 +28,22 @@ CRITERIA_MAX_ACCESSIBLE_CHARS = 12000
 
 CRITERIA_CHECKER_SYSTEM_PROMPT = """You are a test criteria evaluator for browser QA automation.
 
-Review the task, success criteria, current browser state, and any completion notes.
+Review the task, success criteria, current browser state, earlier screen copy, and any completion notes.
 Output ONLY valid JSON:
 
 {"passed": true, "evidence": "what you observed on the page", "reason": "why passed or failed"}
 
 Rules:
 - Judge ONLY against the success criteria, not the task instructions alone.
-- Base your judgment on the CURRENT page state shown, not assumptions or memory.
+- The CURRENT page is ground truth for what is true now.
+- Earlier screens are recorded page copy and the only allowed evidence for what was true then.
+- Short labels and values are kept as seen; lines marked [summarized] are condensed huge paragraphs — still use any values they retain.
+- If a criterion compares a current value to an earlier value, compare the current page against earlier screens.
+- If a criterion needs a past value, no earlier screen copy contains it, and that past value is not clearly on the CURRENT page, passed=false.
+- Do not use completion notes, navigator memory, or assumptions as the past value.
 - Use interactive elements, visible text, AND accessible names as evidence of page content.
-- passed=true only when the success criteria are clearly fulfilled on the current page.
-- passed=false when criteria are unmet, ambiguous, or contradicted by the page.
+- passed=true only when the success criteria are clearly fulfilled.
+- passed=false when criteria are unmet, ambiguous, or contradicted.
 - No commentary outside JSON.
 """
 
@@ -53,7 +60,10 @@ class CriteriaCheckerAgent(BaseAgent):
         state_message: str,
         final_answer: str = "",
         test_name: str | None = None,
+        excerpts: list[ScreenExcerpt] | None = None,
+        referential: bool = False,
     ) -> dict:
+        recorded = list(excerpts or [])
         user_parts = []
         if test_name and test_name.strip():
             user_parts.append(f"Test name: {test_name.strip()}")
@@ -61,10 +71,19 @@ class CriteriaCheckerAgent(BaseAgent):
         user_parts.append(f"Success criteria: {success_criteria.strip()}")
         if final_answer.strip():
             user_parts.append(f"Completion notes: {final_answer.strip()}")
+        excerpts_block = format_excerpts_for_checker(recorded)
+        if excerpts_block:
+            user_parts.append(excerpts_block)
+        missing_note = missing_historical_excerpts_note(
+            referential=referential,
+            excerpts=recorded,
+        )
+        if missing_note:
+            user_parts.append(missing_note)
         if state_message.strip():
             user_parts.append(state_message.strip())
         user_parts.append(
-            "Does the current page state satisfy the success criteria? "
+            "Do the current page state and earlier screens satisfy the success criteria? "
             "Respond with JSON only."
         )
 
@@ -96,23 +115,16 @@ class CriteriaCheckerAgent(BaseAgent):
                 include_action_results=False,
                 max_elements=CRITERIA_MAX_OBSERVATION_ELEMENTS,
                 max_chars=CRITERIA_MAX_OBSERVATION_CHARS,
+                max_accessible_names=CRITERIA_MAX_ACCESSIBLE_NAMES,
+                max_accessible_chars=CRITERIA_MAX_ACCESSIBLE_CHARS,
             )
-            accessible_section = cls._accessible_names_section(context)
-            if accessible_section:
-                message = f"{message.rstrip()}\n\n{accessible_section}"
+            context.last_observation_text = message
+            capture_screen_excerpt(
+                context,
+                message,
+                url=browser_state.url,
+                title=browser_state.title,
+            )
             return message
-        except Exception:
-            return ""
-
-    @classmethod
-    def _accessible_names_section(cls, context: "AgentContext") -> str:
-        try:
-            page = context.browser_context.get_current_page()
-            names = collect_accessible_names(
-                page,
-                max_names=CRITERIA_MAX_ACCESSIBLE_NAMES,
-                max_chars=CRITERIA_MAX_ACCESSIBLE_CHARS,
-            )
-            return format_accessible_names_section(names)
         except Exception:
             return ""

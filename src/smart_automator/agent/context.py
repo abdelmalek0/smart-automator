@@ -8,6 +8,7 @@ from ..browser.dom import DEFAULT_INCLUDE_ATTRIBUTES
 
 if TYPE_CHECKING:
     from ..browser.context import BrowserContext
+    from .findings import ScreenExcerpt
     from .history import AgentStepHistory
     from .messages.service import MessageManager
     from .verification import PageSnapshot
@@ -140,6 +141,10 @@ class AgentContext:
 
         self.history: AgentStepHistory = AgentStepHistory()
         self.success_criteria: str = ""
+        self.referential_criteria: bool = False
+        self.criteria_keywords: set[str] = set()
+        self.screen_excerpts: list[ScreenExcerpt] = []
+        self.last_observation_text: str = ""
 
     def record_failed_action(self, url: str, action_name: str, action_args: dict, error: str) -> None:
         signature = {

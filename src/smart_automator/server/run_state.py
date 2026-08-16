@@ -46,6 +46,7 @@ class RunState:
         self.cdp_url = cdp_url
         self.fresh_profile = fresh_profile
         self.criteria_verdict: dict[str, Any] = {}
+        self.screen_excerpts: list[dict[str, Any]] = []
         self.status = "pending"
         self.hitl_reason = ""
         self.hitl_source = ""
@@ -135,6 +136,7 @@ class RunState:
             "progress": self.progress,
             "new_tools": self.new_tools,
             "turn_timing": self.turn_timing,
+            "screen_excerpts": self.screen_excerpts,
         }
 
     def to_persisted_dict(self, *, has_replay_script: bool = False) -> dict[str, Any]:
@@ -163,6 +165,9 @@ class RunState:
             website_task_id=data.get("website_task_id"),
         )
         run.criteria_verdict = dict(data.get("criteria_verdict") or {})
+        run.screen_excerpts = list(
+            data.get("screen_excerpts") or data.get("findings") or []
+        )
         run.status = str(data.get("status", "pending"))
         run.hitl_reason = str(data.get("hitl_reason", ""))
         run.hitl_source = str(data.get("hitl_source", ""))

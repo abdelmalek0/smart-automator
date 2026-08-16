@@ -273,6 +273,52 @@ class TestReportCriteriaFields(unittest.TestCase):
         self.assertIn("Success criteria:", html)
         self.assertIn("Criteria verdict:", html)
 
+    def test_build_report_data_includes_screen_excerpts(self):
+        run = RunState(
+            run_id="run-2",
+            task="Checkout",
+            headless=True,
+            max_steps=10,
+            success_criteria="Total matches the amount shown when we added the item",
+            name="Checkout compare",
+            user_id="test-user",
+        )
+        run.status = "pass"
+        run.screen_excerpts = [
+            {
+                "step": 8,
+                "url": "https://shop.example/mug",
+                "title": "Cart",
+                "text": "Blue mug\n$12.00",
+            }
+        ]
+        data = build_report_data(run, AgentStepHistory())
+        self.assertEqual(data["screen_excerpts"][0]["text"], "Blue mug\n$12.00")
+        html = render_html_report(data)
+        self.assertIn("Earlier screens:", html)
+        self.assertIn("$12.00", html)
+
+    def test_run_state_persists_screen_excerpts(self):
+        run = RunState(
+            run_id="run-persist",
+            task="Checkout",
+            headless=True,
+            max_steps=10,
+            success_criteria="Total matches the amount shown when we added the item",
+            user_id="test-user",
+        )
+        run.screen_excerpts = [
+            {
+                "step": 8,
+                "url": "https://shop.example/mug",
+                "title": "Cart",
+                "text": "Blue mug\n$12.00",
+            }
+        ]
+        restored = RunState.from_persisted_dict(run.to_persisted_dict())
+        self.assertEqual(restored.screen_excerpts[0]["text"], "Blue mug\n$12.00")
+        self.assertEqual(restored.to_dict()["screen_excerpts"][0]["title"], "Cart")
+
 
 class TestApplyCriteriaVerdictPreview(unittest.TestCase):
     def test_persists_observation_preview(self):
