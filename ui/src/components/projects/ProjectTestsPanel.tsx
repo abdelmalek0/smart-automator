@@ -39,6 +39,7 @@ interface Props {
   onSelectNone: () => void
   onRunTask: (project: Project, task: ProjectTask) => void
   onRetrainTask: (project: Project, task: ProjectTask) => void
+  onTrainManually: (project: Project, task: ProjectTask) => void
   onEditTask: (task: ProjectTask) => void
   onDeleteTask: (taskId: string) => void
 }
@@ -69,6 +70,7 @@ export default function ProjectTestsPanel({
   onSelectNone,
   onRunTask,
   onRetrainTask,
+  onTrainManually,
   onEditTask,
   onDeleteTask,
 }: Props) {
@@ -109,7 +111,7 @@ export default function ProjectTestsPanel({
         <div className="space-y-1.5">
           <h2 className="text-base font-medium">No tests yet</h2>
           <p className="text-sm text-muted-foreground max-w-sm mx-auto">
-            Add a test here or save a run to this project from New Run.
+            Add a test here, then train it with the agent or by demonstrating the flow.
           </p>
         </div>
         <div className="flex flex-wrap items-center justify-center gap-2">
@@ -240,6 +242,7 @@ export default function ProjectTestsPanel({
               onIncludedInSuiteChange={(included) => onSetTaskIncluded(task.id, included)}
               onRun={() => onRunTask(project, task)}
               onRetrain={() => onRetrainTask(project, task)}
+              onTrainManually={() => onTrainManually(project, task)}
               onExport={() =>
                 downloadProjectTestsPack(project.name, [task], { taskName: task.name })
               }

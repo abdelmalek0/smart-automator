@@ -17,6 +17,8 @@ export type RunStatus =
 
 export type StepStatus = 'running' | 'pass' | 'fail' | 'error'
 
+export type RunMode = 'training' | 'manual' | 'automatic'
+
 export interface RunDraft {
   name?: string
   task: string
@@ -29,6 +31,7 @@ export interface RunDraft {
   fresh_profile?: boolean
   source_run_id?: string
   use_replay_script?: boolean
+  run_mode?: RunMode
 }
 
 export interface CriteriaVerdict {
@@ -61,6 +64,7 @@ export interface RunSummary {
   success_criteria: string
   source_run_id?: string | null
   use_replay_script?: boolean
+  run_mode?: RunMode
   has_replay_script?: boolean
   website_id?: string | null
   website_task_id?: string | null
@@ -294,6 +298,7 @@ export type WSEvent =
   | { type: 'human_intervention_ended'; cycle?: number }
   | { type: 'human_action'; action: string; args: Record<string, unknown>; result: string; step?: Step; cycle?: number }
   | { type: 'human_handoff'; analysis: Record<string, unknown>; actions: Array<Record<string, unknown>>; step?: Step; intervention_reason?: string; intervention_source?: string; start_url?: string; end_url?: string; cycle?: number }
+  | { type: 'task_extracted'; task: string; name?: string | null }
   | { type: 'tokens_update'; tokens: number; prompt_tokens: number; completion_tokens: number; cache_tokens: number; cost_usd: number | null; cost_breakdown?: CostBreakdownEntry[] }
   | { type: 'turn_timing'; snapshot_ms?: number; llm_navigator_ms?: number; batch_ms?: number; settle_ms?: number; turn_ms?: number }
   | { type: 'error'; message: string }

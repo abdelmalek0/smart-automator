@@ -30,6 +30,7 @@ class RunState:
         source_run_id: Optional[str] = None,
         use_replay_script: bool = False,
         website_task_id: Optional[str] = None,
+        run_mode: Optional[str] = None,
     ):
         self.run_id = run_id
         self.user_id = user_id
@@ -38,6 +39,12 @@ class RunState:
         self.success_criteria = success_criteria
         self.source_run_id = source_run_id
         self.use_replay_script = use_replay_script
+        if run_mode:
+            self.run_mode = run_mode
+        elif use_replay_script:
+            self.run_mode = "automatic"
+        else:
+            self.run_mode = "training"
         self.website_id = website_id
         self.website_task_id = website_task_id
         self.effective_task = effective_task or task
@@ -100,6 +107,7 @@ class RunState:
             "success_criteria": self.success_criteria,
             "source_run_id": self.source_run_id,
             "use_replay_script": self.use_replay_script,
+            "run_mode": self.run_mode,
             "has_replay_script": has_replay_script,
             "website_id": self.website_id,
             "website_task_id": self.website_task_id,
@@ -163,6 +171,7 @@ class RunState:
             source_run_id=data.get("source_run_id"),
             use_replay_script=bool(data.get("use_replay_script", False)),
             website_task_id=data.get("website_task_id"),
+            run_mode=data.get("run_mode"),
         )
         run.criteria_verdict = dict(data.get("criteria_verdict") or {})
         run.screen_excerpts = list(

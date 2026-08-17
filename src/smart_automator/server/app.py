@@ -42,11 +42,16 @@ from .config_service import (
 from .models import (
     ConfigUpdate,
     LoginRequest,
+    MANUAL_PLACEHOLDER_TASK,
     PricingEntryModel,
     ProjectTestsPack,
     ProjectPack,
     ReplayUpdateRequest,
+    RUN_MODE_AUTOMATIC,
+    RUN_MODE_MANUAL,
+    RUN_MODE_TRAINING,
     StartRunRequest,
+    VALID_RUN_MODES,
     WebsiteCreateRequest,
     WebsiteTaskCreateRequest,
     WebsiteTaskUpdateRequest,
@@ -168,13 +173,20 @@ def _effective_has_replay_script(run: RunState) -> bool:
 @app.post("/api/runs", status_code=201)
 async def start_run(req: StartRunRequest, user: User = Depends(get_current_user)):
     run_id = str(uuid.uuid4())
-    display_task = req.task.strip()
-    if not display_task:
-        raise HTTPException(status_code=400, detail="Task is required")
+    run_mode = req.run_mode if req.run_mode in VALID_RUN_MODES else RUN_MODE_TRAINING
+    use_replay_script = run_mode == RUN_MODE_AUTOMATIC
+    if run_mode == RUN_MODE_MANUAL:
+        if req.headless:
+            raise HTTPException(status_code=400, detail="Manual mode cannot run headless")
+        display_task = req.task.strip() or MANUAL_PLACEHOLDER_TASK
+    else:
+        display_task = req.task.strip()
+        if not display_task:
+            raise HTTPException(status_code=400, detail="Task is required")
     success_criteria = req.success_criteria.strip()
     if not success_criteria:
         raise HTTPException(status_code=400, detail="Success criteria is required")
-    if req.use_replay_script:
+    if use_replay_script:
         if not req.source_run_id:
             raise HTTPException(
                 status_code=400,
@@ -192,7 +204,7 @@ async def start_run(req: StartRunRequest, user: User = Depends(get_current_user)
             )
         source_run_id = req.source_run_id
     else:
-        # Training runs are never linked to other runs via source_run_id.
+        # Training and manual runs are never linked to other runs via source_run_id.
         source_run_id = None
 
     test_name = req.name.strip() if req.name else None
@@ -246,8 +258,9 @@ async def start_run(req: StartRunRequest, user: User = Depends(get_current_user)
         fresh_profile=req.fresh_profile,
         name=test_name,
         source_run_id=source_run_id,
-        use_replay_script=req.use_replay_script,
+        use_replay_script=use_replay_script,
         website_task_id=website_task_id,
+        run_mode=run_mode,
     )
     run._loop = asyncio.get_event_loop()
     add_run(run)
@@ -469,6 +482,11 @@ async def take_control(run_id: str, user: User = Depends(get_current_user)):
 @app.post("/api/runs/{run_id}/return-control")
 async def return_control(run_id: str, user: User = Depends(get_current_user)):
     run = _require_owned_run(user, run_id)
+    if run.run_mode == RUN_MODE_MANUAL:
+        raise HTTPException(
+            status_code=400,
+            detail="Use finish demonstration to complete a manual run",
+        )
     unavailable = _hitl_unavailable_reason(run)
     if unavailable:
         raise HTTPException(status_code=400, detail=unavailable)
@@ -482,6 +500,31 @@ async def return_control(run_id: str, user: User = Depends(get_current_user)):
         raise HTTPException(status_code=400, detail=error or "Failed to return control")
     run.human_controlling = False
     return {"ok": True, "human_controlling": False}
+
+
+@app.post("/api/runs/{run_id}/finish-manual")
+async def finish_manual(run_id: str, user: User = Depends(get_current_user)):
+    run = _require_owned_run(user, run_id)
+    if run.run_mode != RUN_MODE_MANUAL:
+        raise HTTPException(status_code=400, detail="Finish is only available for manual runs")
+    unavailable = _hitl_unavailable_reason(run)
+    if unavailable:
+        raise HTTPException(status_code=400, detail=unavailable)
+    if run.status not in ("running", "awaiting_human", "pending"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot finish demonstration while run status is {run.status}",
+        )
+    if run.executor is None:
+        raise HTTPException(status_code=400, detail="Run executor is not active")
+    ok, error = await asyncio.to_thread(
+        run.executor.submit_hitl_command,
+        "finish_manual",
+        wait=False,
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail=error or "Failed to finish demonstration")
+    return {"ok": True}
 
 
 async def _safe_ws_send_json(websocket: WebSocket, payload: dict) -> bool:

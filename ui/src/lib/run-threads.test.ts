@@ -11,6 +11,7 @@ import {
   nextVisibleTestRunCount,
   TEST_RUNS_PAGE_SIZE,
   testAutomaticRuns,
+  testManualRuns,
   testTrainingRuns,
   sectionAttemptLabel,
   UNCATEGORIZED_THREAD_ID,
@@ -74,6 +75,7 @@ describe('flat section helpers', () => {
       title: 'Login',
       runs: [t1, a1, orphan],
       trainings: tree.trainings,
+      manuals: tree.manuals,
       orphanAutomaticRuns: tree.orphanAutomaticRuns,
     }
 
@@ -120,6 +122,27 @@ describe('buildTestRunTree', () => {
     ])
     expect(tree.trainings.find((n) => n.training.run_id === 't-retry')?.automaticRuns).toEqual([])
     expect(tree.orphanAutomaticRuns).toEqual([])
+  })
+
+  it('nests automatic runs under a manual source', () => {
+    const m1 = mockRun('m1', 100, { run_mode: 'manual' })
+    const a1 = mockRun('a1', 150, { use_replay_script: true, source_run_id: 'm1' })
+    const tree = buildTestRunTree([m1, a1])
+    expect(tree.trainings).toEqual([])
+    expect(tree.manuals.map((n) => n.training.run_id)).toEqual(['m1'])
+    expect(tree.manuals[0].automaticRuns.map((r) => r.run_id)).toEqual(['a1'])
+    const test: RunTestGroup = {
+      id: 'test-1',
+      taskKey: 'Login',
+      title: 'Login',
+      runs: [m1, a1],
+      trainings: tree.trainings,
+      manuals: tree.manuals,
+      orphanAutomaticRuns: tree.orphanAutomaticRuns,
+    }
+    expect(testManualRuns(test).map((r) => r.run_id)).toEqual(['m1'])
+    expect(testAutomaticRuns(test).map((r) => r.run_id)).toEqual(['a1'])
+    expect(automaticSourceExistsInTest(a1, test)).toBe(true)
   })
 
   it('places automatic runs with missing source under orphans', () => {

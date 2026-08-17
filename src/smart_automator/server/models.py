@@ -6,6 +6,21 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from smart_automator.config import normalize_browser_overrides
 
+RUN_MODE_TRAINING = "training"
+RUN_MODE_MANUAL = "manual"
+RUN_MODE_AUTOMATIC = "automatic"
+VALID_RUN_MODES = frozenset({RUN_MODE_TRAINING, RUN_MODE_MANUAL, RUN_MODE_AUTOMATIC})
+MANUAL_PLACEHOLDER_TASK = "Human demonstration"
+
+
+def resolve_run_mode(run_mode: str | None, use_replay_script: bool) -> str:
+    mode = (run_mode or "").strip().lower()
+    if mode:
+        if mode not in VALID_RUN_MODES:
+            raise ValueError(f"Invalid run_mode: {run_mode}")
+        return mode
+    return RUN_MODE_AUTOMATIC if use_replay_script else RUN_MODE_TRAINING
+
 
 class LoginRequest(BaseModel):
     username: str
@@ -18,7 +33,7 @@ class RegisterRequest(BaseModel):
 
 
 class StartRunRequest(BaseModel):
-    task: str
+    task: str = ""
     success_criteria: str
     name: Optional[str] = None
     headless: bool = False
@@ -29,6 +44,7 @@ class StartRunRequest(BaseModel):
     website_task_id: Optional[str] = None
     source_run_id: Optional[str] = None
     use_replay_script: bool = False
+    run_mode: Optional[str] = None
 
     @model_validator(mode="after")
     def _normalize_browser_overrides(self):
@@ -38,6 +54,11 @@ class StartRunRequest(BaseModel):
         )
         self.cdp_url = cdp or None
         self.fresh_profile = fresh
+        try:
+            self.run_mode = resolve_run_mode(self.run_mode, self.use_replay_script)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        self.use_replay_script = self.run_mode == RUN_MODE_AUTOMATIC
         return self
 
 

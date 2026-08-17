@@ -5,6 +5,7 @@ export type StartRunPayload = Parameters<typeof startRun>[0]
 
 export type BuildStartRunPayloadOptions = {
   forceTraining?: boolean
+  forceManual?: boolean
 }
 
 /** Build POST /api/runs payload for a project test (automatic when trained). */
@@ -13,6 +14,21 @@ export function buildStartRunPayload(
   task: ProjectTask,
   options: BuildStartRunPayloadOptions = {},
 ): StartRunPayload {
+  if (options.forceManual) {
+    return {
+      name: task.name ?? undefined,
+      task: '',
+      success_criteria: task.success_criteria,
+      headless: false,
+      max_steps: task.max_steps,
+      fresh_profile: task.fresh_profile ?? true,
+      website_id: project.id,
+      website_task_id: task.id,
+      use_replay_script: false,
+      run_mode: 'manual',
+    }
+  }
+
   const canAutomatic =
     !options.forceTraining && Boolean(task.has_trained_replay && task.last_trained_run_id)
   return {
@@ -24,6 +40,7 @@ export function buildStartRunPayload(
     fresh_profile: task.fresh_profile ?? true,
     website_id: project.id,
     website_task_id: task.id,
+    run_mode: canAutomatic ? 'automatic' : 'training',
     ...(canAutomatic
       ? {
           source_run_id: task.last_trained_run_id!,

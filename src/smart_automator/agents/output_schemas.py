@@ -53,6 +53,13 @@ class HitlDebriefOutput(BaseModel):
     confidence: str = "low"
 
 
+class TaskExtractorOutput(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    task: str = ""
+    name: str = ""
+
+
 def _coerce_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return value
@@ -194,6 +201,18 @@ def validate_hitl_debrief_output(parsed: dict[str, Any]) -> dict[str, Any]:
         payload["error"] = str(parsed["error"])
     try:
         validated = HitlDebriefOutput.model_validate(payload)
+    except ValidationError:
+        return payload
+    return validated.model_dump()
+
+
+def validate_task_extractor_output(parsed: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "task": str(parsed.get("task", "") or "").strip(),
+        "name": str(parsed.get("name", "") or "").strip(),
+    }
+    try:
+        validated = TaskExtractorOutput.model_validate(payload)
     except ValidationError:
         return payload
     return validated.model_dump()

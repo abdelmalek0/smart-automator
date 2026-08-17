@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ExternalLink, Globe, Hand, Loader2, RotateCcw } from 'lucide-react'
-import { cancelRun, listProjects, listRuns, returnControl, takeControl } from '@/api'
+import { cancelRun, finishManual, listProjects, listRuns, returnControl, takeControl } from '@/api'
 import { useRunStream } from '@/hooks/useRunStream'
 import RunStats from '@/components/RunStats'
 import StepCard from '@/components/StepCard'
@@ -31,6 +31,8 @@ import {
   executionModeChipClass,
   executionModeLabel,
   executionModeShortLabel,
+  isManualRun,
+  MANUAL_PLACEHOLDER_TASK,
   statusBadgeVariant,
   statusLabel,
 } from '@/lib/run-status'
@@ -115,7 +117,10 @@ export default function RunView({ runId, onRunComplete }: Props) {
   const isRunning = isActiveRun
   const primaryAction = run && !isActiveRun ? getPrimaryRunAction(run, projects) : null
   const humanControlling = Boolean(run?.human_controlling)
-  const canUseHitl = Boolean(run && !run.headless && isActiveRun && !run.use_replay_script)
+  const isManual = Boolean(run && isManualRun(run))
+  const canUseHitl = Boolean(
+    run && !run.headless && isActiveRun && !run.use_replay_script && !isManual,
+  )
   const showReport =
     reportReady || (run?.status && ['pass', 'fail', 'error'].includes(run.status))
 
@@ -162,6 +167,29 @@ export default function RunView({ runId, onRunComplete }: Props) {
     }
   }
 
+  async function handleFinishManual() {
+    setHitlBusy(true)
+    setHitlError(null)
+    try {
+      await finishManual(runId)
+    } catch (err) {
+      setHitlError(err instanceof Error ? err.message : 'Failed to finish demonstration')
+    } finally {
+      setHitlBusy(false)
+    }
+  }
+
+  const procedureTask =
+    run?.task && run.task !== MANUAL_PLACEHOLDER_TASK ? run.task : ''
+  const displayTitle =
+    run?.name ||
+    (isManual && isActiveRun && !procedureTask ? 'Recording demonstration…' : '') ||
+    (!procedureTask ? run?.task || '…' : '')
+  const draftTask = (run?.steps ?? [])
+    .filter((step) => step.source === 'human')
+    .map((step, index) => `${index + 1}. ${step.result || step.action}`)
+    .join('\n')
+
   return (
     <div className="flex flex-col h-full">
       <div className="flex-shrink-0 px-6 py-4 border-b border-border flex items-start gap-4">
@@ -170,13 +198,13 @@ export default function RunView({ runId, onRunComplete }: Props) {
             <span className="text-xs text-muted-foreground mono">{runId.slice(0, 8)}</span>
             {run && (
               <span
-                title={executionModeLabel(run.use_replay_script)}
+                title={executionModeLabel(run)}
                 className={cn(
                   'inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-semibold',
-                  executionModeChipClass(run.use_replay_script),
+                  executionModeChipClass(run),
                 )}
               >
-                {executionModeShortLabel(run.use_replay_script)}
+                {executionModeShortLabel(run)}
               </span>
             )}
           </div>
@@ -186,9 +214,24 @@ export default function RunView({ runId, onRunComplete }: Props) {
               {projectName}
             </Badge>
           )}
-          <h2 className="text-sm font-medium leading-snug line-clamp-5">
-            {run?.name || run?.task || '…'}
-          </h2>
+          {displayTitle && (
+            <h2 className="text-sm font-medium leading-snug">{displayTitle}</h2>
+          )}
+          {procedureTask && (
+            <p className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap leading-relaxed max-h-56 overflow-y-auto">
+              {procedureTask}
+            </p>
+          )}
+          {isManual && isActiveRun && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Perform the flow in the browser, then click Done. The agent is recording, not driving.
+            </p>
+          )}
+          {isManual && draftTask && run?.task === MANUAL_PLACEHOLDER_TASK && (
+            <p className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap line-clamp-6">
+              <span className="font-medium text-foreground">Draft:</span> {draftTask}
+            </p>
+          )}
           {run?.success_criteria && (
             <p className="mt-1 text-xs text-muted-foreground line-clamp-3">
               <span className="font-medium text-foreground">Criteria:</span> {run.success_criteria}
@@ -206,7 +249,7 @@ export default function RunView({ runId, onRunComplete }: Props) {
             </p>
           )}
           {run?.use_replay_script && run.source_run_id && !sourceRunExists && (
-            <p className="mt-1 text-xs text-muted-foreground">Training removed</p>
+            <p className="mt-1 text-xs text-muted-foreground">Source removed</p>
           )}
           {streamError && run?.status === 'error' && (
             <p className="mt-1 text-xs text-destructive break-words">{streamError}</p>
@@ -244,6 +287,16 @@ export default function RunView({ runId, onRunComplete }: Props) {
                 </AlertDialogFooter>
               </AlertDialogContent>
             </AlertDialog>
+          )}
+          {isManual && isActiveRun && (
+            <div className="flex flex-col items-end gap-1">
+              {hitlError && (
+                <p className="text-xs text-destructive break-words max-w-[14rem] text-right">{hitlError}</p>
+              )}
+              <Button size="sm" onClick={handleFinishManual} disabled={hitlBusy}>
+                {hitlBusy ? 'Finishing…' : 'Done'}
+              </Button>
+            </div>
           )}
           {canUseHitl && (
             <div className="flex flex-col items-end gap-1">

@@ -29,8 +29,10 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { useRunStartGate } from '@/hooks/useRunStartGate'
+import { MANUAL_PLACEHOLDER_TASK } from '@/lib/run-status'
 import { cn } from '@/lib/utils'
-import type { ProjectTask, ReplayStep } from '@/types'
+import type { ProjectTask, ReplayStep, RunMode } from '@/types'
 
 export const REPLAY_ACTIONS = [
   'go_to_url',
@@ -100,7 +102,8 @@ interface Props {
     max_steps: number
     cdp_url?: string
     fresh_profile?: boolean
-  }) => Promise<void>
+  }) => Promise<ProjectTask | void>
+  onStartManualRun?: (task: ProjectTask) => Promise<void>
 }
 
 export default function TestEditorDialog({
@@ -110,8 +113,10 @@ export default function TestEditorDialog({
   task,
   mode = 'edit',
   onSaveTask,
+  onStartManualRun,
 }: Props) {
   const isCreate = mode === 'create' || !task
+  const runStartGate = useRunStartGate()
   const { data: config } = useQuery({
     queryKey: ['config'],
     queryFn: getConfig,
@@ -130,8 +135,14 @@ export default function TestEditorDialog({
   const [expandedStep, setExpandedStep] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [trainMode, setTrainMode] = useState<Extract<RunMode, 'training' | 'manual'>>('training')
 
   const trainedRunId = task?.has_trained_replay ? task.last_trained_run_id : null
+  const isManualCreate = isCreate && trainMode === 'manual'
+
+  useEffect(() => {
+    if (open) setTrainMode('training')
+  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -247,7 +258,7 @@ export default function TestEditorDialog({
   }
 
   async function handleSave() {
-    if (!prompt.trim()) {
+    if (!isManualCreate && !prompt.trim()) {
       setSaveError('Task prompt is required')
       return
     }
@@ -255,22 +266,34 @@ export default function TestEditorDialog({
       setSaveError('Success criteria is required')
       return
     }
+    if (isManualCreate && !runStartGate.canStartRun) {
+      setSaveError(runStartGate.blockHint ?? 'Cannot start a run right now')
+      return
+    }
     setSaving(true)
     setSaveError(null)
     try {
-      await onSaveTask({
+      const saved = await onSaveTask({
         projectId,
         taskId: isCreate ? undefined : task?.id,
         name: name.trim() || null,
-        task: prompt.trim(),
+        task: isManualCreate ? MANUAL_PLACEHOLDER_TASK : prompt.trim(),
         success_criteria: criteria.trim(),
-        headless,
+        headless: isManualCreate ? false : headless,
         max_steps: maxSteps,
         cdp_url: undefined,
         fresh_profile: freshProfile,
       })
       if (!isCreate && trainedRunId && stepsDirty) {
         await updateRunReplay(trainedRunId, reindex(steps))
+      }
+      if (isManualCreate) {
+        if (!saved) {
+          throw new Error('Test was created but could not start the demonstration')
+        }
+        onOpenChange(false)
+        await onStartManualRun?.(saved)
+        return
       }
       onOpenChange(false)
     } catch (err) {
@@ -287,7 +310,9 @@ export default function TestEditorDialog({
           <DialogTitle>{isCreate ? 'Add test' : 'Edit test'}</DialogTitle>
           <DialogDescription>
             {isCreate
-              ? 'Create a test for this project. Train it with a successful run to unlock editable automatic steps.'
+              ? isManualCreate
+                ? 'Write success criteria, then demonstrate the flow. We save a replay and write the task from what you did.'
+                : 'Create a test for this project. Train it with a successful run or a manual demonstration to unlock editable automatic steps.'
               : 'Update test settings and, when trained, the automatic execution steps.'}
           </DialogDescription>
         </DialogHeader>
@@ -299,9 +324,54 @@ export default function TestEditorDialog({
                 Basics
               </p>
               <p className="text-[11px] text-muted-foreground mt-0.5">
-                Identity and what the agent should accomplish.
+                {isManualCreate
+                  ? 'Name the test and how you will know it passed. You perform the steps.'
+                  : 'Identity and what the agent should accomplish.'}
               </p>
             </div>
+            {isCreate && (
+              <div className="space-y-1.5">
+                <Label>How to train</Label>
+                <div
+                  className="grid grid-cols-2 gap-1 rounded-lg border border-border bg-background/60 p-1"
+                  role="group"
+                  aria-label="How to train"
+                >
+                  <button
+                    type="button"
+                    onClick={() => setTrainMode('training')}
+                    className={cn(
+                      'rounded-md px-3 py-2 text-sm transition-colors',
+                      trainMode === 'training'
+                        ? 'bg-background text-foreground shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground',
+                    )}
+                  >
+                    Training
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTrainMode('manual')
+                      setHeadless(false)
+                    }}
+                    className={cn(
+                      'rounded-md px-3 py-2 text-sm transition-colors',
+                      trainMode === 'manual'
+                        ? 'bg-background text-foreground shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground',
+                    )}
+                  >
+                    Manual
+                  </button>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  {isManualCreate
+                    ? 'You perform the flow. On Done we save a replay and write the test task.'
+                    : 'Write the task prompt. The agent discovers the path with LLM steps.'}
+                </p>
+              </div>
+            )}
             <div className="space-y-1.5">
               <Label htmlFor="test-name">Name</Label>
               <Input
@@ -312,17 +382,20 @@ export default function TestEditorDialog({
                 disabled={saving}
               />
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="test-prompt">Task prompt</Label>
-              <Textarea
-                id="test-prompt"
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                rows={3}
-                placeholder="What should the agent do?"
-                disabled={saving}
-              />
-            </div>
+            {!isManualCreate && (
+              <div className="space-y-1.5">
+                <Label htmlFor="test-prompt">Task prompt</Label>
+                <Textarea
+                  id="test-prompt"
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  rows={8}
+                  className="whitespace-pre-wrap"
+                  placeholder="What should the agent do?"
+                  disabled={saving}
+                />
+              </div>
+            )}
             <div className="space-y-1.5">
               <Label htmlFor="test-criteria">Success criteria</Label>
               <p className="text-[11px] text-muted-foreground">
@@ -365,9 +438,9 @@ export default function TestEditorDialog({
               <div className="flex items-center gap-2">
                 <Switch
                   id="test-headless"
-                  checked={headless}
+                  checked={isManualCreate ? false : headless}
                   onCheckedChange={setHeadless}
-                  disabled={saving}
+                  disabled={saving || isManualCreate}
                 />
                 <Label htmlFor="test-headless">Headless</Label>
               </div>
@@ -393,7 +466,7 @@ export default function TestEditorDialog({
                   <p className="text-[11px] text-muted-foreground mt-0.5">
                     {trainedRunId
                       ? 'These steps run in Automatic mode. Reorder, edit, or remove as needed.'
-                      : 'Complete a successful training run to capture editable steps.'}
+                      : 'Complete a successful training or manual run to capture editable steps.'}
                   </p>
                 </div>
                 {trainedRunId && (
@@ -577,10 +650,20 @@ export default function TestEditorDialog({
           </Button>
           <Button
             onClick={() => void handleSave()}
-            disabled={saving || !prompt.trim() || !criteria.trim()}
+            disabled={
+              saving ||
+              !criteria.trim() ||
+              (!isManualCreate && !prompt.trim()) ||
+              (isManualCreate && !runStartGate.canStartRun)
+            }
+            title={
+              isManualCreate && !runStartGate.canStartRun
+                ? (runStartGate.blockHint ?? undefined)
+                : undefined
+            }
           >
             {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-            {isCreate ? 'Create test' : 'Save'}
+            {isManualCreate ? 'Demonstrate' : isCreate ? 'Create test' : 'Save'}
           </Button>
         </DialogFooter>
       </DialogContent>

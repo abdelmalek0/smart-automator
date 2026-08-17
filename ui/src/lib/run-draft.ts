@@ -1,5 +1,5 @@
 import type { Project, RunDraft, RunSummary } from '@/types'
-import { canRunUseAutomatic } from '@/lib/run-status'
+import { canRunUseAutomatic, isManualRun, MANUAL_PLACEHOLDER_TASK } from '@/lib/run-status'
 
 function baseDraft(run: RunSummary): RunDraft {
   return {
@@ -30,6 +30,7 @@ export function toTrainingDraft(run: RunSummary, projects?: Project[]): RunDraft
   return {
     ...baseDraft(run),
     use_replay_script: false,
+    run_mode: 'training',
     ...(autoSource ? { source_run_id: autoSource } : {}),
   }
 }
@@ -69,6 +70,17 @@ export function toAutomaticDraft(run: RunSummary, projects?: Project[]): RunDraf
     website_task_id: websiteTaskId,
     source_run_id: sourceRunId,
     use_replay_script: true,
+    run_mode: 'automatic',
+  }
+}
+
+export function toManualDraft(run: RunSummary): RunDraft {
+  return {
+    ...baseDraft(run),
+    task: run.task === MANUAL_PLACEHOLDER_TASK ? '' : run.task,
+    use_replay_script: false,
+    run_mode: 'manual',
+    headless: false,
   }
 }
 
@@ -76,15 +88,16 @@ export type PrimaryRunAction =
   | { kind: 'run_automatic'; label: string; draft: RunDraft }
   | { kind: 'rerun_automatic'; label: string; draft: RunDraft }
   | { kind: 'retry_training'; label: string; draft: RunDraft }
+  | { kind: 'retry_manual'; label: string; draft: RunDraft }
 
-function isFailedOrUnfinishedTraining(run: RunSummary): boolean {
+function isFailedOrUnfinishedAuthored(run: RunSummary): boolean {
   if (run.use_replay_script) return false
   return run.status !== 'pass'
 }
 
 /**
  * Opens the Re-run modal with a sensible default mode.
- * User can still switch Training / Automatic in the modal.
+ * User can still switch Training / Manual / Automatic in the modal.
  */
 export function getPrimaryRunAction(
   run: RunSummary,
@@ -96,13 +109,20 @@ export function getPrimaryRunAction(
     return { kind: 'retry_training', label: 'Re-run', draft: toTrainingDraft(run, projects) }
   }
 
-  if (isFailedOrUnfinishedTraining(run)) {
+  if (isFailedOrUnfinishedAuthored(run)) {
+    if (isManualRun(run)) {
+      return { kind: 'retry_manual', label: 'Re-run', draft: toManualDraft(run) }
+    }
     return { kind: 'retry_training', label: 'Re-run', draft: toTrainingDraft(run, projects) }
   }
 
   const auto = toAutomaticDraft(run, projects)
   if (auto) {
     return { kind: 'run_automatic', label: 'Re-run', draft: auto }
+  }
+
+  if (isManualRun(run)) {
+    return { kind: 'retry_manual', label: 'Re-run', draft: toManualDraft(run) }
   }
 
   return { kind: 'retry_training', label: 'Re-run', draft: toTrainingDraft(run, projects) }

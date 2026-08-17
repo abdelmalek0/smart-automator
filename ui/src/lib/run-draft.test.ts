@@ -3,6 +3,7 @@ import {
   getPrimaryRunAction,
   runSummaryToDraft,
   toAutomaticDraft,
+  toManualDraft,
   toTrainingDraft,
 } from './run-draft'
 import type { Project, RunSummary } from '@/types'
@@ -33,6 +34,7 @@ describe('toTrainingDraft', () => {
     )
     expect(draft.use_replay_script).toBe(false)
     expect(draft.source_run_id).toBe('t1')
+    expect(draft.run_mode).toBe('training')
   })
 
   it('omits source_run_id when no replay is available', () => {
@@ -82,6 +84,7 @@ describe('toAutomaticDraft', () => {
       expect.objectContaining({
         source_run_id: 't1',
         use_replay_script: true,
+        run_mode: 'automatic',
       }),
     )
   })
@@ -187,6 +190,44 @@ describe('getPrimaryRunAction', () => {
     )
     expect(action.kind).toBe('retry_training')
     expect(action.draft.use_replay_script).toBe(false)
+  })
+})
+
+describe('manual drafts', () => {
+  it('toManualDraft clears the placeholder task and forces headed', () => {
+    const draft = toManualDraft(
+      mockRun({
+        run_id: 'm1',
+        task: 'Human demonstration',
+        headless: true,
+        run_mode: 'manual',
+      }),
+    )
+    expect(draft.run_mode).toBe('manual')
+    expect(draft.task).toBe('')
+    expect(draft.headless).toBe(false)
+    expect(draft.use_replay_script).toBe(false)
+  })
+
+  it('retries failed manual as manual', () => {
+    const action = getPrimaryRunAction(
+      mockRun({ run_id: 'm1', status: 'fail', run_mode: 'manual' }),
+    )
+    expect(action.kind).toBe('retry_manual')
+    expect(action.draft.run_mode).toBe('manual')
+  })
+
+  it('defaults passed manual with replay to automatic', () => {
+    const action = getPrimaryRunAction(
+      mockRun({
+        run_id: 'm1',
+        status: 'pass',
+        run_mode: 'manual',
+        has_replay_script: true,
+      }),
+    )
+    expect(action.kind).toBe('run_automatic')
+    expect(action.draft.source_run_id).toBe('m1')
   })
 })
 

@@ -267,6 +267,25 @@ _HUMAN_CAPTURE_SCRIPT = """
     return tag;
   }
 
+  function isInteractive(node) {
+    if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
+    const tag = (node.tagName || '').toLowerCase();
+    if (['a', 'button', 'input', 'select', 'textarea', 'summary'].includes(tag)) return true;
+    const role = (node.getAttribute('role') || '').trim().toLowerCase();
+    return ['button', 'link', 'textbox', 'checkbox', 'radio', 'combobox', 'tab', 'menuitem'].includes(role);
+  }
+
+  function neighborName(node) {
+    if (!node) return '';
+    const aria = (node.getAttribute('aria-label') || '').trim();
+    const nested = nestedIdentity(node);
+    const visible = visibleText(node);
+    const placeholder = (node.getAttribute('placeholder') || '').trim();
+    const name = (node.getAttribute('name') || '').trim();
+    const associated = associatedLabel(node);
+    return clipText(aria || nested || visible || placeholder || name || associated, 80);
+  }
+
   function neighborFingerprint(element) {
     const parent = element.parentElement;
     const parentTag = parent ? parent.tagName.toLowerCase() : '';
@@ -274,11 +293,40 @@ _HUMAN_CAPTURE_SCRIPT = """
       ? Array.from(parent.children).filter((node) => node.nodeType === 1)
       : [];
     const idx = siblings.indexOf(element);
+    let prevInteractive = null;
+    let nextInteractive = null;
+    for (let i = idx - 1; i >= 0; i--) {
+      if (isInteractive(siblings[i])) {
+        prevInteractive = siblings[i];
+        break;
+      }
+    }
+    for (let i = idx + 1; i < siblings.length; i++) {
+      if (isInteractive(siblings[i])) {
+        nextInteractive = siblings[i];
+        break;
+      }
+    }
+    const selfRect = element.getBoundingClientRect();
+    function peerMeta(node) {
+      if (!node) return { name: '', relation: '' };
+      const name = neighborName(node);
+      if (!isCoherentPhrase(name)) return { name: '', relation: '' };
+      const rect = node.getBoundingClientRect();
+      if (!boxesClose(selfRect, rect, LANDMARK_CLOSE_PX)) return { name: '', relation: '' };
+      return { name: name, relation: relationOf(selfRect, rect) };
+    }
+    const prevMeta = peerMeta(prevInteractive);
+    const nextMeta = peerMeta(nextInteractive);
     return {
       parentTag,
       siblingCount: siblings.length,
       prevTag: idx > 0 ? siblings[idx - 1].tagName.toLowerCase() : '',
       nextTag: (idx >= 0 && idx < siblings.length - 1) ? siblings[idx + 1].tagName.toLowerCase() : '',
+      prevName: prevMeta.name,
+      nextName: nextMeta.name,
+      prevRelation: prevMeta.relation,
+      nextRelation: nextMeta.relation,
     };
   }
 
@@ -404,9 +452,164 @@ _HUMAN_CAPTURE_SCRIPT = """
     return attrs;
   }
 
+  function clipText(text, max) {
+    const value = (text || '').replace(/\\s+/g, ' ').trim();
+    return value ? value.slice(0, max) : '';
+  }
+
   function visibleText(element) {
-    const text = (element.innerText || element.textContent || '').replace(/\\s+/g, ' ').trim();
-    return text ? text.slice(0, 120) : '';
+    function walk(node) {
+      if (!node) return '';
+      if (node.nodeType === Node.TEXT_NODE) return node.textContent || '';
+      if (node.nodeType !== Node.ELEMENT_NODE) return '';
+      if (node !== element && isInteractive(node)) return '';
+      let out = '';
+      for (const child of node.childNodes) out += walk(child);
+      return out;
+    }
+    return clipText(walk(element), 120);
+  }
+
+  const LANDMARK_MAX_CHARS = 48;
+  const LANDMARK_MAX_WORDS = 6;
+  const LANDMARK_CLOSE_PX = 80;
+
+  function isCoherentPhrase(text) {
+    const value = clipText(text, 80);
+    if (!value || value.length > LANDMARK_MAX_CHARS) return false;
+    const words = value.split(/\\s+/).filter(Boolean);
+    if (words.length > LANDMARK_MAX_WORDS) return false;
+    let numeric = 0;
+    for (const word of words) {
+      if (/^\\d{1,4}$/.test(word)) numeric += 1;
+    }
+    return numeric < 3;
+  }
+
+  function boxesClose(a, b, maxGap) {
+    if (!a || !b) return false;
+    const overlapX = a.left < b.right && a.right > b.left;
+    const overlapY = a.top < b.bottom && a.bottom > b.top;
+    const gapX = overlapX ? 0 : Math.min(Math.abs(a.left - b.right), Math.abs(b.left - a.right));
+    const gapY = overlapY ? 0 : Math.min(Math.abs(a.top - b.bottom), Math.abs(b.top - a.bottom));
+    if (overlapX) return gapY <= maxGap;
+    if (overlapY) return gapX <= maxGap;
+    return gapX <= maxGap && gapY <= maxGap;
+  }
+
+  function relationOf(fromRect, toRect) {
+    const dx = (toRect.left + toRect.width / 2) - (fromRect.left + fromRect.width / 2);
+    const dy = (toRect.top + toRect.height / 2) - (fromRect.top + fromRect.height / 2);
+    if (Math.abs(dx) >= Math.abs(dy)) return dx > 0 ? 'left' : 'right';
+    return dy > 0 ? 'above' : 'below';
+  }
+
+  function nodeRect(node) {
+    if (!node) return null;
+    if (node.nodeType === Node.TEXT_NODE) {
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      return range.getBoundingClientRect();
+    }
+    if (node.getBoundingClientRect) return node.getBoundingClientRect();
+    return null;
+  }
+
+  function associatedLabel(element) {
+    const doc = element.ownerDocument || document;
+    const labelledBy = (element.getAttribute('aria-labelledby') || '').trim();
+    if (labelledBy) {
+      const parts = [];
+      for (const id of labelledBy.split(/\\s+/)) {
+        const node = doc.getElementById(id);
+        const text = node ? visibleText(node) : '';
+        if (text) parts.push(text);
+      }
+      if (parts.length) return parts.join(' ');
+    }
+    const elementId = (element.getAttribute('id') || '').trim();
+    if (elementId) {
+      try {
+        const escaped = elementId.replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"');
+        const forLabel = doc.querySelector('label[for="' + escaped + '"]');
+        const text = forLabel ? visibleText(forLabel) : '';
+        if (text) return text;
+      } catch (err) {}
+    }
+    const wrapping = element.closest && element.closest('label');
+    if (wrapping) {
+      const text = visibleText(wrapping);
+      if (text) return text;
+    }
+    let current = element.parentElement;
+    while (current && current !== doc.body) {
+      if ((current.tagName || '').toLowerCase() === 'fieldset') {
+        const legend = current.querySelector('legend');
+        const text = legend ? visibleText(legend) : '';
+        if (text) return text;
+        break;
+      }
+      current = current.parentElement;
+    }
+    return '';
+  }
+
+  function landmarkFromNode(element, node) {
+    if (!node) return null;
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      if (node.contains(element) || isInteractive(node)) return null;
+    }
+    const text = node.nodeType === Node.TEXT_NODE
+      ? clipText(node.textContent || '', 80)
+      : visibleText(node);
+    if (!isCoherentPhrase(text)) return null;
+    const selfRect = element.getBoundingClientRect();
+    const otherRect = nodeRect(node);
+    if (!boxesClose(selfRect, otherRect, LANDMARK_CLOSE_PX)) return null;
+    return { text: text, relation: relationOf(selfRect, otherRect) };
+  }
+
+  function nearbyLandmark(element) {
+    let prev = element.previousSibling;
+    while (prev) {
+      const found = landmarkFromNode(element, prev);
+      if (found) return found;
+      prev = prev.previousSibling;
+    }
+    let next = element.nextSibling;
+    while (next) {
+      const found = landmarkFromNode(element, next);
+      if (found) return found;
+      next = next.nextSibling;
+    }
+    return null;
+  }
+
+  function spatialRegion(element) {
+    const rect = element.getBoundingClientRect();
+    const vw = window.innerWidth || 1;
+    const vh = window.innerHeight || 1;
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const horiz = cx < vw / 3 ? 'left' : (cx > (2 * vw) / 3 ? 'right' : 'center');
+    const vert = cy < vh / 3 ? 'top' : (cy > (2 * vh) / 3 ? 'bottom' : 'middle');
+    return vert + '-' + horiz;
+  }
+
+  function pageUrl() {
+    try {
+      return location.href || '';
+    } catch (err) {
+      return '';
+    }
+  }
+
+  function pageTitle() {
+    try {
+      return document.title || '';
+    } catch (err) {
+      return '';
+    }
   }
 
   function elementPayload(element, extra = {}) {
@@ -415,6 +618,8 @@ _HUMAN_CAPTURE_SCRIPT = """
     const nested = nestedIdentity(element);
     const attrs = collectAttributes(element);
     const label = visibleText(element) || nested;
+    const nth = nthPinpoint(element);
+    const nearby = nearbyLandmark(element);
     return {
       tagName: element.tagName.toLowerCase(),
       xpath: getXPath(element),
@@ -424,9 +629,15 @@ _HUMAN_CAPTURE_SCRIPT = """
       inputType: element.type ?? '',
       label,
       nestedIdentity: nested,
+      associatedLabel: associatedLabel(element),
+      nearbyText: nearby ? nearby.text : '',
+      nearbyRelation: nearby ? nearby.relation : '',
+      spatial: { region: spatialRegion(element) },
+      url: pageUrl(),
+      title: pageTitle(),
       stableRoot: roots.stableRoot || '',
       relativeXPath: roots.relativeXPath || '',
-      nth: nthPinpoint(element),
+      nth,
       identityUnique: identityUnique(element, attrs, nested, label),
       ...extra,
     };
@@ -541,6 +752,8 @@ _HUMAN_CAPTURE_SCRIPT = """
           xpath: '',
           attributes: {},
           label: '',
+          url: pageUrl(),
+          title: pageTitle(),
         });
       } catch (err) {
         console.debug('HITL scroll capture failed', err);
@@ -828,6 +1041,141 @@ class HumanActionRecorder:
             args["css_selector"] = element.css_selector
         return args
 
+    @staticmethod
+    def _ordinal(index: int) -> str:
+        if 10 <= index % 100 <= 20:
+            suffix = "th"
+        else:
+            suffix = {1: "st", 2: "nd", 3: "rd"}.get(index % 10, "th")
+        return f"{index}{suffix}"
+
+    @staticmethod
+    def _role_phrase(tag: str, attrs: dict[str, Any], input_type: str) -> str:
+        role = str(attrs.get("role") or "").strip().lower()
+        itype = (input_type or str(attrs.get("type") or "")).strip().lower()
+        if itype == "password":
+            return "password field"
+        if itype in {"email", "tel", "search", "url", "number"}:
+            return f"{itype} field"
+        if tag in {"input", "textarea"} or role == "textbox":
+            return "text field"
+        if itype == "submit" or (tag == "button" and itype == "submit"):
+            return "submit button"
+        if tag == "button" or role == "button" or itype in {"button", "reset"}:
+            return "button"
+        if tag == "a" or role == "link":
+            return "link"
+        if tag == "select" or role == "combobox":
+            return "dropdown"
+        if role in {"checkbox", "radio", "tab", "menuitem"}:
+            return role
+        return tag or "element"
+
+    @classmethod
+    def _page_region(cls, payload: dict[str, Any]) -> str:
+        spatial = payload.get("spatial") if isinstance(payload.get("spatial"), dict) else {}
+        return str(spatial.get("region") or "").strip().replace("_", "-")
+
+    @classmethod
+    def _spatial_suffix(cls, payload: dict[str, Any], tag: str) -> str:
+        parts: list[str] = []
+        nth = payload.get("nth") if isinstance(payload.get("nth"), dict) else {}
+        index = nth.get("index")
+        count = nth.get("count")
+        kind = str(nth.get("kind") or nth.get("position") or "")
+        noun = tag if tag else "item"
+        if isinstance(count, int) and count >= 2 and isinstance(index, int) and index >= 1:
+            if kind == "first":
+                parts.append(f"first of {count} {noun}s")
+            elif kind == "last":
+                parts.append(f"last of {count} {noun}s")
+            else:
+                parts.append(f"{cls._ordinal(index)} of {count} {noun}s")
+        region = cls._page_region(payload)
+        if region:
+            parts.append(region)
+        return ", ".join(parts)
+
+    _LANDMARK_RELATIONS = {
+        "left": "left of",
+        "right": "right of",
+        "above": "above",
+        "below": "below",
+    }
+    _LANDMARK_MAX_CHARS = 48
+    _LANDMARK_MAX_WORDS = 6
+
+    @classmethod
+    def _is_coherent_phrase(cls, text: str) -> bool:
+        value = " ".join(str(text or "").split())
+        if not value or len(value) > cls._LANDMARK_MAX_CHARS:
+            return False
+        words = value.split()
+        if len(words) > cls._LANDMARK_MAX_WORDS:
+            return False
+        numeric = sum(1 for word in words if word.isdigit() and len(word) <= 4)
+        return numeric < 3
+
+    @classmethod
+    def _qualified_landmark(cls, payload: dict[str, Any]) -> tuple[str, str]:
+        nearby = str(payload.get("nearbyText") or "").strip()
+        relation = str(payload.get("nearbyRelation") or "").strip().lower()
+        if cls._is_coherent_phrase(nearby) and relation in cls._LANDMARK_RELATIONS:
+            return nearby, relation
+        nth = payload.get("nth") if isinstance(payload.get("nth"), dict) else {}
+        for name_key, relation_key in (("prevName", "prevRelation"), ("nextName", "nextRelation")):
+            name = str(nth.get(name_key) or "").strip()
+            peer_relation = str(nth.get(relation_key) or "").strip().lower()
+            if cls._is_coherent_phrase(name) and peer_relation in cls._LANDMARK_RELATIONS:
+                return name, peer_relation
+        return "", ""
+
+    @classmethod
+    def describe_target(
+        cls,
+        payload: dict[str, Any],
+        element: DOMHistoryElement | None = None,
+    ) -> str:
+        """Human-readable target for task text. Does not change locators."""
+        attrs: dict[str, Any] = {}
+        if element is not None:
+            attrs.update(element.attributes or {})
+        attrs.update(dict(payload.get("attributes") or {}))
+        tag = str(
+            payload.get("tagName") or getattr(element, "tag_name", "") or "element"
+        ).lower()
+        input_type = str(payload.get("inputType") or attrs.get("type") or "")
+        role_phrase = cls._role_phrase(tag, attrs, input_type)
+        visible = str(payload.get("label") or "").strip()
+        aria = str(attrs.get("aria-label") or "").strip()
+        placeholder = str(attrs.get("placeholder") or "").strip()
+        name = str(attrs.get("name") or "").strip()
+        associated = str(payload.get("associatedLabel") or "").strip()
+        nested = str(
+            payload.get("nestedIdentity")
+            or getattr(element, "nested_identity", "")
+            or ""
+        ).strip()
+        identity = visible or aria or placeholder or name or associated
+        if identity:
+            return identity
+        landmark, relation = cls._qualified_landmark(payload)
+        if landmark:
+            return f"{role_phrase} {cls._LANDMARK_RELATIONS[relation]} {landmark!r}"
+        if nested:
+            return nested
+        spatial = cls._spatial_suffix(payload, tag)
+        if spatial:
+            return f"{role_phrase} ({spatial})"
+        return role_phrase
+
+    @staticmethod
+    def _attach_page(result: ActionResult, payload: dict[str, Any]) -> None:
+        url = str(payload.get("url") or "").strip()
+        title = str(payload.get("title") or "").strip()
+        result.page_url = url or None
+        result.page_title = title or None
+
     def _append_record(
         self,
         action_name: str,
@@ -850,17 +1198,15 @@ class HumanActionRecorder:
         element = self._element_from_payload(payload)
         label = self._element_label(payload)
         args = self._dom_action_args(element, **({"label": label} if label else {}))
-        if label:
-            extracted_content = f"Human clicked {label!r}"
-        else:
-            extracted_content = f"Human clicked {element.tag_name}"
+        target = self.describe_target(payload, element)
         result = ActionResult(
             success=True,
-            extracted_content=extracted_content,
+            extracted_content=f"Human clicked {target}",
             include_in_memory=True,
             action_name="click_element",
             interacted_element=element,
         )
+        self._attach_page(result, payload)
         self._append_record("click_element", args, result, element)
 
     def _record_input(self, payload: dict[str, Any]) -> None:
@@ -871,10 +1217,11 @@ class HumanActionRecorder:
         if label:
             extra["label"] = label
         args = self._dom_action_args(element, **extra)
-        if label:
-            extracted_content = f"Human entered text in {label!r}"
+        target = self.describe_target(payload, element)
+        if text:
+            extracted_content = f"Human entered {text!r} in {target}"
         else:
-            extracted_content = f"Human entered text in {element.tag_name}"
+            extracted_content = f"Human entered text in {target}"
         result = ActionResult(
             success=True,
             extracted_content=extracted_content,
@@ -882,6 +1229,7 @@ class HumanActionRecorder:
             action_name="input_text",
             interacted_element=element,
         )
+        self._attach_page(result, payload)
         self._append_record("input_text", args, result, element)
 
     def _record_select(self, payload: dict[str, Any]) -> None:
@@ -892,12 +1240,11 @@ class HumanActionRecorder:
         if label:
             extra["label"] = label
         args = self._dom_action_args(element, **extra)
+        target = self.describe_target(payload, element)
         if text:
-            extracted_content = f"Human selected {text!r}"
-        elif label:
-            extracted_content = f"Human selected option on {label!r}"
+            extracted_content = f"Human selected {text!r} on {target}"
         else:
-            extracted_content = f"Human selected option on {element.tag_name}"
+            extracted_content = f"Human selected option on {target}"
         result = ActionResult(
             success=True,
             extracted_content=extracted_content,
@@ -905,6 +1252,7 @@ class HumanActionRecorder:
             action_name="select_dropdown_option",
             interacted_element=element,
         )
+        self._attach_page(result, payload)
         self._append_record("select_dropdown_option", args, result, element)
 
     def _record_keys(self, payload: dict[str, Any]) -> None:
@@ -918,6 +1266,7 @@ class HumanActionRecorder:
             include_in_memory=True,
             action_name="send_keys",
         )
+        self._attach_page(result, payload)
         self._append_record("send_keys", args, result)
 
     def _record_scroll(self, payload: dict[str, Any]) -> None:
@@ -940,6 +1289,17 @@ class HumanActionRecorder:
         else:
             args = {"yPercent": percent, "percent": percent}
 
+        def make_scroll_result() -> ActionResult:
+            scroll_result = ActionResult(
+                success=True,
+                extracted_content=f"Human scrolled to {percent}%",
+                include_in_memory=True,
+                action_name="scroll_to_percent",
+                interacted_element=element,
+            )
+            self._attach_page(scroll_result, payload)
+            return scroll_result
+
         # Coalesce consecutive scrolls on the same container into the latest percent.
         if self._recorded:
             last_name, last_args, _last_result = self._recorded[-1]
@@ -950,13 +1310,7 @@ class HumanActionRecorder:
                 if same_target:
                     if int(last_args.get("percent", last_args.get("yPercent", -1))) == percent:
                         return
-                    result = ActionResult(
-                        success=True,
-                        extracted_content=f"Human scrolled to {percent}%",
-                        include_in_memory=True,
-                        action_name="scroll_to_percent",
-                        interacted_element=element,
-                    )
+                    result = make_scroll_result()
                     result.action_index = len(self._recorded)
                     self._recorded[-1] = ("scroll_to_percent", args, result)
                     if self._on_action:
@@ -966,13 +1320,7 @@ class HumanActionRecorder:
                             log.debug("HITL on_action callback failed", exc_info=True)
                     return
 
-        result = ActionResult(
-            success=True,
-            extracted_content=f"Human scrolled to {percent}%",
-            include_in_memory=True,
-            action_name="scroll_to_percent",
-            interacted_element=element,
-        )
+        result = make_scroll_result()
         self._append_record("scroll_to_percent", args, result, element)
 
 
@@ -1034,6 +1382,10 @@ class HitlController:
                     command.ok = self.return_control()
                     if not command.ok:
                         command.error = "Failed to return control"
+                elif command.action == "finish_manual":
+                    command.ok = self.finish_manual()
+                    if not command.ok:
+                        command.error = "Failed to finish demonstration"
                 else:
                     command.error = f"Unknown HITL command: {command.action}"
             except Exception as exc:
@@ -1071,14 +1423,18 @@ class HitlController:
         if context.awaiting_human:
             context.hitl_reason = reason or context.hitl_reason
             context.hitl_source = source or context.hitl_source
-            context.hitl_deadline = time.time() + context.options.hitl_timeout_seconds
+            if not context.manual_mode:
+                context.hitl_deadline = time.time() + context.options.hitl_timeout_seconds
             return True
 
         context.pause()
         context.awaiting_human = True
         context.hitl_reason = reason
         context.hitl_source = source
-        context.hitl_deadline = time.time() + context.options.hitl_timeout_seconds
+        if context.manual_mode:
+            context.hitl_deadline = None
+        else:
+            context.hitl_deadline = time.time() + context.options.hitl_timeout_seconds
         self._intervention_cycle += 1
 
         self._emit(
@@ -1102,7 +1458,12 @@ class HitlController:
                 self._recorder.start()
             return True
         if not context.awaiting_human:
-            self.request_intervention("Manual take control", source=source)
+            reason = (
+                "Demonstrate the test in the browser"
+                if context.manual_mode
+                else "Manual take control"
+            )
+            self.request_intervention(reason, source=source)
         try:
             page = context.browser_context.get_current_page()
             self._session_start_url = page.url()
@@ -1156,8 +1517,31 @@ class HitlController:
         self._emit({"type": "status", "status": "running"})
         return True
 
+    def finish_manual(self) -> bool:
+        context = self._context
+        if not context.manual_mode:
+            return False
+        recorded = self._capture_and_flush_recorded(set_handoff=False)
+        log.info(
+            "%sHITL finish_manual actions_recorded=%d",
+            self._run_prefix(),
+            len(recorded),
+        )
+        context.human_controlling = False
+        context.awaiting_human = False
+        context.hitl_reason = ""
+        context.hitl_deadline = None
+        context.hitl_interrupt = False
+        context.manual_finished = True
+        context.resume()
+        self._emit({"type": "human_intervention_ended", "cycle": self._intervention_cycle})
+        self._emit({"type": "status", "status": "running"})
+        return True
+
     def check_timeout(self) -> bool:
         context = self._context
+        if context.manual_mode:
+            return False
         if not context.awaiting_human:
             return False
         if context.hitl_deadline is None:
@@ -1256,13 +1640,15 @@ class HitlController:
     ) -> None:
         context = self._context
         page = context.browser_context.get_current_page()
-        url = page.url()
-        title = page.title()
+        fallback_url = page.url()
+        fallback_title = page.title()
         tabs = context.browser_context.get_tab_infos()
 
         for action_name, args, result in recorded:
             element = result.interacted_element
             interacted = [element] if element is not None else []
+            record_url = result.page_url or fallback_url
+            record_title = result.page_title or fallback_title
             model_output = json.dumps(
                 {
                     "current_state": {
@@ -1278,8 +1664,8 @@ class HitlController:
                 model_output=model_output,
                 result=[result],
                 state=BrowserStateHistory(
-                    url=url,
-                    title=title,
+                    url=record_url,
+                    title=record_title,
                     tabs=tabs,
                     interacted_elements=interacted,
                 ),

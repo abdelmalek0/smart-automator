@@ -12,11 +12,13 @@ from ..agents.errors import (
     MaxStepsReachedError,
     RequestCancelledError,
 )
+from ..agents.task_extractor import TaskExtractorAgent
 from ..browser.context import BrowserContext
 from ..config import normalize_browser_overrides
 from ..main import create_role_llms
 from .config_service import config_for_run
 from .history_store import save_run_history
+from .models import RUN_MODE_MANUAL
 from .paths import REPORT_DIR, SCREENSHOT_DIR
 from .replay_store import has_replay_script, load_run_replay, save_run_replay, delete_run_replay
 from ..storage.websites import WebsiteStore
@@ -120,7 +122,13 @@ def _handle_event(run: RunState, browser_context: BrowserContext, event: dict[st
         run.human_controlling = False
         run.hitl_reason = ""
         run.hitl_deadline = None
-        run.status = "running"
+        if run.run_mode != "manual":
+            run.status = "running"
+    elif event_type == "task_extracted":
+        if event.get("task"):
+            run.task = str(event["task"])
+        if event.get("name"):
+            run.name = event["name"]
     elif event_type == "human_action":
         step_index = _resolve_step_index(run, event)
         step_data = human_action_to_step(
@@ -186,6 +194,68 @@ def _set_terminal_status(run: RunState, status: str, summary: str) -> None:
     run.summary = summary
     run.finished_at = time.time()
     run.broadcast({"type": "done", "status": status, "summary": summary})
+
+
+def _apply_extracted_manual_task(run: RunState, extracted: dict[str, Any]) -> None:
+    task = str(extracted.get("task") or "").strip()
+    if task:
+        run.task = task
+        run.effective_task = task
+    name = str(extracted.get("name") or "").strip()
+    if name and not run.name:
+        run.name = name
+    run.broadcast(
+        {
+            "type": "task_extracted",
+            "task": run.task,
+            "name": run.name,
+        }
+    )
+    if not run.website_id or not run.website_task_id:
+        return
+    try:
+        WebsiteStore(run.user_id).update_task(
+            run.website_id,
+            run.website_task_id,
+            task=run.task,
+            name=run.name,
+        )
+    except Exception as exc:
+        log.warning(
+            "[run:%s] project task update after extraction failed: %s",
+            run.run_id[:8],
+            exc,
+        )
+
+
+def _finalize_manual_demonstration(run: RunState, executor: Executor, planner_llm) -> None:
+    executor.hitl.flush_recorded_to_history()
+    history = executor.context.history
+    if not history.history:
+        _set_terminal_status(run, "fail", "No actions were recorded.")
+        return
+    action_lines = TaskExtractorAgent.action_lines_from_history(history)
+    extractor = TaskExtractorAgent(planner_llm, context=executor.context)
+    start_url = getattr(executor.hitl, "_session_start_url", "") or ""
+    start_title = getattr(executor.hitl, "_session_start_title", "") or ""
+    try:
+        page = executor.context.browser_context.get_current_page()
+        end_url = page.url()
+        end_title = page.title()
+    except Exception:
+        end_url = ""
+        end_title = ""
+    extracted = extractor.extract(
+        action_lines=action_lines,
+        success_criteria=run.success_criteria,
+        existing_name=run.name or "",
+        start_url=start_url,
+        end_url=end_url,
+        start_title=start_title,
+        end_title=end_title,
+    )
+    _apply_extracted_manual_task(run, extracted)
+    _set_terminal_status(run, "pass", "Manual demonstration recorded.")
 
 
 def _context_list(context, attr: str) -> list:
@@ -548,6 +618,13 @@ def run_automation(run: RunState) -> None:
                 _set_terminal_status(run, "fail", stop_reason)
                 return
             _apply_criteria_verdict(run, executor, llm)
+            return
+
+        if run.run_mode == RUN_MODE_MANUAL:
+            executor.execute_manual()
+            if run.status == "cancelled" or run._cancelled.is_set():
+                return
+            _finalize_manual_demonstration(run, executor, planner_llm)
             return
 
         result = executor.execute()

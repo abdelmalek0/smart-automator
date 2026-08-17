@@ -43,6 +43,8 @@ class ActionResult:
     action_index: int | None = None
     verification_status: str = "unverified"
     verification_evidence: str | None = None
+    page_url: str | None = None
+    page_title: str | None = None
 
     def format_memory_line(self) -> str | None:
         if self.error:
@@ -110,6 +112,8 @@ class AgentContext:
         self.hitl_source = ""
         self.hitl_deadline: float | None = None
         self.hitl_timed_out = False
+        self.manual_mode = False
+        self.manual_finished = False
         self.force_replan_after_hitl = False
         self.pending_hitl_handoff: PendingHitlHandoff | None = None
         self.hitl_interrupt = False

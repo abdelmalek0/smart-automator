@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from smart_automator.agent.context import ActionResult, AgentContext, AgentOptions
-from smart_automator.agent.hitl import HitlController, HumanActionRecorder, _HitlCommand
+from smart_automator.agent.hitl import HitlController, HumanActionRecorder, _HitlCommand, _HUMAN_CAPTURE_SCRIPT
 from smart_automator.agent.history import AgentStepHistory, AgentStepRecord
 from smart_automator.browser.history import DOMHistoryElement
 from smart_automator.reporting.builder import build_action_timeline
@@ -70,6 +70,55 @@ class HitlControllerTests(unittest.TestCase):
         self.assertIsNotNone(context.pending_hitl_handoff)
         self.assertEqual(context.pending_hitl_handoff.intervention_reason, "Need login")
         self.assertTrue(context.force_replan_after_hitl)
+
+    def test_finish_manual_flushes_and_sets_flag(self):
+        context = _make_context()
+        context.manual_mode = True
+        events: list[dict] = []
+        hitl = HitlController(context, emit=events.append)
+
+        with patch.object(
+            hitl.recorder, "start", side_effect=lambda: _activate_recorder(hitl.recorder)
+        ), patch.object(
+            hitl.recorder,
+            "stop",
+            return_value=[
+                (
+                    "click_element",
+                    {"xpath": "html/body/button"},
+                    ActionResult(
+                        success=True,
+                        extracted_content="Human clicked button",
+                        action_name="click_element",
+                    ),
+                )
+            ],
+        ), patch.object(hitl.recorder, "flush_pending_inputs"):
+            self.assertTrue(hitl.take_control(source="manual_mode"))
+            self.assertTrue(hitl.finish_manual())
+
+        self.assertTrue(context.manual_finished)
+        self.assertFalse(context.human_controlling)
+        self.assertFalse(context.awaiting_human)
+        self.assertEqual(len(context.history.history), 1)
+        self.assertEqual(context.history.history[0].metadata.get("source"), "human")
+        self.assertFalse(context.paused)
+        self.assertEqual(events[-1]["type"], "status")
+        self.assertEqual(events[-1]["status"], "running")
+
+    def test_finish_manual_rejected_outside_manual_mode(self):
+        context = _make_context()
+        hitl = HitlController(context, emit=lambda _event: None)
+        self.assertFalse(hitl.finish_manual())
+
+    def test_check_timeout_skipped_in_manual_mode(self):
+        context = _make_context()
+        context.manual_mode = True
+        context.awaiting_human = True
+        context.hitl_deadline = 0
+        hitl = HitlController(context, emit=lambda _event: None)
+        self.assertFalse(hitl.check_timeout())
+        self.assertFalse(context.hitl_timed_out)
 
     def test_return_control_sets_force_replan_from_handoff_not_cleared_buffer(self):
         context = _make_context()
@@ -613,6 +662,177 @@ class HumanActionRecorderTests(unittest.TestCase):
         self.assertEqual(recorder.recorded[0][0], "input_text")
         self.assertEqual(recorder.recorded[0][1]["text"], "hello")
 
+    def test_unlabeled_click_uses_geometric_landmark(self):
+        context = _make_context()
+        recorder = HumanActionRecorder(context)
+        recorder._active = True
+        recorder._handle_capture_event(
+            {
+                "eventType": "click",
+                "tagName": "button",
+                "xpath": "html/body/div/button[3]",
+                "attributes": {"type": "button"},
+                "nearbyText": "ItemOne",
+                "nearbyRelation": "left",
+                "spatial": {"region": "bottom-center"},
+                "nth": {
+                    "selector": "button",
+                    "index": 3,
+                    "count": 4,
+                    "kind": "nth",
+                },
+            }
+        )
+        content = recorder.recorded[0][2].extracted_content or ""
+        self.assertIn("left of", content)
+        self.assertIn("ItemOne", content)
+        self.assertNotIn("under", content)
+        self.assertNotIn("3rd of 4", content)
+        self.assertNotIn("bottom-center", content)
+        self.assertNotIn("xpath", content.lower())
+
+    def test_pin_input_includes_typed_value(self):
+        context = _make_context()
+        recorder = HumanActionRecorder(context)
+        recorder._active = True
+        recorder._handle_capture_event(
+            {
+                "eventType": "input",
+                "tagName": "input",
+                "xpath": "html/body/input",
+                "attributes": {"type": "password"},
+                "text": "4821",
+                "associatedLabel": "PIN",
+                "url": "https://example.com/pin",
+                "title": "Unlock",
+            }
+        )
+        _name, args, result = recorder.recorded[0]
+        self.assertEqual(args["text"], "4821")
+        self.assertIn("4821", result.extracted_content or "")
+        self.assertIn("PIN", result.extracted_content or "")
+        self.assertEqual(result.page_url, "https://example.com/pin")
+        self.assertEqual(result.page_title, "Unlock")
+
+    def test_associated_label_describes_empty_input(self):
+        context = _make_context()
+        recorder = HumanActionRecorder(context)
+        recorder._active = True
+        recorder._handle_capture_event(
+            {
+                "eventType": "input",
+                "tagName": "input",
+                "xpath": "html/body/form/input",
+                "attributes": {"id": "pin", "type": "text"},
+                "text": "1234",
+                "associatedLabel": "PIN code",
+                "spatial": {"region": "middle-center"},
+                "nth": {"index": 1, "count": 2, "kind": "first"},
+            }
+        )
+        content = recorder.recorded[0][2].extracted_content or ""
+        self.assertIn("1234", content)
+        self.assertIn("PIN code", content)
+        self.assertNotIn("first of", content)
+        self.assertNotIn("middle-center", content)
+
+    def test_placeholder_identity_omits_nth_and_region(self):
+        phrase = HumanActionRecorder.describe_target(
+            {
+                "tagName": "input",
+                "attributes": {"type": "email", "placeholder": "Email", "name": "email"},
+                "spatial": {"region": "middle-center"},
+                "nth": {"index": 1, "count": 2, "kind": "first"},
+            }
+        )
+        self.assertEqual(phrase, "Email")
+        self.assertNotIn("first of", phrase)
+        self.assertNotIn("middle-center", phrase)
+
+    def test_own_short_token_ignores_peer_nearby(self):
+        phrase = HumanActionRecorder.describe_target(
+            {
+                "tagName": "button",
+                "label": "A",
+                "nearbyText": "B",
+                "nearbyRelation": "left",
+                "spatial": {"region": "bottom-center"},
+                "nth": {"index": 3, "count": 4, "kind": "nth"},
+                "attributes": {"type": "button"},
+            }
+        )
+        self.assertEqual(phrase, "A")
+
+    def test_own_name_ignores_sibling_name(self):
+        phrase = HumanActionRecorder.describe_target(
+            {
+                "tagName": "button",
+                "label": "ItemOne",
+                "nearbyText": "ItemTwo",
+                "nearbyRelation": "right",
+                "attributes": {"type": "button"},
+            }
+        )
+        self.assertEqual(phrase, "ItemOne")
+
+    def test_unlabeled_uses_geometric_relation(self):
+        phrase = HumanActionRecorder.describe_target(
+            {
+                "tagName": "button",
+                "attributes": {"type": "button"},
+                "nearbyText": "ItemOne",
+                "nearbyRelation": "left",
+                "spatial": {"region": "middle-center"},
+            }
+        )
+        self.assertEqual(phrase, "button left of 'ItemOne'")
+        self.assertNotIn("under", phrase)
+
+    def test_unlabeled_rejects_noisy_nearby(self):
+        phrase = HumanActionRecorder.describe_target(
+            {
+                "tagName": "button",
+                "attributes": {"type": "button"},
+                "nearbyText": "1 Alpha 01 Beta 15 Gamma True",
+                "nearbyRelation": "left",
+                "spatial": {"region": "bottom-left"},
+                "nth": {"index": 2, "count": 3, "kind": "nth"},
+            }
+        )
+        self.assertIn("bottom-left", phrase)
+        self.assertNotIn("Alpha", phrase)
+        self.assertNotIn("under", phrase)
+
+    def test_unlabeled_peer_needs_relation(self):
+        phrase = HumanActionRecorder.describe_target(
+            {
+                "tagName": "input",
+                "attributes": {"type": "text"},
+                "spatial": {"region": "middle-center"},
+                "nth": {
+                    "index": 2,
+                    "count": 2,
+                    "kind": "last",
+                    "prevName": "ItemOne",
+                    "prevRelation": "right",
+                },
+            }
+        )
+        self.assertEqual(phrase, "text field right of 'ItemOne'")
+
+    def test_anonymous_target_keeps_nth_and_region(self):
+        phrase = HumanActionRecorder.describe_target(
+            {
+                "tagName": "button",
+                "attributes": {"type": "button"},
+                "spatial": {"region": "bottom-center"},
+                "nth": {"index": 3, "count": 4, "kind": "nth"},
+            }
+        )
+        self.assertIn("button", phrase)
+        self.assertIn("3rd of 4", phrase)
+        self.assertIn("bottom-center", phrase)
+
     def test_start_clears_recorded_buffer(self):
         context = _make_context()
         recorder = HumanActionRecorder(context)
@@ -641,6 +861,17 @@ class HumanActionRecorderTests(unittest.TestCase):
         pw_context.add_init_script.assert_called_once()
         pw_context.expose_binding.assert_called_once()
         playwright_page.evaluate.assert_called()
+
+    def test_capture_script_includes_identity_helpers(self):
+        self.assertIn("associatedLabel", _HUMAN_CAPTURE_SCRIPT)
+        self.assertIn("nearbyLandmark", _HUMAN_CAPTURE_SCRIPT)
+        self.assertIn("nearbyRelation", _HUMAN_CAPTURE_SCRIPT)
+        self.assertIn("spatialRegion", _HUMAN_CAPTURE_SCRIPT)
+        self.assertIn("pageUrl", _HUMAN_CAPTURE_SCRIPT)
+        self.assertIn("prevName", _HUMAN_CAPTURE_SCRIPT)
+        self.assertIn("nextName", _HUMAN_CAPTURE_SCRIPT)
+        self.assertIn("prevRelation", _HUMAN_CAPTURE_SCRIPT)
+        self.assertNotIn("parent.innerText", _HUMAN_CAPTURE_SCRIPT)
 
     def test_second_start_cycle_reuses_context_setup(self):
         context = _make_context()

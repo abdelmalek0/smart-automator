@@ -62,7 +62,7 @@ export default function HomePage() {
               value={modeFilter}
               onChange={setModeFilter}
               size="md"
-              className="w-[220px] shrink-0"
+              className="w-[280px] shrink-0"
             />
           </div>
           <RunThreadList

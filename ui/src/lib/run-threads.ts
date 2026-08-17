@@ -1,4 +1,4 @@
-import { isActiveRunStatus } from '@/lib/run-status'
+import { isActiveRunStatus, isManualRun, runModeOf } from '@/lib/run-status'
 import type { RunSummary } from '@/types'
 
 export { isActiveRunStatus }
@@ -10,6 +10,7 @@ export interface TrainingNode {
 
 export interface TestRunTree {
   trainings: TrainingNode[]
+  manuals: TrainingNode[]
   orphanAutomaticRuns: RunSummary[]
 }
 
@@ -20,6 +21,7 @@ export interface RunTestGroup {
   /** Flat list of all runs in the test (for activity / expand checks). */
   runs: RunSummary[]
   trainings: TrainingNode[]
+  manuals: TrainingNode[]
   orphanAutomaticRuns: RunSummary[]
 }
 
@@ -41,6 +43,10 @@ function sortRunsNewestFirst(runs: RunSummary[]): RunSummary[] {
 }
 
 function isTrainingRun(run: RunSummary): boolean {
+  return runModeOf(run) === 'training'
+}
+
+function isAuthoredRun(run: RunSummary): boolean {
   return !run.use_replay_script
 }
 
@@ -48,16 +54,16 @@ function isAutomaticRun(run: RunSummary): boolean {
   return Boolean(run.use_replay_script)
 }
 
-/** Group trainings as siblings; nest automatics under their source training; else orphans. */
+/** Group authored runs as siblings; nest automatics under their source; else orphans. */
 export function buildTestRunTree(runs: RunSummary[]): TestRunTree {
-  const trainings = sortRunsNewestFirst(runs.filter(isTrainingRun))
-  const trainingIds = new Set(trainings.map((run) => run.run_id))
+  const authored = sortRunsNewestFirst(runs.filter(isAuthoredRun))
+  const authoredIds = new Set(authored.map((run) => run.run_id))
   const automaticBySource = new Map<string, RunSummary[]>()
   const orphanAutomaticRuns: RunSummary[] = []
 
   for (const run of sortRunsNewestFirst(runs.filter(isAutomaticRun))) {
     const sourceId = run.source_run_id
-    if (sourceId && trainingIds.has(sourceId)) {
+    if (sourceId && authoredIds.has(sourceId)) {
       const existing = automaticBySource.get(sourceId) ?? []
       existing.push(run)
       automaticBySource.set(sourceId, existing)
@@ -66,20 +72,24 @@ export function buildTestRunTree(runs: RunSummary[]): TestRunTree {
     }
   }
 
+  const nodes: TrainingNode[] = authored.map((source) => ({
+    training: source,
+    automaticRuns: automaticBySource.get(source.run_id) ?? [],
+  }))
+
   return {
-    trainings: trainings.map((training) => ({
-      training,
-      automaticRuns: automaticBySource.get(training.run_id) ?? [],
-    })),
+    trainings: nodes.filter((node) => isTrainingRun(node.training)),
+    manuals: nodes.filter((node) => isManualRun(node.training)),
     orphanAutomaticRuns,
   }
 }
 
-export type RunModeFilter = 'all' | 'training' | 'automatic'
+export type RunModeFilter = 'all' | 'training' | 'manual' | 'automatic'
 
 export const RUN_MODE_FILTERS: { value: RunModeFilter; label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'training', label: 'Training' },
+  { value: 'manual', label: 'Manual' },
   { value: 'automatic', label: 'Automatic' },
 ]
 
@@ -88,9 +98,16 @@ export function testTrainingRuns(test: RunTestGroup): RunSummary[] {
   return test.trainings.map((node) => node.training)
 }
 
+export function testManualRuns(test: RunTestGroup): RunSummary[] {
+  return (test.manuals ?? []).map((node) => node.training)
+}
+
 /** Flat automatic runs for a test (attached + orphans), newest first. */
 export function testAutomaticRuns(test: RunTestGroup): RunSummary[] {
-  const attached = test.trainings.flatMap((node) => node.automaticRuns)
+  const attached = [
+    ...test.trainings.flatMap((node) => node.automaticRuns),
+    ...(test.manuals ?? []).flatMap((node) => node.automaticRuns),
+  ]
   return sortRunsNewestFirst([...attached, ...test.orphanAutomaticRuns])
 }
 
@@ -114,7 +131,8 @@ export function nextVisibleTestRunCount(current: number, total: number): number 
 /** Whether an automatic run's source training is still present in this test's training list. */
 export function automaticSourceExistsInTest(run: RunSummary, test: RunTestGroup): boolean {
   if (!run.source_run_id) return false
-  return test.trainings.some((node) => node.training.run_id === run.source_run_id)
+  const authored = [...test.trainings, ...(test.manuals ?? [])]
+  return authored.some((node) => node.training.run_id === run.source_run_id)
 }
 
 function taskGroupId(scopeId: string, taskKey: string): string {
@@ -147,6 +165,7 @@ function buildTestGroups(scopeId: string, runs: RunSummary[]): RunTestGroup[] {
         title: truncateTitle(taskKey),
         runs: sorted,
         trainings: tree.trainings,
+        manuals: tree.manuals,
         orphanAutomaticRuns: tree.orphanAutomaticRuns,
       }
     })
@@ -266,8 +285,11 @@ export function testHasActiveRun(test: RunTestGroup): boolean {
   return test.runs.some((run) => isActiveRunStatus(run.status))
 }
 
-export function runModeLabel(run: RunSummary): 'Training' | 'Automatic' {
-  return run.use_replay_script ? 'Automatic' : 'Training'
+export function runModeLabel(run: RunSummary): 'Training' | 'Manual' | 'Automatic' {
+  const mode = runModeOf(run)
+  if (mode === 'automatic') return 'Automatic'
+  if (mode === 'manual') return 'Manual'
+  return 'Training'
 }
 
 /** Oldest-first attempt number within one mode section (training and automatic count separately). */

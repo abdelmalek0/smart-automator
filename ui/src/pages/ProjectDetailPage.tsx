@@ -266,6 +266,21 @@ export default function ProjectDetailPage() {
     }
   }
 
+  async function handleTrainManually(proj: Project, task: ProjectTask) {
+    setRunningId(task.id)
+    setRunError(null)
+    try {
+      const run = await startProjectTaskRun(proj, task, { forceManual: true })
+      await queryClient.invalidateQueries({ queryKey: ['runs'] })
+      await queryClient.invalidateQueries({ queryKey: ['projects'] })
+      navigate(`/runs/${run.run_id}`)
+    } catch (err) {
+      setRunError(err instanceof Error ? err.message : 'Failed to start run')
+    } finally {
+      setRunningId(null)
+    }
+  }
+
   function openEditTask(task: ProjectTask) {
     setEditorTask(task)
     setEditorMode('edit')
@@ -302,18 +317,18 @@ export default function ProjectDetailPage() {
         cdp_url: payload.cdp_url,
         fresh_profile: payload.fresh_profile,
       })
-    } else {
-      await addTaskToProject({
-        projectId: payload.projectId,
-        name: payload.name,
-        task: payload.task,
-        success_criteria: payload.success_criteria,
-        headless: payload.headless,
-        max_steps: payload.max_steps,
-        cdp_url: payload.cdp_url,
-        fresh_profile: payload.fresh_profile,
-      })
+      return
     }
+    return addTaskToProject({
+      projectId: payload.projectId,
+      name: payload.name,
+      task: payload.task,
+      success_criteria: payload.success_criteria,
+      headless: payload.headless,
+      max_steps: payload.max_steps,
+      cdp_url: payload.cdp_url,
+      fresh_profile: payload.fresh_profile,
+    })
   }
 
   function startRename() {
@@ -809,6 +824,7 @@ export default function ProjectDetailPage() {
                 onSelectNone={selectNoneTests}
                 onRunTask={(proj, task) => void handleRunTask(proj, task)}
                 onRetrainTask={(proj, task) => void handleRetrainTask(proj, task)}
+                onTrainManually={(proj, task) => void handleTrainManually(proj, task)}
                 onEditTask={openEditTask}
                 onDeleteTask={(taskId) =>
                   void removeTaskFromProject({ projectId: project.id, taskId })
@@ -838,6 +854,9 @@ export default function ProjectDetailPage() {
         }
         mode={editorMode}
         onSaveTask={handleSaveTask}
+        onStartManualRun={async (task) => {
+          await handleTrainManually(project, task)
+        }}
       />
     </div>
   )

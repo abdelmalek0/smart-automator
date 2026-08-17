@@ -31,6 +31,7 @@ describe('buildStartRunPayload', () => {
     expect(payload.website_id).toBe('proj-1')
     expect(payload.website_task_id).toBe('t1')
     expect(payload.name).toBe('Home')
+    expect(payload.run_mode).toBe('training')
   })
 
   it('starts automatic replay when trained', () => {
@@ -45,6 +46,7 @@ describe('buildStartRunPayload', () => {
     )
     expect(payload.use_replay_script).toBe(true)
     expect(payload.source_run_id).toBe('trained-1')
+    expect(payload.run_mode).toBe('automatic')
   })
 
   it('forces training when forceTraining is set', () => {
@@ -59,6 +61,26 @@ describe('buildStartRunPayload', () => {
       { forceTraining: true },
     )
     expect(payload.use_replay_script).toBe(false)
+    expect(payload.source_run_id).toBeUndefined()
+    expect(payload.run_mode).toBe('training')
+  })
+
+  it('starts a headed manual demonstration when forceManual is set', () => {
+    const payload = buildStartRunPayload(
+      project,
+      task({
+        id: 't4',
+        task: 'Human demonstration',
+        has_trained_replay: true,
+        last_trained_run_id: 'trained-1',
+        headless: true,
+      }),
+      { forceManual: true },
+    )
+    expect(payload.run_mode).toBe('manual')
+    expect(payload.task).toBe('')
+    expect(payload.use_replay_script).toBe(false)
+    expect(payload.headless).toBe(false)
     expect(payload.source_run_id).toBeUndefined()
   })
 })

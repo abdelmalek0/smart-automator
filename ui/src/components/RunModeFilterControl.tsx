@@ -18,7 +18,7 @@ export default function RunModeFilterControl({
   return (
     <div
       className={cn(
-        'grid grid-cols-3 gap-0.5 rounded-md border border-border/70 bg-muted/40 p-0.5',
+        'grid grid-cols-4 gap-0.5 rounded-md border border-border/70 bg-muted/40 p-0.5',
         className,
       )}
       role="group"

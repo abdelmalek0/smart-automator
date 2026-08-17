@@ -336,6 +336,30 @@ class Executor:
             result for result in self._context.action_results if result.include_in_memory
         ]
 
+    def execute_manual(self) -> str | None:
+        """Record a human demonstration: take control and wait until Done or cancel."""
+        context = self._context
+        context.manual_mode = True
+        context.hitl_enabled = True
+        if not self._hitl.take_control(source="manual_mode"):
+            raise RuntimeError("Failed to start manual demonstration")
+        context.hitl_deadline = None
+        context.hitl_reason = context.hitl_reason or "Demonstrate the test in the browser"
+
+        while not context.stopped and not context.manual_finished:
+            self._hitl.process_pending_commands()
+            if context.stopped or context.manual_finished:
+                break
+            self._pump_while_paused()
+
+        if context.stopped:
+            raise RequestCancelledError("Request cancelled")
+
+        self._hitl.flush_recorded_to_history()
+        if not context.history.history:
+            return None
+        return "manual_complete"
+
     def execute(self) -> str | None:
         context = self._context
         context.n_steps = 0

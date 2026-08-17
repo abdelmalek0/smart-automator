@@ -1,4 +1,4 @@
-import { Download, Loader2, MoreHorizontal, Pencil, Play, RefreshCw, Trash2 } from 'lucide-react'
+import { Download, Hand, Loader2, MoreHorizontal, Pencil, Play, RefreshCw, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -19,7 +19,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { executionModeChipClass } from '@/lib/run-status'
+import { executionModeChipClass, MANUAL_PLACEHOLDER_TASK } from '@/lib/run-status'
 import type { ProjectTask } from '@/types'
 import { cn } from '@/lib/utils'
 
@@ -33,6 +33,7 @@ interface Props {
   onIncludedInSuiteChange?: (included: boolean) => void
   onRun: () => void
   onRetrain?: () => void
+  onTrainManually?: () => void
   onExport?: () => void
   onEdit: () => void
   onDelete: () => void
@@ -48,6 +49,7 @@ export default function TestRow({
   onIncludedInSuiteChange,
   onRun,
   onRetrain,
+  onTrainManually,
   onExport,
   onEdit,
   onDelete,
@@ -104,7 +106,11 @@ export default function TestRow({
             )}
           </div>
 
-          <p className="text-sm leading-snug line-clamp-2 text-muted-foreground">{task.task}</p>
+          {task.task && task.task !== MANUAL_PLACEHOLDER_TASK && (
+            <p className="text-sm leading-snug whitespace-pre-wrap line-clamp-6 text-muted-foreground">
+              {task.task}
+            </p>
+          )}
 
           {task.success_criteria && (
             <p className="text-xs text-muted-foreground/80 line-clamp-1">
@@ -163,6 +169,15 @@ export default function TestRow({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            {onTrainManually && (
+              <DropdownMenuItem
+                onClick={onTrainManually}
+                disabled={disabled || running}
+              >
+                <Hand className="h-4 w-4" />
+                Train manually
+              </DropdownMenuItem>
+            )}
             {task.has_trained_replay && onRetrain && (
               <>
                 <DropdownMenuItem
@@ -172,8 +187,10 @@ export default function TestRow({
                   <RefreshCw className="h-4 w-4" />
                   Retrain
                 </DropdownMenuItem>
-                <DropdownMenuSeparator />
               </>
+            )}
+            {(onTrainManually || (task.has_trained_replay && onRetrain)) && (
+              <DropdownMenuSeparator />
             )}
             <DropdownMenuItem onClick={onEdit} disabled={disabled}>
               <Pencil className="h-4 w-4" />

@@ -139,6 +139,7 @@ export async function startRun(payload: {
   website_task_id?: string
   source_run_id?: string
   use_replay_script?: boolean
+  run_mode?: import('./types').RunMode
 }): Promise<RunSummary> {
   const res = await fetch(`${BASE}/runs`, {
     method: 'POST',
@@ -187,6 +188,10 @@ export async function takeControl(
 
 export async function returnControl(runId: string): Promise<{ ok: boolean; human_controlling: boolean }> {
   return request(`/runs/${runId}/return-control`, { method: 'POST' })
+}
+
+export async function finishManual(runId: string): Promise<{ ok: boolean }> {
+  return request(`/runs/${runId}/finish-manual`, { method: 'POST' })
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────

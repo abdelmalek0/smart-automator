@@ -33,6 +33,7 @@ type Action =
   | { type: 'HUMAN_INTERVENTION_ENDED' }
   | { type: 'HUMAN_ACTION'; step: Step }
   | { type: 'HUMAN_HANDOFF'; step: Step }
+  | { type: 'TASK_EXTRACTED'; task: string; name?: string | null }
   | { type: 'TOKENS_UPDATE'; tokens: number; prompt_tokens: number; completion_tokens: number; cache_tokens: number; cost_usd: number | null; cost_breakdown?: CostBreakdownEntry[] }
   | { type: 'TURN_TIMING'; snapshot_ms?: number; llm_navigator_ms?: number; batch_ms?: number; settle_ms?: number; turn_ms?: number }
   | { type: 'CONNECTED' }
@@ -220,10 +221,20 @@ function reducer(state: StreamState, action: Action): StreamState {
         ...state,
         run: {
           ...state.run,
-          status: 'running',
+          status: state.run.run_mode === 'manual' ? state.run.status : 'running',
           human_controlling: false,
           hitl_reason: null,
           hitl_deadline: null,
+        },
+      }
+    case 'TASK_EXTRACTED':
+      if (!state.run) return state
+      return {
+        ...state,
+        run: {
+          ...state.run,
+          task: action.task,
+          name: action.name ?? state.run.name,
         },
       }
     case 'HUMAN_ACTION':
@@ -395,6 +406,9 @@ export function useRunStream(runId: string | null) {
           if (event.step) {
             dispatch({ type: 'HUMAN_HANDOFF', step: event.step })
           }
+          break
+        case 'task_extracted':
+          dispatch({ type: 'TASK_EXTRACTED', task: event.task, name: event.name })
           break
         case 'tokens_update':
           dispatch({

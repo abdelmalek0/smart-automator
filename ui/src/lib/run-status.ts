@@ -1,4 +1,20 @@
-import type { RunStatus, Step, TurnTiming } from '@/types'
+import type { RunMode, RunStatus, Step, TurnTiming } from '@/types'
+
+export const MANUAL_PLACEHOLDER_TASK = 'Human demonstration'
+
+export function runModeOf(run: {
+  run_mode?: string | null
+  use_replay_script?: boolean
+}): RunMode {
+  if (run.run_mode === 'manual' || run.run_mode === 'automatic' || run.run_mode === 'training') {
+    return run.run_mode
+  }
+  return run.use_replay_script ? 'automatic' : 'training'
+}
+
+export function isManualRun(run: { run_mode?: string | null; use_replay_script?: boolean }): boolean {
+  return runModeOf(run) === 'manual'
+}
 
 export function median(nums: number[]): number {
   if (nums.length === 0) return 0
@@ -64,21 +80,41 @@ export function actDurationMs(timing: TurnTiming): number {
   )
 }
 
-export function executionModeLabel(useReplayScript?: boolean): 'Training' | 'Automatic execution' {
-  return useReplayScript ? 'Automatic execution' : 'Training'
+export function executionModeLabel(run: {
+  run_mode?: string | null
+  use_replay_script?: boolean
+}): 'Training' | 'Manual' | 'Automatic execution' {
+  const mode = runModeOf(run)
+  if (mode === 'automatic') return 'Automatic execution'
+  if (mode === 'manual') return 'Manual'
+  return 'Training'
 }
 
-export function executionModeShortLabel(useReplayScript?: boolean): 'Training' | 'Automatic' {
-  return useReplayScript ? 'Automatic' : 'Training'
+export function executionModeShortLabel(run: {
+  run_mode?: string | null
+  use_replay_script?: boolean
+}): 'Training' | 'Manual' | 'Automatic' {
+  const mode = runModeOf(run)
+  if (mode === 'automatic') return 'Automatic'
+  if (mode === 'manual') return 'Manual'
+  return 'Training'
 }
 
-export function executionModeChipClass(useReplayScript?: boolean): string {
-  return useReplayScript
-    ? 'bg-brand-blue/15 text-brand-blue border-brand-blue/30'
-    : 'bg-warning/15 text-warning border-warning/30'
+export function executionModeChipClass(run: {
+  run_mode?: string | null
+  use_replay_script?: boolean
+} | boolean): string {
+  const mode = typeof run === 'boolean' ? (run ? 'automatic' : 'training') : runModeOf(run)
+  if (mode === 'automatic') {
+    return 'bg-brand-blue/15 text-brand-blue border-brand-blue/30'
+  }
+  if (mode === 'manual') {
+    return 'bg-primary/15 text-primary border-primary/30'
+  }
+  return 'bg-warning/15 text-warning border-warning/30'
 }
 
-/** Automatic replay is only valid when a passed training (or automatic run) has a saved script. */
+/** Automatic replay is only valid when a passed authored run (or automatic run) has a saved script. */
 export function canRunUseAutomatic(run: {
   has_replay_script?: boolean
   use_replay_script?: boolean

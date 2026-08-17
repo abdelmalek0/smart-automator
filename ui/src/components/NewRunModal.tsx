@@ -27,8 +27,8 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
-import { canRunUseAutomatic } from '@/lib/run-status'
-import type { RunDraft } from '@/types'
+import { canRunUseAutomatic, MANUAL_PLACEHOLDER_TASK } from '@/lib/run-status'
+import type { RunDraft, RunMode } from '@/types'
 
 const NO_PROJECT = '__none__'
 
@@ -57,7 +57,11 @@ export default function NewRunModal({
   const [saveToProject, setSaveToProject] = useState(
     () => Boolean(initialValues?.website_id) && !initialValues?.website_task_id,
   )
-  const [useReplayScript, setUseReplayScript] = useState(false)
+  const [runMode, setRunMode] = useState<RunMode>(() => {
+    if (initialValues?.run_mode) return initialValues.run_mode
+    if (initialValues?.use_replay_script) return 'automatic'
+    return 'training'
+  })
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const { projects, addTaskToProject } = useProjects()
   const runStartGate = useRunStartGate()
@@ -83,6 +87,8 @@ export default function NewRunModal({
       ((sourceRun && canRunUseAutomatic(sourceRun)) ||
         (sourceRunMissing && Boolean(initialValues?.use_replay_script))),
   )
+  const isManual = runMode === 'manual'
+  const useReplayScript = runMode === 'automatic'
   const selectedProject =
     projectId !== NO_PROJECT ? projectList.find((p) => p.id === projectId) : null
   const hasTopProject = projectId !== NO_PROJECT
@@ -109,53 +115,56 @@ export default function NewRunModal({
     setTask(initialValues.task)
     setSuccessCriteria(initialValues.success_criteria)
     setProjectId(initialValues.website_id ?? NO_PROJECT)
-    setHeadless(initialValues.headless ?? false)
+    setHeadless(initialValues.run_mode === 'manual' ? false : (initialValues.headless ?? false))
     setFreshProfile(initialValues.fresh_profile ?? true)
     setMaxSteps(initialValues.max_steps ?? 100)
-    const wantsAutomatic = Boolean(initialValues.use_replay_script)
+    if (initialValues.run_mode === 'manual') {
+      setRunMode('manual')
+      return
+    }
+    const wantsAutomatic =
+      initialValues.run_mode === 'automatic' || Boolean(initialValues.use_replay_script)
     if (wantsAutomatic && sourceRunId && !sourceRunFetched && !sourceRunMissing) return
     if (wantsAutomatic && canUseAutomatic) {
-      setUseReplayScript(true)
-    } else if (!canUseAutomatic) {
-      setUseReplayScript(false)
+      setRunMode('automatic')
     } else {
-      setUseReplayScript(false)
+      setRunMode('training')
     }
   }, [initialValues, sourceRun, sourceRunId, sourceRunFetched, sourceRunMissing, canUseAutomatic])
 
   useEffect(() => {
-    if (!canUseAutomatic && useReplayScript) {
-      setUseReplayScript(false)
+    if (!canUseAutomatic && runMode === 'automatic') {
+      setRunMode('training')
     }
-  }, [canUseAutomatic, useReplayScript])
-
-  useEffect(() => {
-    if (!canUseTraining && !useReplayScript) {
-      setUseReplayScript(true)
-    }
-  }, [canUseTraining, useReplayScript])
+  }, [canUseAutomatic, runMode])
 
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!task.trim() || !successCriteria.trim() || !runStartGate.canStartRun) return
+    if (!successCriteria.trim() || !runStartGate.canStartRun) return
+    if (!isManual && !task.trim()) return
     setLoading(true)
     setError(null)
     try {
       let runProjectId = projectId !== NO_PROJECT ? projectId : undefined
       let websiteTaskId = initialValues?.website_task_id
 
-      const useAutomatic = Boolean(canUseAutomatic && useReplayScript && sourceRunId)
+      const useAutomatic = Boolean(canUseAutomatic && runMode === 'automatic' && sourceRunId)
+      const taskText = isManual ? '' : task.trim()
+      const projectTaskText = isManual
+        ? task.trim() || MANUAL_PLACEHOLDER_TASK
+        : task.trim()
 
       const payload = {
         name: name.trim() || undefined,
-        task: task.trim(),
+        task: taskText,
         success_criteria: successCriteria.trim(),
-        headless,
+        headless: isManual ? false : headless,
         max_steps: maxSteps,
         cdp_url: undefined,
         fresh_profile: freshProfile,
         website_id: runProjectId,
+        run_mode: isManual ? 'manual' as const : useAutomatic ? 'automatic' as const : 'training' as const,
         ...(websiteTaskId ? { website_task_id: websiteTaskId } : {}),
         ...(useAutomatic
           ? {
@@ -169,7 +178,7 @@ export default function NewRunModal({
         const createdTask = await addTaskToProject({
           projectId: runProjectId,
           name: payload.name,
-          task: payload.task,
+          task: projectTaskText,
           success_criteria: payload.success_criteria,
           headless: payload.headless,
           max_steps: payload.max_steps,
@@ -203,7 +212,9 @@ export default function NewRunModal({
             {isRerun ? 'Re-run QA Test' : 'New QA Run'}
           </DialogTitle>
           <DialogDescription>
-            What should the agent do, and how do you know it passed?
+            {isManual
+              ? 'Do the steps in the browser. We will save a replay and write the test task from what you did.'
+              : 'What should the agent do, and how do you know it passed?'}
           </DialogDescription>
           {isRerun && useReplayScript && sourceRunId && (
             <p className="pt-1 text-xs text-muted-foreground">
@@ -222,9 +233,14 @@ export default function NewRunModal({
               {!sourceRun ? ' (removed from list — replay kept)' : null}
             </p>
           )}
-          {isRerun && !useReplayScript && (
+          {isRerun && !useReplayScript && !isManual && (
             <p className="pt-1 text-xs text-muted-foreground">
               Starts a new training run. Training runs are not linked to other trainings.
+            </p>
+          )}
+          {isManual && (
+            <p className="pt-1 text-xs text-muted-foreground">
+              Completing the demonstration marks the test trained. Success criteria are stored for Automatic later.
             </p>
           )}
         </DialogHeader>
@@ -301,6 +317,7 @@ export default function NewRunModal({
               />
             </div>
 
+            {!isManual && (
             <div className="space-y-2">
               <Label htmlFor="task">Test task</Label>
               <p className="text-xs text-muted-foreground">What the agent should do.</p>
@@ -309,10 +326,17 @@ export default function NewRunModal({
                 value={task}
                 onChange={(e) => setTask(e.target.value)}
                 placeholder="e.g. Add an item to cart and proceed to checkout."
-                rows={3}
+                rows={8}
+                className="whitespace-pre-wrap"
                 required
               />
             </div>
+            )}
+            {isManual && (
+              <p className="text-xs text-muted-foreground rounded-md border border-border bg-muted/30 px-3 py-2">
+                Test task will be filled from what you do in the browser.
+              </p>
+            )}
 
             <div className="space-y-2">
               <Label htmlFor="success-criteria">Success criteria</Label>
@@ -333,13 +357,13 @@ export default function NewRunModal({
             <div className="space-y-2">
               <Label>Run mode</Label>
               <div
-                className="grid grid-cols-2 gap-1 rounded-lg border border-border bg-muted/40 p-1"
+                className="grid grid-cols-3 gap-1 rounded-lg border border-border bg-muted/40 p-1"
                 role="group"
                 aria-label="Run mode"
               >
                 <button
                   type="button"
-                  onClick={() => canUseTraining && setUseReplayScript(false)}
+                  onClick={() => canUseTraining && setRunMode('training')}
                   disabled={!canUseTraining}
                   title={
                     canUseTraining
@@ -348,7 +372,7 @@ export default function NewRunModal({
                   }
                   className={cn(
                     'rounded-md px-3 py-2 text-sm transition-colors',
-                    !useReplayScript
+                    runMode === 'training'
                       ? 'bg-background text-foreground shadow-sm'
                       : 'text-muted-foreground hover:text-foreground',
                     !canUseTraining && 'cursor-not-allowed opacity-50',
@@ -358,30 +382,47 @@ export default function NewRunModal({
                 </button>
                 <button
                   type="button"
-                  onClick={() => canUseAutomatic && setUseReplayScript(true)}
+                  onClick={() => {
+                    setRunMode('manual')
+                    setHeadless(false)
+                  }}
+                  className={cn(
+                    'rounded-md px-3 py-2 text-sm transition-colors',
+                    runMode === 'manual'
+                      ? 'bg-background text-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground',
+                  )}
+                >
+                  Manual
+                </button>
+                <button
+                  type="button"
+                  onClick={() => canUseAutomatic && setRunMode('automatic')}
                   disabled={!canUseAutomatic}
                   title={
                     canUseAutomatic
                       ? undefined
-                      : 'Automatic needs a saved replay from a passed training run'
+                      : 'Automatic needs a saved replay from a passed training or manual run'
                   }
                   className={cn(
                     'rounded-md px-3 py-2 text-sm transition-colors',
-                    useReplayScript
+                    runMode === 'automatic'
                       ? 'bg-background text-foreground shadow-sm'
                       : 'text-muted-foreground hover:text-foreground',
                     !canUseAutomatic && 'cursor-not-allowed opacity-50',
                   )}
                 >
-                  Automatic execution
+                  Automatic
                 </button>
               </div>
               <p className="text-xs text-muted-foreground">
-                {useReplayScript
-                  ? 'Runs the saved Playwright steps from the training run, then checks criteria.'
-                  : canUseAutomatic
-                    ? 'New training with LLM and element highlights. Not linked to other training runs.'
-                    : 'Automatic is unavailable until a training run passes and saves a replay.'}
+                {runMode === 'automatic'
+                  ? 'Runs the saved Playwright steps from the source run, then checks criteria.'
+                  : runMode === 'manual'
+                    ? 'You perform the flow. On Done we save a replay and write the test task.'
+                    : canUseAutomatic
+                      ? 'New training with LLM and element highlights. Not linked to other training runs.'
+                      : 'Automatic is unavailable until a training or manual run passes and saves a replay.'}
               </p>
             </div>
 
@@ -404,7 +445,12 @@ export default function NewRunModal({
                 <div className="space-y-4 border-t border-border px-3 py-4">
                   <div className="flex flex-wrap gap-x-6 gap-y-3">
                     <div className="flex items-center gap-2">
-                      <Switch id="headless" checked={headless} onCheckedChange={setHeadless} />
+                      <Switch
+                        id="headless"
+                        checked={isManual ? false : headless}
+                        onCheckedChange={setHeadless}
+                        disabled={isManual}
+                      />
                       <Label htmlFor="headless" className="font-normal">
                         Headless
                       </Label>
@@ -458,7 +504,7 @@ export default function NewRunModal({
               type="submit"
               disabled={
                 loading ||
-                !task.trim() ||
+                (!isManual && !task.trim()) ||
                 !successCriteria.trim() ||
                 !runStartGate.canStartRun
               }

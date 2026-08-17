@@ -46,6 +46,7 @@ import {
   TEST_RUNS_PAGE_SIZE,
   testAutomaticRuns,
   testHasActiveRun,
+  testManualRuns,
   testTrainingRuns,
   threadHasActiveRun,
   threadTitle,
@@ -300,7 +301,7 @@ function ModeSection({
   test,
   emptyMessage,
 }: {
-  mode: 'training' | 'automatic'
+  mode: 'training' | 'manual' | 'automatic'
   label: string
   count: number
   runs: RunSummary[]
@@ -324,7 +325,9 @@ function ModeSection({
   const accent =
     mode === 'training'
       ? 'border-warning/30 bg-warning/5'
-      : 'border-brand-blue/30 bg-brand-blue/5'
+      : mode === 'manual'
+        ? 'border-primary/30 bg-primary/5'
+        : 'border-brand-blue/30 bg-brand-blue/5'
 
   return (
     <div className={cn('rounded-md border border-l-[3px] py-1.5 px-1 space-y-px', accent)}>
@@ -357,7 +360,7 @@ function ModeSection({
             if (run.use_replay_script && run.source_run_id) {
               sourceMeta = automaticSourceExistsInTest(run, test)
                 ? `from ${run.source_run_id.slice(0, 8)}`
-                : 'training removed'
+                : 'source removed'
             }
             return (
               <RunRow
@@ -416,9 +419,12 @@ function TestGroupBlock({
     activeRunId && test.runs.some((run) => run.run_id === activeRunId),
   )
   const trainingRuns = testTrainingRuns(test)
+  const manualRuns = testManualRuns(test)
   const automaticRuns = testAutomaticRuns(test)
   const showTraining =
     modeFilter === 'training' || (modeFilter === 'all' && trainingRuns.length > 0)
+  const showManual =
+    modeFilter === 'manual' || (modeFilter === 'all' && manualRuns.length > 0)
   const showAutomatic =
     modeFilter === 'automatic' || (modeFilter === 'all' && automaticRuns.length > 0)
 
@@ -449,6 +455,20 @@ function TestGroupBlock({
               emptyMessage="No training runs yet"
             />
           ) : null}
+          {showManual ? (
+            <ModeSection
+              mode="manual"
+              label="Manual"
+              count={manualRuns.length}
+              runs={manualRuns}
+              activeRunId={activeRunId}
+              roomy={roomy}
+              projects={projects}
+              onDelete={onDelete}
+              test={test}
+              emptyMessage="No manual runs yet"
+            />
+          ) : null}
           {showAutomatic ? (
             <ModeSection
               mode="automatic"
@@ -463,7 +483,10 @@ function TestGroupBlock({
               emptyMessage="No automatic runs yet"
             />
           ) : null}
-          {modeFilter === 'all' && trainingRuns.length === 0 && automaticRuns.length === 0 ? (
+          {modeFilter === 'all' &&
+          trainingRuns.length === 0 &&
+          manualRuns.length === 0 &&
+          automaticRuns.length === 0 ? (
             <p className="px-2 py-1.5 text-[11px] text-muted-foreground">No runs yet</p>
           ) : null}
         </div>
@@ -716,7 +739,7 @@ export default function RunThreadList({
             <AlertDialogTitle>Delete this run?</AlertDialogTitle>
             <AlertDialogDescription>
               {deleteKeepsDependents
-                ? 'This removes the training run from your list. Automatic runs that used this training stay in the list. Their replay script is kept so you can still re-run them.'
+                ? 'This removes the run from your list. Automatic runs that used this replay stay in the list. Their replay script is kept so you can still re-run them.'
                 : deleteTarget?.use_replay_script
                   ? 'This permanently removes the automatic run and its saved history and report.'
                   : 'This permanently removes the run and its saved history, replay script (if unused), and report.'}
