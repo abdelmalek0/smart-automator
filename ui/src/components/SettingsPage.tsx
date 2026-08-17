@@ -1,59 +1,38 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Check, Loader2, Plus, Trash2, X } from 'lucide-react'
-import { checkConfig, getConfig, getPricing, getWorkerStatus, isProviderApiKeySet, listChromeProfiles, savePricing, updateConfig } from '@/api'
-import { defaultBaseUrl, defaultModel, isValidBaseUrlForProvider, coerceUiProvider, providerUsesApiKey, UI_PROVIDERS } from '@/providers'
-import type { BrowserSessionMode, ChromeProfile, Config, PricingEntry } from '@/types'
+import { Check, Loader2 } from 'lucide-react'
+import {
+  checkConfig,
+  getConfig,
+  getPricing,
+  getWorkerStatus,
+  isProviderApiKeySet,
+  listChromeProfiles,
+  savePricing,
+  updateConfig,
+} from '@/api'
+import {
+  defaultBaseUrl,
+  defaultModel,
+  isValidBaseUrlForProvider,
+  coerceUiProvider,
+} from '@/providers'
+import type { ChromeProfile, Config, PricingEntry } from '@/types'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { cn } from '@/lib/utils'
+import BrowserSettings from '@/components/settings/BrowserSettings'
+import LlmSettings from '@/components/settings/LlmSettings'
+import PricingSettings from '@/components/settings/PricingSettings'
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
+  MASKED_API_KEY,
+  PROFILE_APP_DEFAULT,
+  PROFILE_CUSTOM,
+} from '@/components/settings/types'
+import type { AgentRoleId, CheckResult, RoleFormState } from '@/components/settings/types'
 
-const PROFILE_APP_DEFAULT = '__app_default__'
-const PROFILE_CUSTOM = '__custom__'
-/** Display-only stand-in when a key is stored; never sent to the server. */
-const MASKED_API_KEY = '********'
-
-const AGENT_ROLES = [
-  {
-    id: 'navigation' as const,
-    title: 'Navigation',
-    description: 'Navigator and criteria checker',
-  },
-  {
-    id: 'planning' as const,
-    title: 'Planning',
-    description: 'Planner, actor-critic, and HITL debrief',
-  },
-]
-
-type AgentRoleId = (typeof AGENT_ROLES)[number]['id']
-
-type RoleFormState = {
-  provider: string
-  baseUrl: string
-  model: string
-  apiKey: string
-  openrouterProvider: string
-}
+type SettingsTab = 'llm' | 'browser' | 'pricing'
 
 function emptyRoleForm(): RoleFormState {
   return {
@@ -94,8 +73,18 @@ function inferProfileSelection(
   return PROFILE_CUSTOM
 }
 
+const TAB_COPY: Record<SettingsTab, string> = {
+  llm: 'Provider and model per agent role. API keys are shared per provider.',
+  browser: 'How Chrome runs on the Connect machine.',
+  pricing: 'USD per million tokens, used for cost on each run.',
+}
+
+const tabTriggerClass =
+  'rounded-none bg-transparent px-1 pb-2.5 pt-0 shadow-none border-b-2 border-transparent text-muted-foreground hover:text-foreground data-[state=active]:shadow-none data-[state=active]:bg-transparent data-[state=active]:border-primary data-[state=active]:text-foreground'
+
 export default function SettingsPage() {
   const queryClient = useQueryClient()
+  const [tab, setTab] = useState<SettingsTab>('llm')
 
   const { data: config, isLoading } = useQuery({
     queryKey: ['config'],
@@ -131,10 +120,9 @@ export default function SettingsPage() {
   const [profileSelection, setProfileSelection] = useState(PROFILE_APP_DEFAULT)
   const [dirty, setDirty] = useState(false)
   const [checkingRole, setCheckingRole] = useState<AgentRoleId | null>(null)
-  const [checkResults, setCheckResults] = useState<
-    Partial<Record<AgentRoleId, { ok: boolean; error?: string; provider_name?: string }>>
-  >({})
+  const [checkResults, setCheckResults] = useState<Partial<Record<AgentRoleId, CheckResult>>>({})
   const [pricing, setPricing] = useState<PricingEntry[]>([])
+  const [pricingDirty, setPricingDirty] = useState(false)
   const [pricingSaved, setPricingSaved] = useState(false)
 
   function applyConfig(next: Config) {
@@ -159,6 +147,10 @@ export default function SettingsPage() {
       applyConfig(config)
     }
   }, [config, dirty, chromeProfiles])
+
+  useEffect(() => {
+    if (pricingData && !pricingDirty) setPricing(pricingData)
+  }, [pricingData, pricingDirty])
 
   function updateRoleForm(role: AgentRoleId, patch: Partial<RoleFormState>) {
     setDirty(true)
@@ -207,10 +199,6 @@ export default function SettingsPage() {
     }
   }
 
-  useEffect(() => {
-    if (pricingData) setPricing(pricingData)
-  }, [pricingData])
-
   const connectOnline = Boolean(workerStatus?.online ?? config?.connect_online)
 
   const saveMutation = useMutation({
@@ -238,12 +226,14 @@ export default function SettingsPage() {
     mutationFn: () => savePricing(pricing),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pricing'] })
+      setPricingDirty(false)
       setPricingSaved(true)
       setTimeout(() => setPricingSaved(false), 2000)
     },
   })
 
   function updatePricingRow(index: number, field: keyof PricingEntry, value: string) {
+    setPricingDirty(true)
     setPricing((prev) =>
       prev.map((row, i) =>
         i === index
@@ -264,614 +254,169 @@ export default function SettingsPage() {
     setCheckingRole(null)
   }
 
+  function handleProfileSelectionChange(value: string) {
+    setDirty(true)
+    setProfileSelection(value)
+    if (value === PROFILE_APP_DEFAULT) {
+      setChromeUserData('')
+      setChromeProfileDirectory('')
+    } else if (value === PROFILE_CUSTOM) {
+      setChromeProfileDirectory('')
+    } else {
+      const profile = chromeProfiles.find((item) => item.id === value)
+      if (profile) {
+        setChromeUserData(profile.user_data_dir)
+        setChromeProfileDirectory(profile.profile_directory)
+      }
+    }
+  }
+
+  const tabDirty = tab === 'pricing' ? pricingDirty : dirty
+  const pending = tab === 'pricing' ? savePricingMutation.isPending : saveMutation.isPending
+  const success = tab === 'pricing' ? pricingSaved : saveMutation.isSuccess && !dirty
+  const saveError = tab === 'pricing' ? savePricingMutation.error : saveMutation.error
+
+  function handleSave() {
+    if (tab === 'pricing') savePricingMutation.mutate()
+    else saveMutation.mutate()
+  }
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      <div className="flex-shrink-0 px-6 pt-6 pb-0 border-b border-border">
-        <h2 className="text-lg font-semibold mb-4">Settings</h2>
-      </div>
-
-      <ScrollArea className="flex-1 px-6 py-6">
-        {isLoading && (
-          <p className="text-sm text-muted-foreground flex items-center gap-2">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Loading…
-          </p>
-        )}
-
-        <Tabs defaultValue="llm" className="max-w-2xl">
-          <TabsList className="mb-6">
-            <TabsTrigger value="llm">LLM Provider</TabsTrigger>
-            <TabsTrigger value="browser">Browser</TabsTrigger>
-            <TabsTrigger value="pricing">Token Pricing</TabsTrigger>
-            <TabsTrigger value="about">About</TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="llm" className="space-y-8">
-            <p className="text-sm text-muted-foreground">
-              Choose provider and model per agent role. API keys are shared per provider; the
-              available-model list is shared on this server.
-            </p>
-
-            {AGENT_ROLES.map((role) => (
-              <LlmRoleSection
-                key={role.id}
-                roleId={role.id}
-                title={role.title}
-                description={role.description}
-                form={roleForms[role.id]}
-                config={config}
-                checking={checkingRole === role.id}
-                checkResult={checkResults[role.id]}
-                onProviderChange={(value) => handleProviderChange(role.id, value)}
-                onBaseUrlChange={(value) => updateRoleForm(role.id, { baseUrl: value })}
-                onModelChange={(value) => updateRoleForm(role.id, { model: value })}
-                onOpenrouterProviderChange={(value) =>
-                  updateRoleForm(role.id, { openrouterProvider: value })
-                }
-                onApiKeyChange={(value) => updateRoleForm(role.id, { apiKey: value })}
-                onApiKeyFocus={() => {
-                  if (roleForms[role.id].apiKey === MASKED_API_KEY) {
-                    updateRoleForm(role.id, { apiKey: '' })
-                  }
-                }}
-                onApiKeyBlur={() => {
-                  const provider = roleForms[role.id].provider
-                  if (!roleForms[role.id].apiKey.trim() && isProviderApiKeySet(provider, config)) {
-                    updateRoleForm(role.id, { apiKey: MASKED_API_KEY })
-                  }
-                }}
-                onCheck={() => handleCheck(role.id)}
-              />
-            ))}
-
-            <SaveBar
-              pending={saveMutation.isPending}
-              success={saveMutation.isSuccess}
-              error={saveMutation.isError ? saveMutation.error : null}
-              onSave={() => saveMutation.mutate()}
-            />
-          </TabsContent>
-
-          <TabsContent value="browser" className="space-y-5">
-            <p className="text-sm text-muted-foreground">
-              Choose how Chrome runs on the Connect machine. Profiles are listed from the
-              connected Connect app — the server never launches Chrome itself.
-            </p>
-
-            <Card>
-              <CardContent className="p-0 divide-y divide-border text-sm">
-                <InfoRow
-                  label="Connect"
-                  value={
-                    connectOnline
-                      ? `Online${workerStatus?.browser_state && workerStatus.browser_state !== 'idle' ? ` · ${workerStatus.browser_state}` : ''}`
-                      : 'Offline — start the Connect app to run browser tasks'
-                  }
-                />
-                {config && (
-                  <>
-                    <InfoRow
-                      label="Session mode"
-                      value={sessionModeLabel(config.browser_session_mode)}
-                    />
-                    <InfoRow
-                      label="Active profile"
-                      value={
-                        config.effective_chrome_profile
-                        || (config.browser_session_mode === 'ephemeral'
-                          ? 'Fresh profile (discarded after each run)'
-                          : config.effective_chrome_user_data
-                            || '—')
-                      }
-                    />
-                  </>
-                )}
-              </CardContent>
-            </Card>
-
-            {!connectOnline && (
-              <p className="text-sm text-amber-700 dark:text-amber-400">
-                Connect is offline. Runs will fail until the Connect app is logged in and connected.
-              </p>
-            )}
-
-            <div className="space-y-2">
-              <Label htmlFor="chrome-profile-select">Chrome profile</Label>
-              <Select
-                value={profileSelection}
-                onValueChange={(value) => {
-                  setDirty(true)
-                  setProfileSelection(value)
-                  if (value === PROFILE_APP_DEFAULT) {
-                    setChromeUserData('')
-                    setChromeProfileDirectory('')
-                  } else if (value === PROFILE_CUSTOM) {
-                    setChromeProfileDirectory('')
-                  } else {
-                    const profile = chromeProfiles.find((item) => item.id === value)
-                    if (profile) {
-                      setChromeUserData(profile.user_data_dir)
-                      setChromeProfileDirectory(profile.profile_directory)
-                    }
-                  }
-                }}
-                disabled={freshProfile}
-              >
-                <SelectTrigger id="chrome-profile-select" className="text-sm">
-                  <SelectValue placeholder="Select a profile" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={PROFILE_APP_DEFAULT}>
-                    App default (smart-automator)
-                  </SelectItem>
-                  {chromeProfiles.map((profile) => (
-                    <SelectItem key={profile.id} value={profile.id}>
-                      {profile.name} — {profile.browser}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">
-                {freshProfile
-                  ? 'Disabled while fresh profile is on — each run starts with a blank browser on the Connect machine.'
-                  : !connectOnline
-                    ? 'Profiles appear when Connect is online.'
-                    : chromeProfiles.length === 0
-                      ? 'No system profiles advertised yet — Connect will use the app default profile.'
-                      : profileSelection === PROFILE_APP_DEFAULT
-                        ? 'Uses the Connect app default profile directory. Cookies and history persist between runs.'
-                        : 'System profiles are mirrored on the Connect machine before launch.'}
-              </p>
-            </div>
-
-            <div className="flex items-start gap-3">
-              <Switch
-                id="fresh-profile"
-                checked={freshProfile}
-                onCheckedChange={(value) => {
-                  setDirty(true)
-                  setFreshProfile(value)
-                }}
-              />
-              <div>
-                <Label htmlFor="fresh-profile" className="font-normal">Fresh profile</Label>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  Throw away all browser state after each run on the Connect machine — on by default
+      <Tabs value={tab} onValueChange={(value) => setTab(value as SettingsTab)} className="flex flex-col h-full overflow-hidden">
+        <div className="flex-shrink-0 border-b border-border/50 bg-background/80">
+          <div className="mx-auto w-full max-w-4xl px-4 sm:px-8 pt-7">
+            <div className="flex items-start justify-between gap-4 mb-5">
+              <div className="min-w-0">
+                <h1 className="text-3xl font-semibold tracking-tight">Settings</h1>
+                <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">
+                  {TAB_COPY[tab]}
                 </p>
+              </div>
+              <div className="flex items-center gap-2.5 pt-1 shrink-0">
+                {tabDirty && (
+                  <span className="hidden sm:inline text-[11px] font-medium text-muted-foreground tracking-wide uppercase">
+                    Unsaved
+                  </span>
+                )}
+                {success && !tabDirty && (
+                  <span className="text-success text-xs flex items-center gap-1">
+                    <Check className="h-3.5 w-3.5" /> Saved
+                  </span>
+                )}
+                {saveError != null && Boolean(saveError) && (
+                  <span className="text-destructive text-xs max-w-[200px] truncate">
+                    {saveError instanceof Error ? saveError.message : 'Save failed'}
+                  </span>
+                )}
+                <Button
+                  onClick={handleSave}
+                  disabled={!tabDirty || pending}
+                  size="sm"
+                  variant={tabDirty ? 'default' : 'outline'}
+                  className="h-8 px-3.5"
+                >
+                  {pending ? 'Saving…' : 'Save'}
+                </Button>
               </div>
             </div>
 
-            <SaveBar
-              pending={saveMutation.isPending}
-              success={saveMutation.isSuccess}
-              error={saveMutation.isError ? saveMutation.error : null}
-              onSave={() => saveMutation.mutate()}
-            />
-          </TabsContent>
+            <TabsList className="h-auto w-full justify-start gap-5 rounded-none bg-transparent p-0 -mb-px">
+              <TabsTrigger value="llm" className={cn(tabTriggerClass, 'gap-1.5')}>
+                LLM
+                {dirty && (
+                  <span className="h-1.5 w-1.5 rounded-full bg-primary" aria-label="Unsaved LLM changes" />
+                )}
+              </TabsTrigger>
+              <TabsTrigger value="browser" className={cn(tabTriggerClass, 'gap-1.5')}>
+                Browser
+                {dirty && (
+                  <span className="h-1.5 w-1.5 rounded-full bg-primary" aria-label="Unsaved browser changes" />
+                )}
+              </TabsTrigger>
+              <TabsTrigger value="pricing" className={cn(tabTriggerClass, 'gap-1.5')}>
+                Pricing
+                {pricingDirty && (
+                  <span className="h-1.5 w-1.5 rounded-full bg-primary" aria-label="Unsaved pricing changes" />
+                )}
+              </TabsTrigger>
+            </TabsList>
+          </div>
+        </div>
 
-          <TabsContent value="pricing" className="space-y-5">
-            <p className="text-sm text-muted-foreground">
-              USD per 1 million tokens. Used to calculate cost shown on each run.
-            </p>
+        <ScrollArea className="flex-1">
+          <div className="mx-auto w-full max-w-4xl px-4 sm:px-8 py-7">
+            {isLoading && (
+              <p className="text-sm text-muted-foreground flex items-center gap-2 mb-6">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading…
+              </p>
+            )}
 
-            <div className="space-y-2">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-[140px]">Provider</TableHead>
-                    <TableHead>Model</TableHead>
-                    <TableHead className="w-[88px] text-right">Input</TableHead>
-                    <TableHead className="w-[88px] text-right">Output</TableHead>
-                    <TableHead className="w-[100px] text-right">Cache Read</TableHead>
-                    <TableHead className="w-10" />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {pricing.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={6} className="text-sm text-muted-foreground italic py-6 text-center">
-                        No entries yet — click Add Row to add a model.
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    pricing.map((row, i) => (
-                      <TableRow key={i}>
-                        <TableCell>
-                          <Select
-                            value={row.provider}
-                            onValueChange={(v) => updatePricingRow(i, 'provider', v)}
-                          >
-                            <SelectTrigger className="h-8 text-xs">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="groq">groq</SelectItem>
-                              <SelectItem value="google">google</SelectItem>
-                              <SelectItem value="openrouter">openrouter</SelectItem>
-                              <SelectItem value="ollama-cloud">ollama-cloud</SelectItem>
-                              <SelectItem value="ollama">ollama</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </TableCell>
-                        <TableCell>
-                          <Input
-                            value={row.model}
-                            onChange={(e) => updatePricingRow(i, 'model', e.target.value)}
-                            placeholder="model-name"
-                            className="h-8 text-xs mono"
-                          />
-                        </TableCell>
-                        {(['input', 'output', 'cache_read'] as const).map((field) => (
-                          <TableCell key={field}>
-                            <Input
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              value={row[field]}
-                              onChange={(e) => updatePricingRow(i, field, e.target.value)}
-                              className="h-8 text-xs mono text-right"
-                            />
-                          </TableCell>
-                        ))}
-                        <TableCell>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                            onClick={() => setPricing((p) => p.filter((_, j) => j !== i))}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  )}
-                </TableBody>
-              </Table>
-              <Button
-                variant="outline"
-                size="sm"
-                className="mt-2"
-                onClick={() =>
-                  setPricing((p) => [
-                    ...p,
+            <TabsContent value="llm" className="mt-0">
+              <LlmSettings
+                roleForms={roleForms}
+                config={config}
+                checkingRole={checkingRole}
+                checkResults={checkResults}
+                onProviderChange={handleProviderChange}
+                onBaseUrlChange={(role, value) => updateRoleForm(role, { baseUrl: value })}
+                onModelChange={(role, value) => updateRoleForm(role, { model: value })}
+                onOpenrouterProviderChange={(role, value) =>
+                  updateRoleForm(role, { openrouterProvider: value })
+                }
+                onApiKeyChange={(role, value) => updateRoleForm(role, { apiKey: value })}
+                onApiKeyFocus={(role) => {
+                  if (roleForms[role].apiKey === MASKED_API_KEY) {
+                    updateRoleForm(role, { apiKey: '' })
+                  }
+                }}
+                onApiKeyBlur={(role) => {
+                  const provider = roleForms[role].provider
+                  if (!roleForms[role].apiKey.trim() && isProviderApiKeySet(provider, config)) {
+                    updateRoleForm(role, { apiKey: MASKED_API_KEY })
+                  }
+                }}
+                onCheck={handleCheck}
+              />
+            </TabsContent>
+
+            <TabsContent value="browser" className="mt-0">
+              <BrowserSettings
+                config={config}
+                workerStatus={workerStatus}
+                connectOnline={connectOnline}
+                freshProfile={freshProfile}
+                profileSelection={profileSelection}
+                chromeProfiles={chromeProfiles}
+                onFreshProfileChange={(value) => {
+                  setDirty(true)
+                  setFreshProfile(value)
+                }}
+                onProfileSelectionChange={handleProfileSelectionChange}
+              />
+            </TabsContent>
+
+            <TabsContent value="pricing" className="mt-0">
+              <PricingSettings
+                pricing={pricing}
+                onUpdateRow={updatePricingRow}
+                onRemoveRow={(index) => {
+                  setPricingDirty(true)
+                  setPricing((prev) => prev.filter((_, j) => j !== index))
+                }}
+                onAddRow={() => {
+                  setPricingDirty(true)
+                  setPricing((prev) => [
+                    ...prev,
                     { provider: 'groq', model: '', input: 0, output: 0, cache_read: 0 },
                   ])
-                }
-              >
-                <Plus className="h-4 w-4" />
-                Add Row
-              </Button>
-            </div>
-
-            <div className="flex items-center gap-4 pt-4 border-t border-border">
-              <Button onClick={() => savePricingMutation.mutate()} disabled={savePricingMutation.isPending}>
-                {savePricingMutation.isPending ? 'Saving…' : 'Save Pricing'}
-              </Button>
-              {pricingSaved && (
-                <span className="text-success text-sm flex items-center gap-1">
-                  <Check className="h-4 w-4" /> Saved
-                </span>
-              )}
-              {savePricingMutation.isError && (
-                <span className="text-destructive text-sm">Failed to save</span>
-              )}
-            </div>
-          </TabsContent>
-
-          <TabsContent value="about">
-            <p className="text-sm text-muted-foreground mb-4">Runtime configuration and diagnostics.</p>
-            {config && (
-              <Card>
-                <CardContent className="p-0 divide-y divide-border">
-                  {AGENT_ROLES.map((role) => {
-                    const roleConfig = config.roles?.[role.id]
-                    return (
-                      <div key={role.id} className="px-4 py-3 space-y-2">
-                        <p className="text-xs uppercase tracking-wide text-muted-foreground">{role.title}</p>
-                        <InfoRow label="Provider" value={roleConfig?.provider ?? config.provider} />
-                        <InfoRow label="Model" value={roleConfig?.model ?? config.model} />
-                        <InfoRow label="Base URL" value={roleConfig?.base_url ?? config.base_url} />
-                        {(roleConfig?.provider ?? config.provider) === 'openrouter' && (
-                          <InfoRow
-                            label="Upstream provider"
-                            value={roleConfig?.openrouter_provider?.trim() || 'Auto'}
-                          />
-                        )}
-                        <InfoRow
-                          label="API Key Set"
-                          value={(roleConfig?.api_key_set ?? config.api_key_set) ? 'Yes' : 'No'}
-                        />
-                      </div>
-                    )
-                  })}
-                  <InfoRow label="Connect" value={config.connect_online ? 'Online' : 'Offline'} />
-                  <InfoRow label="Fresh profile" value={config.fresh_profile ? 'Yes' : 'No'} />
-                  <InfoRow
-                    label="Session Mode"
-                    value={sessionModeLabel(config.browser_session_mode)}
-                  />
-                  <InfoRow
-                    label="Profile"
-                    value={config.effective_chrome_profile || config.effective_chrome_user_data || '(default)'}
-                  />
-                </CardContent>
-              </Card>
-            )}
-          </TabsContent>
-        </Tabs>
-      </ScrollArea>
-    </div>
-  )
-}
-
-function LlmRoleSection({
-  roleId,
-  title,
-  description,
-  form,
-  config,
-  checking,
-  checkResult,
-  onProviderChange,
-  onBaseUrlChange,
-  onModelChange,
-  onOpenrouterProviderChange,
-  onApiKeyChange,
-  onApiKeyFocus,
-  onApiKeyBlur,
-  onCheck,
-}: {
-  roleId: AgentRoleId
-  title: string
-  description: string
-  form: RoleFormState
-  config: Config | undefined
-  checking: boolean
-  checkResult?: { ok: boolean; error?: string; provider_name?: string }
-  onProviderChange: (value: string) => void
-  onBaseUrlChange: (value: string) => void
-  onModelChange: (value: string) => void
-  onOpenrouterProviderChange: (value: string) => void
-  onApiKeyChange: (value: string) => void
-  onApiKeyFocus: () => void
-  onApiKeyBlur: () => void
-  onCheck: () => void
-}) {
-  const providerApiKeySet = isProviderApiKeySet(form.provider, config)
-  const modelOptions = config?.provider_settings?.[form.provider]?.models ?? []
-
-  return (
-    <section className="space-y-4 rounded-lg border border-border p-4">
-      <div>
-        <h3 className="text-sm font-semibold">{title}</h3>
-        <p className="text-xs text-muted-foreground mt-0.5">{description}</p>
-      </div>
-
-      <div className="space-y-2">
-        <Label>Provider</Label>
-        <Select value={form.provider} onValueChange={onProviderChange}>
-          <SelectTrigger>
-            <SelectValue placeholder="Select provider" />
-          </SelectTrigger>
-          <SelectContent>
-            {UI_PROVIDERS.map((item) => (
-              <SelectItem key={`${roleId}-${item.id}`} value={item.id}>
-                {item.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-
-      <div className="space-y-2">
-        <Label>Base URL</Label>
-        <Input value={form.baseUrl} onChange={(e) => onBaseUrlChange(e.target.value)} className="mono" />
-      </div>
-
-      <ModelField
-        key={`${roleId}-${form.provider}`}
-        model={form.model}
-        modelOptions={modelOptions}
-        onModelChange={onModelChange}
-      />
-
-      {form.provider === 'openrouter' && (
-        <div className="space-y-2">
-          <Label>Upstream provider</Label>
-          <Input
-            value={form.openrouterProvider}
-            onChange={(e) => onOpenrouterProviderChange(e.target.value)}
-            placeholder="Auto"
-            className="mono"
-          />
-          <p className="text-xs text-muted-foreground">
-            OpenRouter provider slug (e.g. together, deepinfra). Leave empty for Auto.
-          </p>
-        </div>
-      )}
-
-      {providerUsesApiKey(form.provider) && (
-        <div className="space-y-2">
-          <Label>
-            API Key{' '}
-            {providerApiKeySet && (
-              <span className="text-success font-normal text-xs">(set)</span>
-            )}
-          </Label>
-          <Input
-            type="password"
-            value={form.apiKey}
-            onChange={(e) => onApiKeyChange(e.target.value)}
-            onFocus={onApiKeyFocus}
-            onBlur={onApiKeyBlur}
-            autoComplete="off"
-            placeholder={providerApiKeySet ? undefined : 'Enter API key…'}
-            className="mono"
-          />
-        </div>
-      )}
-
-      <div className="flex items-center gap-3">
-        <Button variant="outline" onClick={onCheck} disabled={checking}>
-          {checking ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Test Connection'}
-        </Button>
-        {checkResult && (
-          <span
-            className={`text-sm flex items-center gap-1 ${checkResult.ok ? 'text-success' : 'text-destructive'}`}
-          >
-            {checkResult.ok ? (
-              <>
-                <Check className="h-4 w-4" />{' '}
-                {checkResult.provider_name
-                  ? `Connected (${checkResult.provider_name})`
-                  : 'Connected'}
-              </>
-            ) : (
-              <>
-                <X className="h-4 w-4" /> {checkResult.error ?? 'Failed'}
-              </>
-            )}
-          </span>
-        )}
-      </div>
-    </section>
-  )
-}
-
-function ModelField({
-  model,
-  modelOptions,
-  onModelChange,
-}: {
-  model: string
-  modelOptions: string[]
-  onModelChange: (value: string) => void
-}) {
-  const CUSTOM = '__custom__'
-  const inputRef = useRef<HTMLInputElement>(null)
-  const hasSaved = modelOptions.length > 0
-  const isSaved = hasSaved && modelOptions.includes(model)
-  const [customMode, setCustomMode] = useState(() => hasSaved && !isSaved)
-
-  useEffect(() => {
-    if (!hasSaved) {
-      setCustomMode(false)
-      return
-    }
-    if (modelOptions.includes(model)) {
-      setCustomMode(false)
-    }
-  }, [hasSaved, model, modelOptions])
-
-  function enterCustom() {
-    setCustomMode(true)
-    onModelChange('')
-    requestAnimationFrame(() => inputRef.current?.focus())
-  }
-
-  function useSavedModels() {
-    setCustomMode(false)
-    if (!modelOptions.includes(model)) {
-      onModelChange(modelOptions[0] ?? model)
-    }
-  }
-
-  if (!hasSaved || customMode) {
-    return (
-      <div className="space-y-2">
-        <Label>Model</Label>
-        <Input
-          ref={inputRef}
-          value={model}
-          onChange={(e) => onModelChange(e.target.value)}
-          className="mono"
-          placeholder="Model name"
-        />
-        {hasSaved && (
-          <button
-            type="button"
-            className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-            onClick={useSavedModels}
-          >
-            Choose from saved models
-          </button>
-        )}
-      </div>
-    )
-  }
-
-  return (
-    <div className="space-y-2">
-      <Label>Model</Label>
-      <Select
-        value={model}
-        onValueChange={(value) => (value === CUSTOM ? enterCustom() : onModelChange(value))}
-      >
-        <SelectTrigger className="mono">
-          <SelectValue placeholder="Pick a model…" />
-        </SelectTrigger>
-        <SelectContent>
-          {modelOptions.map((name) => (
-            <SelectItem key={name} value={name} className="mono">
-              {name}
-            </SelectItem>
-          ))}
-          <SelectItem value={CUSTOM} className="text-muted-foreground">
-            Custom model…
-          </SelectItem>
-        </SelectContent>
-      </Select>
-    </div>
-  )
-}
-
-function sessionModeLabel(mode: BrowserSessionMode): string {
-  switch (mode) {
-    case 'cdp':
-      return 'Connect (remote Chrome)'
-    case 'persistent':
-      return 'Persistent (on-disk profile)'
-    case 'ephemeral':
-      return 'Fresh profile (discarded after each run)'
-  }
-}
-
-function InfoRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center px-4 py-3 gap-4">
-      <span className="text-xs uppercase tracking-wide text-muted-foreground w-28 shrink-0">{label}</span>
-      <span className="text-sm mono text-foreground break-all">{value}</span>
-    </div>
-  )
-}
-
-function SaveBar({
-  pending,
-  success,
-  error,
-  onSave,
-}: {
-  pending: boolean
-  success: boolean
-  error: unknown
-  onSave: () => void
-}) {
-  return (
-    <div className="flex items-center gap-4 pt-6 border-t border-border">
-      <Button onClick={onSave} disabled={pending}>
-        {pending ? 'Saving…' : 'Save'}
-      </Button>
-      {success && (
-        <span className="text-success text-sm flex items-center gap-1">
-          <Check className="h-4 w-4" /> Saved and applied
-        </span>
-      )}
-      {error != null && Boolean(error) && (
-        <span className="text-destructive text-sm">
-          Failed: {error instanceof Error ? error.message : 'unknown'}
-        </span>
-      )}
+                }}
+              />
+            </TabsContent>
+          </div>
+        </ScrollArea>
+      </Tabs>
     </div>
   )
 }
