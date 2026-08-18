@@ -23,7 +23,16 @@ export function useProjects() {
     queryFn: listProjects,
   })
 
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: QUERY_KEY })
+  const invalidate = () => {
+    void queryClient.invalidateQueries({ queryKey: QUERY_KEY })
+  }
+
+  const invalidateProjectsAndRuns = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: QUERY_KEY }),
+      queryClient.invalidateQueries({ queryKey: ['runs'] }),
+    ])
+  }
 
   const createProjectMutation = useMutation({
     mutationFn: (payload: {
@@ -51,7 +60,7 @@ export function useProjects() {
 
   const deleteProjectMutation = useMutation({
     mutationFn: (projectId: string) => deleteProject(projectId),
-    onSuccess: invalidate,
+    onSuccess: invalidateProjectsAndRuns,
   })
 
   const addTaskMutation = useMutation({
@@ -79,7 +88,7 @@ export function useProjects() {
   const removeTaskMutation = useMutation({
     mutationFn: ({ projectId, taskId }: { projectId: string; taskId: string }) =>
       deleteProjectTask(projectId, taskId),
-    onSuccess: invalidate,
+    onSuccess: invalidateProjectsAndRuns,
   })
 
   const importTestsMutation = useMutation({

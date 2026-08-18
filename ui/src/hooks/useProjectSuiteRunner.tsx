@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { cancelRun } from '@/api'
+import { cancelRun, StartRunError } from '@/api'
 import { startProjectTaskRun, waitForRunTerminal } from '@/lib/project-run'
 import type { Project, ProjectTask } from '@/types'
 
@@ -194,9 +194,13 @@ export function SuiteRunnerProvider({ children }: { children: ReactNode }) {
             }
             break
           }
-          results[i] = {
-            ...results[i],
-            status: 'error',
+          if (err instanceof StartRunError && err.status === 404) {
+            results[i] = { taskId: task.id, status: 'skipped' }
+          } else {
+            results[i] = {
+              ...results[i],
+              status: 'error',
+            }
           }
         } finally {
           currentRunIdRef.current = null

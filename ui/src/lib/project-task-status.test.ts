@@ -4,6 +4,8 @@ import {
   formatResultsSummary,
   latestRunForProjectTask,
   latestRunsByProjectTaskId,
+  projectHasActiveRun,
+  projectTaskHasActiveRun,
   projectTestResultsSummary,
   recentProjectRuns,
   resolveTestRowStatus,
@@ -146,5 +148,59 @@ describe('project-task-status', () => {
       run({ run_id: '4', started_at: 40, website_id: 'p1', website_task_id: 't2' }),
     ]
     expect(runsForProjectTask(runs, 'p1', 't1', 3).map((r) => r.run_id)).toEqual(['2', '3', '1'])
+  })
+
+  it('detects live runs for a task or project', () => {
+    const runs = [
+      run({
+        run_id: 'live',
+        started_at: 10,
+        website_id: 'p1',
+        website_task_id: 't1',
+        status: 'running',
+        finished_at: null,
+      }),
+      run({
+        run_id: 'done',
+        started_at: 20,
+        website_id: 'p1',
+        website_task_id: 't2',
+        status: 'pass',
+      }),
+    ]
+    expect(projectTaskHasActiveRun(runs, 'p1', 't1')).toBe(true)
+    expect(projectTaskHasActiveRun(runs, 'p1', 't2')).toBe(false)
+    expect(
+      projectTaskHasActiveRun(
+        [
+          run({
+            run_id: 'task-id-only-live',
+            started_at: 50,
+            website_task_id: 't2',
+            status: 'awaiting_human',
+            finished_at: null,
+          }),
+        ],
+        'p1',
+        't2',
+      ),
+    ).toBe(true)
+    expect(projectHasActiveRun(runs, 'p1')).toBe(true)
+    expect(projectHasActiveRun(runs, 'p2')).toBe(false)
+    expect(
+      projectHasActiveRun(
+        [
+          run({
+            run_id: 'orphan-live',
+            started_at: 40,
+            website_task_id: 't1',
+            status: 'running',
+            finished_at: null,
+          }),
+        ],
+        'p1',
+        ['t1'],
+      ),
+    ).toBe(true)
   })
 })

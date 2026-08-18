@@ -1,17 +1,8 @@
+import { useState } from 'react'
 import { Download, Hand, Loader2, MoreHorizontal, Pencil, Play, RefreshCw, Trash2 } from 'lucide-react'
+import DeleteConfirmDialog from '@/components/DeleteConfirmDialog'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/components/ui/alert-dialog'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -28,7 +19,7 @@ interface Props {
   running: boolean
   disabled: boolean
   disabledHint?: string
-  deleting?: boolean
+  hasLiveRun?: boolean
   includedInSuite?: boolean
   onIncludedInSuiteChange?: (included: boolean) => void
   onRun: () => void
@@ -36,7 +27,7 @@ interface Props {
   onTrainManually?: () => void
   onExport?: () => void
   onEdit: () => void
-  onDelete: () => void
+  onDelete: () => void | Promise<unknown>
 }
 
 export default function TestRow({
@@ -44,7 +35,7 @@ export default function TestRow({
   running,
   disabled,
   disabledHint,
-  deleting = false,
+  hasLiveRun = false,
   includedInSuite = true,
   onIncludedInSuiteChange,
   onRun,
@@ -56,6 +47,26 @@ export default function TestRow({
 }: Props) {
   const excluded = onIncludedInSuiteChange != null && !includedInSuite
   const displayName = task.name || 'Untitled test'
+  const thisTestLive = hasLiveRun || running
+  const deleteBlocked = thisTestLive
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleteBusy, setDeleteBusy] = useState(false)
+
+  async function handleConfirmDelete() {
+    if (thisTestLive) {
+      setConfirmDelete(false)
+      return
+    }
+    setDeleteBusy(true)
+    try {
+      await onDelete()
+      setConfirmDelete(false)
+    } catch {
+      // Parent surfaces the error; keep the dialog open.
+    } finally {
+      setDeleteBusy(false)
+    }
+  }
 
   return (
     <div
@@ -162,7 +173,7 @@ export default function TestRow({
               variant="ghost"
               size="icon"
               className="h-8 w-8 text-muted-foreground"
-              disabled={deleting}
+              disabled={deleteBusy}
               aria-label="Test actions"
             >
               <MoreHorizontal className="h-4 w-4" />
@@ -192,46 +203,40 @@ export default function TestRow({
             {(onTrainManually || (task.has_trained_replay && onRetrain)) && (
               <DropdownMenuSeparator />
             )}
-            <DropdownMenuItem onClick={onEdit} disabled={disabled}>
+            <DropdownMenuItem onClick={onEdit} disabled={deleteBusy}>
               <Pencil className="h-4 w-4" />
               Edit
             </DropdownMenuItem>
             {onExport && (
-              <DropdownMenuItem onClick={onExport} disabled={deleting}>
+              <DropdownMenuItem onClick={onExport} disabled={deleteBusy}>
                 <Download className="h-4 w-4" />
                 Export
               </DropdownMenuItem>
             )}
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <DropdownMenuItem
-                  className="text-destructive focus:text-destructive"
-                  disabled={disabled || deleting}
-                  onSelect={(e) => e.preventDefault()}
-                >
-                  <Trash2 className="h-4 w-4" />
-                  Delete
-                </DropdownMenuItem>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Delete &quot;{displayName}&quot;?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    This removes the test from the project. Trained replay data on past runs is not
-                    deleted.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                  <AlertDialogAction onClick={onDelete} disabled={deleting}>
-                    {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                    Delete
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
+            <DropdownMenuItem
+              className="text-destructive focus:text-destructive"
+              disabled={deleteBlocked}
+              title={
+                deleteBlocked
+                  ? 'Cancel or wait for this test’s runs before deleting it'
+                  : undefined
+              }
+              onSelect={() => setConfirmDelete(true)}
+            >
+              <Trash2 className="h-4 w-4" />
+              Delete
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        <DeleteConfirmDialog
+          open={confirmDelete}
+          title="Delete this test?"
+          description={`This permanently removes "${displayName}" and all of its runs, including saved history, replay scripts, and reports.`}
+          confirmLabel="Delete test"
+          busy={deleteBusy}
+          onOpenChange={setConfirmDelete}
+          onConfirm={handleConfirmDelete}
+        />
       </div>
     </div>
   )

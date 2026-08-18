@@ -33,6 +33,29 @@ export function latestRunForProjectTask(
     .sort((a, b) => b.started_at - a.started_at)[0]
 }
 
+export function projectTaskHasActiveRun(
+  runs: RunSummary[],
+  _projectId: string,
+  taskId: string,
+): boolean {
+  return runs.some(
+    (run) => run.website_task_id === taskId && isActiveRunStatus(run.status),
+  )
+}
+
+export function projectHasActiveRun(
+  runs: RunSummary[],
+  projectId: string,
+  taskIds?: Iterable<string>,
+): boolean {
+  const ids = taskIds ? new Set(taskIds) : null
+  return runs.some((run) => {
+    if (!isActiveRunStatus(run.status)) return false
+    if (run.website_id === projectId) return true
+    return Boolean(ids && run.website_task_id && ids.has(run.website_task_id))
+  })
+}
+
 export function latestRunsByProjectTaskId(
   runs: RunSummary[],
   projectId: string,

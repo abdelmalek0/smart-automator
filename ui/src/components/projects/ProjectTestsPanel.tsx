@@ -10,7 +10,8 @@ import {
 } from '@/components/ui/dropdown-menu'
 import type { ProjectSuiteRunner } from '@/hooks/useProjectSuiteRunner'
 import { downloadProjectTestsPack } from '@/lib/project-tests-pack'
-import type { Project, ProjectTask } from '@/types'
+import { projectTaskHasActiveRun } from '@/lib/project-task-status'
+import type { Project, ProjectTask, RunSummary } from '@/types'
 import { cn } from '@/lib/utils'
 
 interface Props {
@@ -22,9 +23,9 @@ interface Props {
   anySuiteRunning: boolean
   runActionsBlocked: boolean
   runGateHint?: string
-  isRemovingTask: boolean
   isImportingTests: boolean
   importError?: string | null
+  runs?: RunSummary[]
   allIncluded: boolean
   includedCount: number
   noneIncluded: boolean
@@ -41,7 +42,7 @@ interface Props {
   onRetrainTask: (project: Project, task: ProjectTask) => void
   onTrainManually: (project: Project, task: ProjectTask) => void
   onEditTask: (task: ProjectTask) => void
-  onDeleteTask: (taskId: string) => void
+  onDeleteTask: (taskId: string) => void | Promise<unknown>
 }
 
 export default function ProjectTestsPanel({
@@ -53,9 +54,9 @@ export default function ProjectTestsPanel({
   anySuiteRunning,
   runActionsBlocked,
   runGateHint,
-  isRemovingTask,
   isImportingTests,
   importError,
+  runs = [],
   allIncluded,
   includedCount,
   noneIncluded,
@@ -237,7 +238,7 @@ export default function ProjectTestsPanel({
                 runActionsBlocked
               }
               disabledHint={runGateHint}
-              deleting={isRemovingTask}
+              hasLiveRun={projectTaskHasActiveRun(runs, project.id, task.id)}
               includedInSuite={!excludedTaskIds.has(task.id)}
               onIncludedInSuiteChange={(included) => onSetTaskIncluded(task.id, included)}
               onRun={() => onRunTask(project, task)}

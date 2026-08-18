@@ -163,14 +163,14 @@ class RunState:
             headless=bool(data.get("headless", False)),
             max_steps=int(data.get("max_steps", 100)),
             success_criteria=str(data.get("success_criteria", "")),
-            website_id=data.get("website_id"),
+            website_id=str(data["website_id"]) if data.get("website_id") else None,
             effective_task=data.get("effective_task"),
             cdp_url=data.get("cdp_url"),
             fresh_profile=bool(data.get("fresh_profile", True)),
             name=data.get("name"),
             source_run_id=data.get("source_run_id"),
             use_replay_script=bool(data.get("use_replay_script", False)),
-            website_task_id=data.get("website_task_id"),
+            website_task_id=str(data["website_task_id"]) if data.get("website_task_id") else None,
             run_mode=data.get("run_mode"),
         )
         run.criteria_verdict = dict(data.get("criteria_verdict") or {})

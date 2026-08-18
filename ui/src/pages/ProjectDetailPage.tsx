@@ -18,6 +18,7 @@ import SuiteProgressPanel from '@/components/projects/SuiteProgressPanel'
 import ProjectRunsPanel from '@/components/projects/ProjectRunsPanel'
 import ProjectTestsPanel from '@/components/projects/ProjectTestsPanel'
 import ConnectOfflineNotice from '@/components/ConnectOfflineNotice'
+import DeleteConfirmDialog from '@/components/DeleteConfirmDialog'
 import TestEditorDialog from '@/components/TestEditorDialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -32,17 +33,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/components/ui/alert-dialog'
 import { useProjectSuiteRunner } from '@/hooks/useProjectSuiteRunner'
 import { useRunStartGate } from '@/hooks/useRunStartGate'
 import { useProjects } from '@/hooks/useProjects'
@@ -51,6 +41,7 @@ import { parseProjectTestsPack } from '@/lib/project-tests-pack'
 import {
   countNeverRunTests,
   latestRunsByProjectTaskId,
+  projectHasActiveRun,
 } from '@/lib/project-task-status'
 import {
   getProjectCardStats,
@@ -75,8 +66,6 @@ export default function ProjectDetailPage() {
     removeTaskFromProject,
     importProjectTests,
     isUpdating,
-    isDeleting,
-    isRemovingTask,
     isImportingTests,
   } = useProjects()
   const suite = useProjectSuiteRunner()
@@ -105,6 +94,9 @@ export default function ProjectDetailPage() {
   const [configError, setConfigError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState('configuration')
   const [importPackError, setImportPackError] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [confirmDeleteProject, setConfirmDeleteProject] = useState(false)
+  const [deleteProjectBusy, setDeleteProjectBusy] = useState(false)
   const importFileRef = useRef<HTMLInputElement>(null)
 
   const suiteBusy = Boolean(project && suite.isRunning && suite.state.projectId === project.id)
@@ -124,6 +116,14 @@ export default function ProjectDetailPage() {
     [project, runs],
   )
   const neverRunCount = project ? countNeverRunTests(project.tasks, latestByTask) : 0
+  const hasActiveProjectRuns = project
+    ? projectHasActiveRun(
+        runs,
+        project.id,
+        project.tasks.map((task) => task.id),
+      )
+    : false
+  const projectDeleteBlocked = hasActiveProjectRuns || suiteBusy
   const projectAccent = project
     ? PROJECT_ACCENT_CLASSES[projectAccentIndex(project.id || project.name)]
     : PROJECT_ACCENT_CLASSES[0]
@@ -609,8 +609,7 @@ export default function ProjectDetailPage() {
                 <Plus className="h-3.5 w-3.5" />
                 Add test
               </Button>
-              <AlertDialog>
-                <DropdownMenu>
+              <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button
                       variant="outline"
@@ -646,38 +645,48 @@ export default function ProjectDetailPage() {
                       Import tests
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
-                    <AlertDialogTrigger asChild>
-                      <DropdownMenuItem
-                        className="text-destructive focus:text-destructive"
-                        onSelect={(e) => e.preventDefault()}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                        Delete project
-                      </DropdownMenuItem>
-                    </AlertDialogTrigger>
+                    <DropdownMenuItem
+                      className="text-destructive focus:text-destructive"
+                      disabled={projectDeleteBlocked}
+                      title={
+                        projectDeleteBlocked
+                          ? 'Cancel or wait for this project’s runs before deleting it'
+                          : undefined
+                      }
+                      onSelect={() => setConfirmDeleteProject(true)}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Delete project
+                    </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Delete &quot;{project.name}&quot;?</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      This removes the project, its project context, and all saved tests.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction
-                      disabled={isDeleting}
-                      onClick={() => {
-                        void deleteProject(project.id).then(() => navigate('/projects'))
-                      }}
-                    >
-                      {isDeleting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                      Delete
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
+                <DeleteConfirmDialog
+                  open={confirmDeleteProject}
+                  title="Delete this project?"
+                  description={`This permanently removes "${project.name}", all of its tests, and all of their runs, including saved history, replay scripts, and reports.`}
+                  confirmLabel="Delete project"
+                  busy={deleteProjectBusy}
+                  onOpenChange={setConfirmDeleteProject}
+                  onConfirm={async () => {
+                    if (projectDeleteBlocked) {
+                      setConfirmDeleteProject(false)
+                      return
+                    }
+                    setDeleteError(null)
+                    setDeleteProjectBusy(true)
+                    try {
+                      await deleteProject(project.id)
+                      setConfirmDeleteProject(false)
+                      navigate('/projects')
+                    } catch (err: unknown) {
+                      setDeleteError(
+                        err instanceof Error ? err.message : 'Could not delete project',
+                      )
+                    } finally {
+                      setDeleteProjectBusy(false)
+                    }
+                  }}
+                />
             </div>
           </div>
         </div>
@@ -694,6 +703,11 @@ export default function ProjectDetailPage() {
           {runError && (
             <p className="mb-4 text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded-md px-3 py-2">
               {runError}
+            </p>
+          )}
+          {deleteError && (
+            <p className="mb-4 text-sm text-destructive bg-destructive/10 border border-destructive/30 rounded-md px-3 py-2">
+              {deleteError}
             </p>
           )}
           <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -807,9 +821,9 @@ export default function ProjectDetailPage() {
                 anySuiteRunning={anySuiteRunning}
                 runActionsBlocked={runActionsBlocked}
                 runGateHint={runGateHint}
-                isRemovingTask={isRemovingTask}
                 isImportingTests={isImportingTests}
                 importError={importPackError}
+                runs={runs}
                 allIncluded={allIncluded}
                 includedCount={includedCount}
                 noneIncluded={noneIncluded}
@@ -826,9 +840,17 @@ export default function ProjectDetailPage() {
                 onRetrainTask={(proj, task) => void handleRetrainTask(proj, task)}
                 onTrainManually={(proj, task) => void handleTrainManually(proj, task)}
                 onEditTask={openEditTask}
-                onDeleteTask={(taskId) =>
-                  void removeTaskFromProject({ projectId: project.id, taskId })
-                }
+                onDeleteTask={async (taskId) => {
+                  setDeleteError(null)
+                  try {
+                    await removeTaskFromProject({ projectId: project.id, taskId })
+                  } catch (err: unknown) {
+                    setDeleteError(
+                      err instanceof Error ? err.message : 'Could not delete test',
+                    )
+                    throw err
+                  }
+                }}
               />
             </TabsContent>
 

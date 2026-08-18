@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Download, FolderOpen, Loader2, MoreHorizontal, PenLine, Trash2 } from 'lucide-react'
+import DeleteConfirmDialog from '@/components/DeleteConfirmDialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -9,17 +10,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/components/ui/alert-dialog'
 import {
   getProjectCardStats,
   PROJECT_ACCENT_CLASSES,
@@ -34,6 +24,7 @@ interface Props {
   project: Project
   suiteActive?: boolean
   suiteBusy?: boolean
+  hasActiveRuns?: boolean
   onUpdateProject: (payload: {
     projectId: string
     name?: string
@@ -42,16 +33,15 @@ interface Props {
     context_prompt?: string
   }) => Promise<unknown>
   onDeleteProject: () => Promise<unknown> | void
-  deleting?: boolean
 }
 
 export default function ProjectListRow({
   project,
   suiteActive = false,
   suiteBusy = false,
+  hasActiveRuns = false,
   onUpdateProject,
   onDeleteProject,
-  deleting = false,
 }: Props) {
   const navigate = useNavigate()
   const stats = getProjectCardStats(project)
@@ -60,6 +50,25 @@ export default function ProjectListRow({
   const [renaming, setRenaming] = useState(false)
   const [nameDraft, setNameDraft] = useState(project.name)
   const [savingName, setSavingName] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleteBusy, setDeleteBusy] = useState(false)
+  const deleteBlocked = hasActiveRuns || suiteBusy
+
+  async function handleConfirmDelete() {
+    if (hasActiveRuns || suiteBusy) {
+      setConfirmDelete(false)
+      return
+    }
+    setDeleteBusy(true)
+    try {
+      await onDeleteProject()
+      setConfirmDelete(false)
+    } catch {
+      // Parent surfaces the error; keep the dialog open.
+    } finally {
+      setDeleteBusy(false)
+    }
+  }
 
   function startRename() {
     setNameDraft(project.name)
@@ -175,8 +184,7 @@ export default function ProjectListRow({
           {projectListMeta(project)}
         </span>
 
-        <AlertDialog>
-          <DropdownMenu>
+        <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
                 variant="ghost"
@@ -204,33 +212,30 @@ export default function ProjectListRow({
                 <Download className="h-4 w-4" />
                 Export
               </DropdownMenuItem>
-              <AlertDialogTrigger asChild>
-                <DropdownMenuItem
-                  className="text-destructive focus:text-destructive"
-                  onSelect={(e) => e.preventDefault()}
-                >
-                  <Trash2 className="h-4 w-4" />
-                  Delete
-                </DropdownMenuItem>
-              </AlertDialogTrigger>
+              <DropdownMenuItem
+                className="text-destructive focus:text-destructive"
+                disabled={deleteBlocked}
+                title={
+                  hasActiveRuns || suiteBusy
+                    ? 'Cancel or wait for this project’s runs before deleting it'
+                    : undefined
+                }
+                onSelect={() => setConfirmDelete(true)}
+              >
+                <Trash2 className="h-4 w-4" />
+                Delete
+              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Delete &quot;{project.name}&quot;?</AlertDialogTitle>
-              <AlertDialogDescription>
-                This removes the project, its project context, and all saved tests.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction onClick={() => void onDeleteProject()} disabled={deleting}>
-                {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                Delete
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+          <DeleteConfirmDialog
+            open={confirmDelete}
+            title="Delete this project?"
+            description={`This permanently removes "${project.name}", all of its tests, and all of their runs, including saved history, replay scripts, and reports.`}
+            confirmLabel="Delete project"
+            busy={deleteBusy}
+            onOpenChange={setConfirmDelete}
+            onConfirm={handleConfirmDelete}
+          />
       </div>
     </div>
   )

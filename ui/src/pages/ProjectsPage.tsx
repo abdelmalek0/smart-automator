@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
 import { FolderKanban, Loader2, Plus, Search, Upload } from 'lucide-react'
 import CreateProjectDialog from '@/components/projects/CreateProjectDialog'
 import ProjectListRow from '@/components/projects/ProjectListRow'
@@ -8,6 +9,8 @@ import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useProjectSuiteRunner } from '@/hooks/useProjectSuiteRunner'
 import { useProjects } from '@/hooks/useProjects'
+import { listRuns } from '@/api'
+import { projectHasActiveRun } from '@/lib/project-task-status'
 import {
   filterAndSortProjects,
   type ProjectFilter,
@@ -32,7 +35,6 @@ export default function ProjectsPage() {
     deleteProject,
     importProject,
     isCreating,
-    isDeleting,
     isImportingProject,
   } = useProjects()
   const suite = useProjectSuiteRunner()
@@ -41,7 +43,12 @@ export default function ProjectsPage() {
   const [filter, setFilter] = useState<ProjectFilter>('all')
   const [createOpen, setCreateOpen] = useState(false)
   const [importError, setImportError] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const importFileRef = useRef<HTMLInputElement>(null)
+  const { data: runs = [] } = useQuery({
+    queryKey: ['runs'],
+    queryFn: listRuns,
+  })
 
   async function handleImportFile(file: File) {
     setImportError(null)
@@ -140,6 +147,14 @@ export default function ProjectsPage() {
               className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive mb-4"
             >
               {importError}
+            </div>
+          )}
+          {deleteError && (
+            <div
+              role="alert"
+              className="rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive mb-4"
+            >
+              {deleteError}
             </div>
           )}
 
@@ -260,10 +275,22 @@ export default function ProjectsPage() {
                       suite.state.phase !== 'idle' && suite.state.projectId === project.id
                     }
                     onUpdateProject={updateProject}
+                    hasActiveRuns={projectHasActiveRun(
+                      runs,
+                      project.id,
+                      project.tasks.map((task) => task.id),
+                    )}
                     onDeleteProject={async () => {
-                      await deleteProject(project.id)
+                      setDeleteError(null)
+                      try {
+                        await deleteProject(project.id)
+                      } catch (err) {
+                        setDeleteError(
+                          err instanceof Error ? err.message : 'Could not delete project',
+                        )
+                        throw err
+                      }
                     }}
-                    deleting={isDeleting}
                   />
                 ))}
               </div>

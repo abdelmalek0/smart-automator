@@ -27,7 +27,7 @@ from loguru import logger
 from ..db import init_db
 from ..logging_setup import setup_logging, shutdown_logging
 
-from ..storage.websites import WebsiteStore, task_to_api_dict, website_to_api_dict
+from ..storage.websites import WebsiteStore, WebsiteTask, task_to_api_dict, website_to_api_dict
 from ..browser.chrome_profiles import discover_chrome_profiles
 from .auth import auth_router, get_current_user
 from .auth.dependencies import SESSION_COOKIE_NAME, resolve_user_from_session, user_store
@@ -67,7 +67,7 @@ from .workers import (
     worker_token_store,
 )
 from .paths import ENV_FILE, HISTORY_DIR, REPLAY_DIR, REPORT_DIR, SCREENSHOT_DIR, UI_DIST
-from .run_store import user_owns_run_prefix
+from .run_store import list_run_records, user_owns_run_prefix
 from .history_store import delete_run_history
 from .replay_store import delete_run_replay, has_replay_script, load_run_replay, save_run_replay
 from ..reporting.replay_script import format_replay_script
@@ -389,6 +389,9 @@ def _cancel_active_run(run: RunState) -> None:
         log.debug("Failed to persist cancelled run %s", run.run_id[:8], exc_info=True)
 
 
+CANCEL_BEFORE_DELETE = "Cancel the run before deleting it"
+
+
 def _purge_run_artifacts(
     run_id: str,
     *,
@@ -417,22 +420,23 @@ def _purge_run_artifacts(
         pass
 
 
-@app.delete("/api/runs/{run_id}")
-async def cancel_run(run_id: str, purge: bool = False, user: User = Depends(get_current_user)):
-    run = _require_owned_run(user, run_id)
-    if purge:
-        if run.status in ACTIVE_RUN_STATUSES:
-            raise HTTPException(
-                status_code=409,
-                detail="Cancel the run before deleting it",
-            )
-        report_path = run.report_path
+def _purge_owned_runs(user: User, runs: list[RunState]) -> None:
+    """Hard-delete finished/cancelled runs. Raises 409 if any are still live."""
+    if not runs:
+        return
+    if any(run.status in ACTIVE_RUN_STATUSES for run in runs):
+        raise HTTPException(status_code=409, detail=CANCEL_BEFORE_DELETE)
+
+    snapshots: list[tuple[str, str | None, str | None]] = []
+    for run in runs:
         source_to_maybe_clean = (
             run.source_run_id if run.use_replay_script and run.source_run_id else None
         )
-        _websites(user).clear_last_trained_run_id(run_id)
-        # Delete the run record first, then see if automatic dependents remain.
-        delete_run_for_user(user.id, run_id)
+        snapshots.append((run.run_id, run.report_path, source_to_maybe_clean))
+        _websites(user).clear_last_trained_run_id(run.run_id)
+        delete_run_for_user(user.id, run.run_id)
+
+    for run_id, report_path, source_to_maybe_clean in snapshots:
         retain_replay = _user_has_automatic_dependent(user.id, run_id)
         _purge_run_artifacts(run_id, report_path=report_path, retain_replay=retain_replay)
         if source_to_maybe_clean:
@@ -442,10 +446,164 @@ async def cancel_run(run_id: str, purge: bool = False, user: User = Depends(get_
             ):
                 delete_run_replay(source_to_maybe_clean)
         log.info(
-            "DELETE /api/runs/%s — purged%s",
+            "purged run %s%s",
             run_id[:8],
             " (replay retained for dependents)" if retain_replay else "",
         )
+
+
+def _id_eq(left: object, right: object) -> bool:
+    if left is None or right is None:
+        return False
+    return str(left) == str(right)
+
+
+def _runs_for_website(
+    user_id: str,
+    website_id: str,
+    *,
+    tasks: list[WebsiteTask] | None = None,
+) -> list[RunState]:
+    task_ids = {task.id for task in (tasks or [])}
+    runs_by_id: dict[str, RunState] = {run.run_id: run for run in list_runs_for_user(user_id)}
+    matched: list[RunState] = []
+    matched_ids: set[str] = set()
+
+    def add(run: RunState) -> None:
+        if run.run_id not in matched_ids:
+            matched_ids.add(run.run_id)
+            matched.append(run)
+
+    def load(run_id: str) -> RunState | None:
+        run = runs_by_id.get(run_id)
+        if run is not None:
+            return run
+        loaded = get_run_for_user(user_id, run_id)
+        if loaded is not None:
+            runs_by_id[run_id] = loaded
+        return loaded
+
+    def belongs(website_id_value: object, task_id_value: object) -> bool:
+        if _id_eq(website_id_value, website_id):
+            return True
+        return bool(task_ids) and task_id_value is not None and str(task_id_value) in task_ids
+
+    for run in runs_by_id.values():
+        if belongs(run.website_id, run.website_task_id):
+            add(run)
+
+    for record in list_run_records(user_id):
+        if not belongs(record.get("website_id"), record.get("website_task_id")):
+            continue
+        run_id = str(record.get("run_id") or "")
+        loaded = load(run_id) if run_id else None
+        if loaded is not None:
+            add(loaded)
+
+    for task in tasks or []:
+        if task.last_trained_run_id:
+            loaded = load(task.last_trained_run_id)
+            if loaded is not None:
+                add(loaded)
+        task_name = (task.name or "").strip()
+        task_text = (task.task or "").strip()
+        for run in list(runs_by_id.values()):
+            if run.website_task_id or not _id_eq(run.website_id, website_id):
+                continue
+            run_name = (run.name or "").strip()
+            run_text = (run.task or "").strip()
+            if task_name and run_name == task_name:
+                add(run)
+            elif not task_name and task_text and run_text == task_text:
+                add(run)
+
+    changed = True
+    while changed:
+        changed = False
+        for run in list(runs_by_id.values()):
+            if run.run_id in matched_ids:
+                continue
+            if run.source_run_id and run.source_run_id in matched_ids:
+                if run.website_id is None or belongs(run.website_id, run.website_task_id):
+                    add(run)
+                    changed = True
+
+    return matched
+
+
+def _runs_for_website_task(
+    user_id: str,
+    website_id: str,
+    task_id: str,
+    *,
+    task: WebsiteTask | None = None,
+) -> list[RunState]:
+    runs_by_id: dict[str, RunState] = {run.run_id: run for run in list_runs_for_user(user_id)}
+    matched: list[RunState] = []
+    matched_ids: set[str] = set()
+
+    def add(run: RunState) -> None:
+        if run.run_id not in matched_ids:
+            matched_ids.add(run.run_id)
+            matched.append(run)
+
+    def load(run_id: str) -> RunState | None:
+        run = runs_by_id.get(run_id)
+        if run is not None:
+            return run
+        loaded = get_run_for_user(user_id, run_id)
+        if loaded is not None:
+            runs_by_id[run_id] = loaded
+        return loaded
+
+    for run in runs_by_id.values():
+        if _id_eq(run.website_task_id, task_id):
+            add(run)
+
+    for record in list_run_records(user_id):
+        if not _id_eq(record.get("website_task_id"), task_id):
+            continue
+        run_id = str(record.get("run_id") or "")
+        loaded = load(run_id) if run_id else None
+        if loaded is not None:
+            add(loaded)
+
+    if task is not None:
+        if task.last_trained_run_id:
+            loaded = load(task.last_trained_run_id)
+            if loaded is not None:
+                add(loaded)
+        task_name = (task.name or "").strip()
+        task_text = (task.task or "").strip()
+        for run in list(runs_by_id.values()):
+            if run.website_task_id or not _id_eq(run.website_id, website_id):
+                continue
+            run_name = (run.name or "").strip()
+            run_text = (run.task or "").strip()
+            if task_name and run_name == task_name:
+                add(run)
+            elif not task_name and task_text and run_text == task_text:
+                add(run)
+
+    changed = True
+    while changed:
+        changed = False
+        for run in list(runs_by_id.values()):
+            if run.run_id in matched_ids:
+                continue
+            if run.source_run_id and run.source_run_id in matched_ids:
+                if run.website_id is None or _id_eq(run.website_id, website_id):
+                    add(run)
+                    changed = True
+
+    return matched
+
+
+@app.delete("/api/runs/{run_id}")
+async def cancel_run(run_id: str, purge: bool = False, user: User = Depends(get_current_user)):
+    run = _require_owned_run(user, run_id)
+    if purge:
+        _purge_owned_runs(user, [run])
         return {"ok": True}
     if run.status not in ACTIVE_RUN_STATUSES:
         return {"ok": True}
@@ -617,7 +775,12 @@ async def update_website(
 
 @app.delete("/api/websites/{website_id}")
 async def delete_website(website_id: str, user: User = Depends(get_current_user)):
-    if not _websites(user).delete_website(website_id):
+    store = _websites(user)
+    website = store.get_website(website_id)
+    if website is None:
+        raise HTTPException(status_code=404, detail="Website not found")
+    _purge_owned_runs(user, _runs_for_website(user.id, website_id, tasks=website.tasks))
+    if not store.delete_website(website_id):
         raise HTTPException(status_code=404, detail="Website not found")
     return {"ok": True}
 
@@ -700,7 +863,16 @@ async def update_website_task(
 
 @app.delete("/api/websites/{website_id}/tasks/{task_id}")
 async def delete_website_task(website_id: str, task_id: str, user: User = Depends(get_current_user)):
-    if not _websites(user).delete_task(website_id, task_id):
+    store = _websites(user)
+    website = store.get_website(website_id)
+    task = next((item for item in website.tasks if item.id == task_id), None) if website else None
+    if website is None or task is None:
+        raise HTTPException(status_code=404, detail="Website or task not found")
+    _purge_owned_runs(
+        user,
+        _runs_for_website_task(user.id, website_id, task_id, task=task),
+    )
+    if not store.delete_task(website_id, task_id):
         raise HTTPException(status_code=404, detail="Website or task not found")
     return {"ok": True}
 
