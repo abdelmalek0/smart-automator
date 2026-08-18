@@ -3,10 +3,12 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { AlertTriangle, Check, Circle, Loader2, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { stepDisplayTitle } from '@/lib/run-steps'
 
 interface Props {
   steps?: Step[]
   isRunning?: boolean
+  isReplay?: boolean
 }
 
 function StepIcon({
@@ -34,7 +36,11 @@ function isFinished(status: StepStatus): boolean {
   return status === 'pass' || status === 'fail' || status === 'error'
 }
 
-export default function CompletedStepsPanel({ steps = [], isRunning = false }: Props) {
+export default function CompletedStepsPanel({
+  steps = [],
+  isRunning = false,
+  isReplay = false,
+}: Props) {
   const total = steps.length
   const completed = steps.filter((step) => isFinished(step.status)).length
   const pct = total > 0 ? Math.round((completed / total) * 100) : 0
@@ -82,18 +88,11 @@ export default function CompletedStepsPanel({ steps = [], isRunning = false }: P
                     <span className="mt-0.5 flex-shrink-0">
                       <StepIcon status={step.status} isActive={isActive} isHuman={step.source === 'human'} />
                     </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="mono text-muted-foreground">#{step.index}</span>
-                        <span className={cn('mono font-medium', step.source === 'human' && 'text-warning')}>
-                          {step.action}
-                        </span>
-                      </div>
-                      {step.thought && (
-                        <span className="text-muted-foreground block mt-0.5 leading-snug line-clamp-2">
-                          {step.thought}
-                        </span>
-                      )}
+                    <div className="min-w-0 flex-1 flex items-center gap-2">
+                      <span className="mono text-muted-foreground shrink-0">#{step.index}</span>
+                      <span className={cn('font-medium truncate', step.source === 'human' && 'text-warning')}>
+                        {stepDisplayTitle(step, { replay: isReplay })}
+                      </span>
                     </div>
                   </div>
                 )

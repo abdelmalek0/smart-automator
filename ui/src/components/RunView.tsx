@@ -33,6 +33,7 @@ import {
   executionModeShortLabel,
   isManualRun,
   MANUAL_PLACEHOLDER_TASK,
+  runModeOf,
   statusBadgeVariant,
   statusLabel,
 } from '@/lib/run-status'
@@ -118,6 +119,7 @@ export default function RunView({ runId, onRunComplete }: Props) {
   const primaryAction = run && !isActiveRun ? getPrimaryRunAction(run, projects) : null
   const humanControlling = Boolean(run?.human_controlling)
   const isManual = Boolean(run && isManualRun(run))
+  const isReplay = Boolean(run && runModeOf(run) === 'automatic')
   const canUseHitl = Boolean(
     run && !run.headless && isActiveRun && !run.use_replay_script && !isManual,
   )
@@ -358,7 +360,7 @@ export default function RunView({ runId, onRunComplete }: Props) {
             </p>
           )}
           <div className="flex flex-row gap-3 items-stretch">
-            <CompletedStepsPanel steps={run?.steps} isRunning={isRunning} />
+            <CompletedStepsPanel steps={run?.steps} isRunning={isRunning} isReplay={isReplay} />
             <RunStats
               stepCount={run?.steps.length}
               status={run?.status}
@@ -404,6 +406,7 @@ export default function RunView({ runId, onRunComplete }: Props) {
                 key={`${step.index}-${step.source ?? 'agent'}`}
                 step={step}
                 isActive={i === run.steps.length - 1 && isRunning}
+                isReplay={isReplay}
               />
             ))}
 

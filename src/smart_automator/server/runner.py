@@ -375,12 +375,15 @@ def _script_replay_with_events(
     step_started_at = time.time()
 
     for index, step in enumerate(steps):
+        thought = str(step.get("outcome") or step.get("element_label") or "").strip()
+        if not thought:
+            thought = str(step.get("action") or "action")
         _handle_event(
             run,
             browser_context,
             {
                 "type": "step_start",
-                "step": build_step_start(index + 1, f"Replay: {step.get('action', 'action')}"),
+                "step": build_step_start(index + 1, thought),
             },
         )
         step_started_at = time.time()
@@ -401,7 +404,7 @@ def _script_replay_with_events(
                 "type": "step_end",
                 "step": {
                     "index": index + 1,
-                    "thought": f"Replay step {index + 1}",
+                    "thought": thought,
                     "action": step.get("action", ""),
                     "args": step.get("args") or {},
                     "result": result.extracted_content or result.error or "",

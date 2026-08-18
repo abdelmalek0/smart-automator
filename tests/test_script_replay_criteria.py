@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from smart_automator.agent.context import ActionResult
 from smart_automator.server.run_state import RunState
-from smart_automator.server.runner import _replay_stop_reason, run_automation
+from smart_automator.server.runner import _replay_stop_reason, _script_replay_with_events, run_automation
 
 
 class TestReplayStopReason(unittest.TestCase):
@@ -35,6 +35,26 @@ class TestReplayStopReason(unittest.TestCase):
                 [{"action": "click_element"}],
             )
         )
+
+
+class TestScriptReplayStepThought(unittest.TestCase):
+    @patch("smart_automator.server.runner.execute_replay_steps")
+    @patch("smart_automator.server.runner._handle_event")
+    def test_manual_replay_uses_outcome_as_thought(self, mock_handle, mock_execute):
+        mock_execute.return_value = [ActionResult(extracted_content="ok")]
+        _script_replay_with_events(
+            MagicMock(),
+            MagicMock(),
+            [
+                {
+                    "action": "click_element",
+                    "args": {},
+                    "outcome": "Human clicked Select Employee",
+                }
+            ],
+        )
+        end_event = mock_handle.call_args_list[1][0][2]
+        self.assertEqual(end_event["step"]["thought"], "Human clicked Select Employee")
 
 
 class TestScriptReplayCriteria(unittest.TestCase):

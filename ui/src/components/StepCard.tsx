@@ -16,10 +16,12 @@ import {
 import { AlertTriangle, Check, Circle, Loader2, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { actDurationMs, formatDurationMs, hasTurnTiming } from '@/lib/run-status'
+import { stepDisplayTitle } from '@/lib/run-steps'
 
 interface Props {
   step: Step
   isActive?: boolean
+  isReplay?: boolean
 }
 
 function StatusIcon({ status, isActive }: { status: StepStatus; isActive: boolean }) {
@@ -31,7 +33,7 @@ function StatusIcon({ status, isActive }: { status: StepStatus; isActive: boolea
   return <Circle className="w-3.5 h-3.5 text-muted-foreground/50" />
 }
 
-export default function StepCard({ step, isActive = false }: Props) {
+export default function StepCard({ step, isActive = false, isReplay = false }: Props) {
   const [imgOpen, setImgOpen] = useState(false)
   const [imgError, setImgError] = useState(false)
 
@@ -61,22 +63,21 @@ export default function StepCard({ step, isActive = false }: Props) {
           <AccordionTrigger className="px-4 py-2.5 hover:no-underline hover:bg-accent/30 rounded-lg [&[data-state=open]]:rounded-b-none">
             <div className="flex items-center gap-3 flex-1 min-w-0 text-left">
               <StatusIcon status={step.status} isActive={isActive} />
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-xs text-muted-foreground">#{step.index}</span>
-                  <span className="text-sm mono font-medium">{step.action}</span>
-                  {isSelfHeal && (
-                    <Badge variant="outline" className="text-[10px] py-0 text-primary border-primary/30">
-                      self-heal
-                    </Badge>
-                  )}
-                  {isHuman && (
-                    <Badge variant="outline" className="text-[10px] py-0 text-warning border-warning/40">
-                      human
-                    </Badge>
-                  )}
-                </div>
-                <p className="text-xs text-muted-foreground truncate mt-0.5">{step.thought}</p>
+              <div className="flex-1 min-w-0 flex items-center gap-2">
+                <span className="text-xs text-muted-foreground shrink-0">#{step.index}</span>
+                <span className="text-sm font-medium truncate">
+                  {stepDisplayTitle(step, { replay: isReplay })}
+                </span>
+                {isSelfHeal && (
+                  <Badge variant="outline" className="text-[10px] py-0 text-primary border-primary/30 shrink-0">
+                    self-heal
+                  </Badge>
+                )}
+                {isHuman && (
+                  <Badge variant="outline" className="text-[10px] py-0 text-warning border-warning/40 shrink-0">
+                    human
+                  </Badge>
+                )}
               </div>
               {step.elapsed_ms > 0 && (
                 showStepTiming && stepTiming ? (
@@ -107,6 +108,13 @@ export default function StepCard({ step, isActive = false }: Props) {
             </div>
           </AccordionTrigger>
           <AccordionContent className="px-4 pb-4 space-y-3">
+            {step.action && (
+              <div>
+                <span className="text-xs text-muted-foreground uppercase tracking-wide">Action</span>
+                <p className="text-xs mono font-medium mt-1">{step.action}</p>
+              </div>
+            )}
+
             <div>
               <span className="text-xs text-muted-foreground uppercase tracking-wide">Thought</span>
               <p className="text-xs text-muted-foreground italic mt-1 leading-relaxed">{step.thought}</p>
