@@ -162,45 +162,47 @@ function RunRow({ run, active, label, roomy = false, projects, onDelete, sourceM
             <RotateCcw className="h-3.5 w-3.5" />
           </Button>
         ) : null}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity"
-              onClick={(e) => {
-                e.preventDefault()
-                e.stopPropagation()
-              }}
-            >
-              <MoreHorizontal className="h-3.5 w-3.5" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-44">
-            {primary ? (
-              <DropdownMenuItem
+        {!isLive ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity"
                 onClick={(e) => {
+                  e.preventDefault()
                   e.stopPropagation()
-                  openNewRun(primary.draft)
                 }}
               >
-                <RotateCcw className="h-3.5 w-3.5" />
-                {primary.label}
+                <MoreHorizontal className="h-3.5 w-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-44">
+              {primary ? (
+                <DropdownMenuItem
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    openNewRun(primary.draft)
+                  }}
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  {primary.label}
+                </DropdownMenuItem>
+              ) : null}
+              <DropdownMenuItem
+                className="text-destructive focus:text-destructive"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onDelete(run)
+                }}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Delete
               </DropdownMenuItem>
-            ) : null}
-            <DropdownMenuItem
-              className="text-destructive focus:text-destructive"
-              onClick={(e) => {
-                e.stopPropagation()
-                onDelete(run)
-              }}
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              Delete
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
       </div>
     </div>
   )
@@ -663,6 +665,10 @@ export default function RunThreadList({
 
   async function handleConfirmDelete() {
     if (!deleteTarget) return
+    if (isActiveRunStatus(deleteTarget.status)) {
+      setDeleteTarget(null)
+      return
+    }
     setDeleting(true)
     try {
       await deleteRun(deleteTarget.run_id)

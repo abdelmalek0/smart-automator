@@ -168,3 +168,66 @@ def test_purge_training_retains_replay_when_automatic_dependents_exist(
     )
     assert rerun.status_code == 201
     assert rerun.json()["source_run_id"] == training_id
+
+
+@pytest.mark.parametrize("status", ["pending", "running", "awaiting_human"])
+def test_purge_live_run_returns_409(client: TestClient, status: str) -> None:
+    user_id = client.get("/api/auth/me").json()["user"]["id"]
+    run_id = f"live-purge-{status}"
+    run = RunState(
+        run_id=run_id,
+        task="Still going",
+        headless=True,
+        max_steps=5,
+        success_criteria="ok",
+        user_id=user_id,
+    )
+    run.status = status
+    add_run(run)
+
+    res = client.delete(f"/api/runs/{run_id}?purge=true")
+    assert res.status_code == 409
+    assert res.json()["detail"] == "Cancel the run before deleting it"
+
+    stored = get_run(run_id)
+    assert stored is not None
+    assert stored.status == status
+
+
+def test_purge_cancelled_run_succeeds(client: TestClient) -> None:
+    user_id = client.get("/api/auth/me").json()["user"]["id"]
+    run = RunState(
+        run_id="cancelled-purge-run",
+        task="Already stopped",
+        headless=True,
+        max_steps=5,
+        success_criteria="ok",
+        user_id=user_id,
+    )
+    run.status = "cancelled"
+    run.finished_at = time.time()
+    add_run(run)
+
+    res = client.delete("/api/runs/cancelled-purge-run?purge=true")
+    assert res.status_code == 200
+    assert get_run("cancelled-purge-run") is None
+
+
+def test_delete_without_purge_cancels_live_run(client: TestClient) -> None:
+    user_id = client.get("/api/auth/me").json()["user"]["id"]
+    run = RunState(
+        run_id="cancel-live-run",
+        task="Stop me",
+        headless=True,
+        max_steps=5,
+        success_criteria="ok",
+        user_id=user_id,
+    )
+    run.status = "running"
+    add_run(run)
+
+    res = client.delete("/api/runs/cancel-live-run")
+    assert res.status_code == 200
+    stored = get_run("cancel-live-run")
+    assert stored is not None
+    assert stored.status == "cancelled"

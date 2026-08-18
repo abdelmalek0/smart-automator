@@ -58,6 +58,7 @@ from .models import (
     WebsiteUpdateRequest,
 )
 from .workers import (
+    ACTIVE_RUN_STATUSES,
     WorkerConnection,
     check_run_start_allowed,
     local_browser_mode_enabled,
@@ -357,7 +358,7 @@ async def update_run_replay(
 
 
 def _cancel_active_run(run: RunState) -> None:
-    if run.status not in ("pending", "running", "awaiting_human"):
+    if run.status not in ACTIVE_RUN_STATUSES:
         return
     log.info("DELETE /api/runs/%s — cancelling", run.run_id[:8])
     run._cancelled.set()
@@ -419,11 +420,15 @@ def _purge_run_artifacts(
 async def cancel_run(run_id: str, purge: bool = False, user: User = Depends(get_current_user)):
     run = _require_owned_run(user, run_id)
     if purge:
+        if run.status in ACTIVE_RUN_STATUSES:
+            raise HTTPException(
+                status_code=409,
+                detail="Cancel the run before deleting it",
+            )
         report_path = run.report_path
         source_to_maybe_clean = (
             run.source_run_id if run.use_replay_script and run.source_run_id else None
         )
-        _cancel_active_run(run)
         _websites(user).clear_last_trained_run_id(run_id)
         # Delete the run record first, then see if automatic dependents remain.
         delete_run_for_user(user.id, run_id)
@@ -441,7 +446,7 @@ async def cancel_run(run_id: str, purge: bool = False, user: User = Depends(get_
             " (replay retained for dependents)" if retain_replay else "",
         )
         return {"ok": True}
-    if run.status not in ("pending", "running", "awaiting_human"):
+    if run.status not in ACTIVE_RUN_STATUSES:
         return {"ok": True}
     _cancel_active_run(run)
     return {"ok": True}
