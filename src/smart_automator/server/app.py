@@ -77,6 +77,7 @@ from .run_state import (
     delete_run_for_user,
     get_run_for_user,
     list_runs_for_user,
+    user_run_start_lock,
 )
 from .runner import run_automation
 from .step_mapper import compose_agent_task
@@ -244,8 +245,6 @@ async def start_run(req: StartRunRequest, user: User = Depends(get_current_user)
             test_name=test_name,
         )
 
-    check_run_start_allowed(user.id)
-
     run = RunState(
         run_id=run_id,
         user_id=user.id,
@@ -264,7 +263,9 @@ async def start_run(req: StartRunRequest, user: User = Depends(get_current_user)
         run_mode=run_mode,
     )
     run._loop = asyncio.get_event_loop()
-    add_run(run)
+    with user_run_start_lock(user.id):
+        check_run_start_allowed(user.id)
+        add_run(run)
     run.persist(has_replay_script=_effective_has_replay_script(run))
 
     thread = threading.Thread(target=run_automation, args=(run,), daemon=True)

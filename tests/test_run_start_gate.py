@@ -10,8 +10,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from smart_automator.server.app import _cancel_active_run
-from smart_automator.server.run_state import RunState, add_run
+from smart_automator.server.run_state import RunState, add_run, get_run
 from smart_automator.server.workers import connect_worker_busy
+
+# Captured before api_run_test_harness replaces threading.Thread.
+_RealThread = threading.Thread
 
 
 @dataclass
@@ -125,6 +128,66 @@ def test_start_run_rejects_when_active_run_exists(client: TestClient, monkeypatc
     res = client.post("/api/runs", json=_start_payload())
     assert res.status_code == 409
     assert res.json()["detail"] == "Another run is already in progress"
+
+
+def test_start_run_ignores_persisted_stale_running(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "smart_automator.server.workers.local_browser_mode_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "smart_automator.server.workers.worker_registry",
+        lambda: FakeRegistry(None),
+    )
+
+    user_id = client.get("/api/auth/me").json()["user"]["id"]
+    stale = RunState(
+        run_id="stale-disk-run",
+        user_id=user_id,
+        task="Crashed leftover",
+        headless=True,
+        max_steps=5,
+        success_criteria="Done",
+    )
+    stale.status = "running"
+    stale.persist()
+    assert get_run(stale.run_id) is None
+
+    res = client.post("/api/runs", json=_start_payload())
+    assert res.status_code == 201
+
+
+def test_concurrent_start_run_rejects_second(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "smart_automator.server.workers.local_browser_mode_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "smart_automator.server.workers.worker_registry",
+        lambda: FakeRegistry(None),
+    )
+    monkeypatch.setattr(
+        "smart_automator.server.app.run_automation",
+        lambda _run: None,
+    )
+
+    barrier = threading.Barrier(2)
+    results: list[int] = []
+
+    def _post() -> None:
+        barrier.wait()
+        results.append(client.post("/api/runs", json=_start_payload()).status_code)
+
+    threads = [_RealThread(target=_post), _RealThread(target=_post)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert sorted(results) == [201, 409]
+    second = client.post("/api/runs", json=_start_payload())
+    assert second.status_code == 409
+    assert second.json()["detail"] == "Another run is already in progress"
 
 
 def test_connect_worker_busy_ignores_stale_cancelled_lease(client: TestClient, monkeypatch) -> None:

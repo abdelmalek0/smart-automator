@@ -75,9 +75,9 @@ def connect_worker_busy(user_id: str) -> bool:
 
 
 def user_has_active_run(user_id: str) -> bool:
-    from .run_state import list_runs_for_user
+    from .run_state import has_in_memory_active_run
 
-    return any(run.status in ACTIVE_RUN_STATUSES for run in list_runs_for_user(user_id))
+    return has_in_memory_active_run(user_id)
 
 
 def check_run_start_allowed(user_id: str) -> None:

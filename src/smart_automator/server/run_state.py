@@ -212,6 +212,25 @@ class RunState:
 
 _runs: dict[str, RunState] = {}
 _MAX_RUNS_IN_MEMORY = 200
+_IN_MEMORY_ACTIVE_STATUSES = ("pending", "running", "awaiting_human")
+_start_locks_guard = threading.Lock()
+_user_start_locks: dict[str, threading.Lock] = {}
+
+
+def user_run_start_lock(user_id: str) -> threading.Lock:
+    with _start_locks_guard:
+        lock = _user_start_locks.get(user_id)
+        if lock is None:
+            lock = threading.Lock()
+            _user_start_locks[user_id] = lock
+        return lock
+
+
+def has_in_memory_active_run(user_id: str) -> bool:
+    return any(
+        run.user_id == user_id and run.status in _IN_MEMORY_ACTIVE_STATUSES
+        for run in _runs.values()
+    )
 
 
 def get_run(run_id: str) -> RunState | None:
