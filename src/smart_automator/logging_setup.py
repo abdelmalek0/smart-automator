@@ -62,6 +62,15 @@ def _log_dir() -> Path:
     return PROJECT_ROOT / "data" / "logs"
 
 
+def _log_file_stem() -> str:
+    override = os.getenv("LOG_FILE_STEM", "").strip()
+    if override:
+        return override
+    if "pytest" in sys.modules:
+        return "pytest"
+    return "backend"
+
+
 def setup_logging() -> None:
     global _configured
     if _configured:
@@ -71,6 +80,7 @@ def setup_logging() -> None:
     debug = level == "DEBUG"
     log_dir = _log_dir()
     log_dir.mkdir(parents=True, exist_ok=True)
+    stem = _log_file_stem()
 
     logger.remove()
 
@@ -95,9 +105,9 @@ def setup_logging() -> None:
         "diagnose": False,
     }
 
-    logger.add(log_dir / "backend.log", **file_sink_kwargs)
+    logger.add(log_dir / f"{stem}.log", **file_sink_kwargs)
     logger.add(
-        log_dir / "backend-error.log",
+        log_dir / f"{stem}-error.log",
         **{**file_sink_kwargs, "level": "ERROR"},
     )
 
@@ -116,7 +126,7 @@ def setup_logging() -> None:
             lib_logger.setLevel(level)
 
     _configured = True
-    logger.info("Logging configured (level={}, dir={})", level, log_dir)
+    logger.info("Logging configured (level={}, dir={}, file={}.log)", level, log_dir, stem)
 
 
 async def shutdown_logging() -> None:

@@ -321,8 +321,10 @@ def migrate_remaining_json_if_needed() -> None:
 
 
 def _safe_unlink(path: Path) -> None:
+    if not path.exists():
+        return
     try:
-        path.unlink(missing_ok=True)
+        path.unlink()
         log.info("Removed legacy JSON store file: %s", path)
     except OSError as exc:
         log.warning("Failed to remove legacy JSON store file %s: %s", path, exc)
