@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from unittest.mock import MagicMock, patch
 
 from pathlib import Path
@@ -297,6 +298,10 @@ def test_launch_uses_mirror_for_system_chrome_profile(tmp_path, monkeypatch) -> 
     launch_dir = call_args.args[0]
     assert launch_dir.startswith(str(mirror_base))
     assert "--profile-directory=" not in str(call_args.kwargs.get("args", []))
+    assert context._temp_user_data_dir is None
+    with patch("smart_automator.browser.context.shutil.rmtree") as rmtree:
+        context.close()
+    rmtree.assert_not_called()
 
 
 def test_launch_uses_ephemeral_persistent_context_when_fresh() -> None:
@@ -316,9 +321,66 @@ def test_launch_uses_ephemeral_persistent_context_when_fresh() -> None:
 
     mock_playwright.chromium.launch.assert_not_called()
     mock_playwright.chromium.launch_persistent_context.assert_called_once()
+    launch_dir = mock_playwright.chromium.launch_persistent_context.call_args.args[0]
+    assert Path(launch_dir).name.startswith("smart-automator-chrome-")
+    assert context._temp_user_data_dir == launch_dir
     launch_args = mock_playwright.chromium.launch_persistent_context.call_args.kwargs.get("args", [])
     assert "--disable-features=PasswordLeakDetection,PasswordManagerLeakDetection" in launch_args
     assert "--disable-save-password-bubble" in launch_args
+    shutil.rmtree(launch_dir, ignore_errors=True)
+
+
+def test_close_rmtrees_fresh_temp_user_data_dir(tmp_path) -> None:
+    from smart_automator.config import Config
+
+    temp_dir = tmp_path / "smart-automator-chrome-test"
+    temp_dir.mkdir()
+    (temp_dir / "marker").write_text("keep-until-close", encoding="utf-8")
+
+    config = Config(chrome_user_data="", fresh_profile=True)
+    context = BrowserContext(config)
+
+    mock_playwright = MagicMock()
+    mock_persistent = MagicMock()
+    mock_persistent.browser = MagicMock()
+    mock_playwright.chromium.launch_persistent_context.return_value = mock_persistent
+
+    with patch("smart_automator.browser.context.sync_playwright") as sync_pw, patch(
+        "smart_automator.browser.context.tempfile.mkdtemp",
+        return_value=str(temp_dir),
+    ):
+        sync_pw.return_value.start.return_value = mock_playwright
+        context.launch(fresh_profile=True)
+
+    assert context._temp_user_data_dir == str(temp_dir)
+    assert temp_dir.is_dir()
+    context.close()
+    assert context._temp_user_data_dir is None
+    assert not temp_dir.exists()
+    mock_playwright.stop.assert_called_once()
+
+
+def test_close_does_not_rmtree_persistent_profile_dir() -> None:
+    from smart_automator.config import Config
+
+    config = Config(chrome_user_data="", fresh_profile=False)
+    context = BrowserContext(config)
+
+    mock_playwright = MagicMock()
+    mock_persistent = MagicMock()
+    mock_persistent.browser = MagicMock()
+    mock_playwright.chromium.launch_persistent_context.return_value = mock_persistent
+
+    with patch("smart_automator.browser.context.sync_playwright") as sync_pw:
+        sync_pw.return_value.start.return_value = mock_playwright
+        context.launch(fresh_profile=False)
+
+    launch_dir = mock_playwright.chromium.launch_persistent_context.call_args.args[0]
+    assert context._temp_user_data_dir is None
+    with patch("smart_automator.browser.context.shutil.rmtree") as rmtree:
+        context.close()
+    rmtree.assert_not_called()
+    assert launch_dir == default_chrome_user_data()
 
 
 def test_config_response_includes_browser_session_fields(

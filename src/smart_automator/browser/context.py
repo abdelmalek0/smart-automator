@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import tempfile
 from collections.abc import Callable
 
@@ -25,6 +26,7 @@ class BrowserContext:
         self._next_page_id = 0
         self._previous_branch_hashes: set[str] | None = None
         self._remote_cdp = False
+        self._temp_user_data_dir: str | None = None
 
     def launch(self, *, cdp_url: str | None = None, fresh_profile: bool | None = None):
         effective_cdp = (cdp_url or self._config.cdp_url or "").strip()
@@ -88,6 +90,7 @@ class BrowserContext:
 
         launch_kwargs["args"] = launch_args
         launch_dir = tempfile.mkdtemp(prefix="smart-automator-chrome-")
+        self._temp_user_data_dir = launch_dir
         apply_automation_chrome_prefs(launch_dir, "Default")
         self._context = self._playwright.chromium.launch_persistent_context(
             launch_dir,
@@ -250,5 +253,12 @@ class BrowserContext:
                 self._browser.close()
             except Exception:
                 pass
-        if self._playwright:
-            self._playwright.stop()
+        try:
+            if self._playwright:
+                self._playwright.stop()
+        finally:
+            self._playwright = None
+            temp_dir = self._temp_user_data_dir
+            self._temp_user_data_dir = None
+            if temp_dir:
+                shutil.rmtree(temp_dir, ignore_errors=True)
