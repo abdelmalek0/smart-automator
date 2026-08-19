@@ -19,7 +19,8 @@ class OllamaLLM(BaseLLM):
                 "OLLAMA_CLOUD_API_KEY is required for Ollama Cloud (https://ollama.com). "
                 "Create a key at https://ollama.com/settings/keys and set OLLAMA_CLOUD_API_KEY in .env."
             )
-        self._client = httpx.Client(timeout=120.0)
+        self._timeout = 120.0
+        self._client = httpx.Client(timeout=self._timeout)
 
     @property
     def model_name(self) -> str | None:
@@ -34,6 +35,14 @@ class OllamaLLM(BaseLLM):
             lambda: self._post(messages, temperature=temperature, json_mode=False),
             cancel_check=self._check_abort,
         )
+
+    async def achat(self, messages: list[dict], temperature: float = 0.7) -> str:
+        url, headers, payload = self._chat_request(
+            messages, temperature=temperature, json_mode=False
+        )
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.post(url, headers=headers, json=payload)
+        return self._handle_chat_response(response)
 
     def chat_json(self, messages: list[dict], temperature: float = 0.7) -> str:
         prepared = ensure_json_keyword_in_messages(messages)
@@ -50,8 +59,9 @@ class OllamaLLM(BaseLLM):
                 cancel_check=self._check_abort,
             )
 
-    def _post(self, messages: list[dict], *, temperature: float, json_mode: bool) -> str:
-        self._check_abort()
+    def _chat_request(
+        self, messages: list[dict], *, temperature: float, json_mode: bool
+    ) -> tuple[str, dict[str, str], dict]:
         payload: dict = {
             "model": self._model,
             "messages": messages,
@@ -63,11 +73,9 @@ class OllamaLLM(BaseLLM):
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
-        response = self._client.post(
-            f"{self._base_url}/api/chat",
-            headers=headers,
-            json=payload,
-        )
+        return f"{self._base_url}/api/chat", headers, payload
+
+    def _handle_chat_response(self, response: httpx.Response) -> str:
         response.raise_for_status()
         body = response.json()
         self._record_usage(
@@ -78,6 +86,14 @@ class OllamaLLM(BaseLLM):
             }
         )
         return body["message"]["content"]
+
+    def _post(self, messages: list[dict], *, temperature: float, json_mode: bool) -> str:
+        self._check_abort()
+        url, headers, payload = self._chat_request(
+            messages, temperature=temperature, json_mode=json_mode
+        )
+        response = self._client.post(url, headers=headers, json=payload)
+        return self._handle_chat_response(response)
 
     def __del__(self):
         try:

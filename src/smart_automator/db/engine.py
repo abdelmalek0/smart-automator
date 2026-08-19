@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool, StaticPool
 
 from ..server.paths import PROJECT_ROOT
 
@@ -28,10 +30,22 @@ def get_database_url() -> str:
     return f"sqlite:///{db_path}"
 
 
+def _is_sqlite_url(url: str) -> bool:
+    return url.startswith("sqlite")
+
+
+def _is_sqlite_memory_url(url: str) -> bool:
+    return ":memory:" in url or url in {"sqlite://", "sqlite:///"}
+
+
 @event.listens_for(Engine, "connect")
 def _set_sqlite_pragma(dbapi_conn, _connection_record) -> None:
+    if not isinstance(dbapi_conn, sqlite3.Connection):
+        return
     cursor = dbapi_conn.cursor()
     cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=5000")
     cursor.close()
 
 
@@ -40,8 +54,13 @@ def _configure_engine() -> None:
     if _engine is not None:
         return
     url = get_database_url()
-    connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
-    _engine = create_engine(url, connect_args=connect_args)
+    kwargs: dict = {}
+    if _is_sqlite_url(url):
+        kwargs["connect_args"] = {"check_same_thread": False, "timeout": 5.0}
+        # QueuePool holds extra file connections and fights SQLite locking.
+        # In-memory DBs must reuse one connection; files use NullPool + WAL.
+        kwargs["poolclass"] = StaticPool if _is_sqlite_memory_url(url) else NullPool
+    _engine = create_engine(url, **kwargs)
     _SessionLocal = sessionmaker(bind=_engine, autoflush=False, autocommit=False)
 
 

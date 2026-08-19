@@ -25,14 +25,41 @@ def api_run_test_harness(monkeypatch):
 
     monkeypatch.setattr(app_module, "run_automation", stub_run_automation)
 
+    real_thread = app_module.threading.Thread
+
     class ImmediateThread:
-        def __init__(self, target=None, args=(), kwargs=None, daemon=False):
+        def __init__(
+            self,
+            group=None,
+            target=None,
+            name=None,
+            args=(),
+            kwargs=None,
+            *,
+            daemon=None,
+        ):
             self._target = target
             self._args = args or ()
+            self._kwargs = kwargs or {}
+            self._real = None
+            # Patching threading.Thread is global; asyncio.to_thread pool workers
+            # must still be real threads.
+            if target is not stub_run_automation:
+                self._real = real_thread(
+                    group=group,
+                    target=target,
+                    name=name,
+                    args=args,
+                    kwargs=kwargs,
+                    daemon=daemon,
+                )
 
         def start(self) -> None:
+            if self._real is not None:
+                self._real.start()
+                return
             if self._target:
-                self._target(*self._args)
+                self._target(*self._args, **self._kwargs)
 
     monkeypatch.setattr(app_module.threading, "Thread", ImmediateThread)
 

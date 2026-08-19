@@ -68,6 +68,10 @@ class BaseLLM(ABC):
     def chat(self, messages: list[dict], temperature: float = 0.7) -> str:
         pass
 
+    async def achat(self, messages: list[dict], temperature: float = 0.7) -> str:
+        """Non-blocking chat for FastAPI (connection check). Agent still uses chat()."""
+        raise NotImplementedError(f"{type(self).__name__} does not implement achat")
+
     def chat_json(self, messages: list[dict], temperature: float = 0.7) -> str:
         return self.chat(messages, temperature=temperature)
 

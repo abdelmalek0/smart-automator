@@ -10,6 +10,116 @@ from .run_store import delete_run_record, list_run_records, load_run_record, sav
 if TYPE_CHECKING:
     from ..agent.executor import Executor
 
+# Live WS buffer: cap unread events, merge noisy ones, never drop terminals.
+RUN_WS_QUEUE_MAXSIZE = 64
+_REPLACE_LATEST_TYPES = frozenset(
+    {
+        "status",
+        "tokens_update",
+        "turn_timing",
+        "plan_update",
+        "ping",
+        "task_extracted",
+        "steps_extracted",
+        "milestones_updated",
+        "atomic_step_focus",
+        "progress",
+    }
+)
+_REPLACE_BY_STEP_TYPES = frozenset(
+    {"step_start", "step_end", "human_action", "human_handoff"}
+)
+_NEVER_DROP_TYPES = frozenset(
+    {
+        "closed",
+        "done",
+        "error",
+        "report_ready",
+        "tool_written",
+        "human_intervention_required",
+        "human_control_started",
+        "human_intervention_ended",
+        "validation_blocked",
+        "run_finished",
+    }
+)
+
+
+def _step_index(event: dict[str, Any]) -> int | None:
+    step = event.get("step")
+    if isinstance(step, dict) and step.get("index") is not None:
+        try:
+            return int(step["index"])
+        except (TypeError, ValueError):
+            return None
+    raw = event.get("step_index")
+    if raw is None:
+        raw = event.get("atomicStep")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coalesce_key(event: dict[str, Any]) -> tuple[Any, ...] | None:
+    event_type = event.get("type")
+    if event_type in _REPLACE_LATEST_TYPES:
+        return (event_type,)
+    if event_type in _REPLACE_BY_STEP_TYPES:
+        index = _step_index(event)
+        if index is None:
+            return (event_type,)
+        return ("step", index)
+    return None
+
+
+def _coalesce_append(pending: list[dict[str, Any]], event: dict[str, Any]) -> list[dict[str, Any]]:
+    key = _coalesce_key(event)
+    if key is not None:
+        for index in range(len(pending) - 1, -1, -1):
+            if _coalesce_key(pending[index]) == key:
+                pending[index] = event
+                return pending
+    pending.append(event)
+    return pending
+
+
+def _trim_run_ws_events(pending: list[dict[str, Any]], maxsize: int) -> list[dict[str, Any]]:
+    while len(pending) > maxsize:
+        drop_at = next(
+            (
+                index
+                for index, item in enumerate(pending)
+                if item.get("type") not in _NEVER_DROP_TYPES
+            ),
+            None,
+        )
+        if drop_at is None:
+            pending.pop(0)
+            continue
+        pending.pop(drop_at)
+    return pending
+
+
+def enqueue_run_event(
+    queue: asyncio.Queue,
+    event: dict[str, Any],
+    *,
+    maxsize: int = RUN_WS_QUEUE_MAXSIZE,
+) -> None:
+    """Merge/drop on the event loop so a slow tab cannot grow RAM without bound."""
+    pending: list[dict[str, Any]] = []
+    while True:
+        try:
+            pending.append(queue.get_nowait())
+        except asyncio.QueueEmpty:
+            break
+    pending = _trim_run_ws_events(_coalesce_append(pending, event), maxsize)
+    for item in pending:
+        queue.put_nowait(item)
+
 
 class RunState:
     """In-memory state for a single automation run."""
@@ -96,7 +206,7 @@ class RunState:
     def broadcast(self, event: dict[str, Any]) -> None:
         if self._loop and not self._loop.is_closed():
             for queue in list(self._subscribers):
-                self._loop.call_soon_threadsafe(queue.put_nowait, event)
+                self._loop.call_soon_threadsafe(enqueue_run_event, queue, event)
 
     def to_summary(self, *, has_replay_script: bool = False) -> dict[str, Any]:
         return {

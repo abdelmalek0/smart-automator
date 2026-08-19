@@ -1,8 +1,9 @@
+import asyncio
 import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 
@@ -220,7 +221,7 @@ class TestOpenRouterProvider(unittest.TestCase):
         config = config_for_check(update)
         self.assertEqual(config.openrouter_provider, "deepinfra")
 
-    @patch("smart_automator.server.config_service._fetch_openrouter_generation_provider")
+    @patch("smart_automator.server.config_service._fetch_openrouter_generation_provider", new_callable=AsyncMock)
     @patch("smart_automator.server.config_service.config_for_check")
     def test_check_llm_connection_returns_provider_name(
         self,
@@ -240,14 +241,15 @@ class TestOpenRouterProvider(unittest.TestCase):
         llm = MagicMock()
         llm._provider = "openrouter"
         llm.last_generation_id = "gen-123"
-        llm.chat.return_value = "OK"
+        llm.achat = AsyncMock(return_value="OK")
 
         with patch("smart_automator.main.create_llm", return_value=llm):
-            result = check_llm_connection()
+            result = asyncio.run(check_llm_connection())
 
         self.assertEqual(result, {"ok": True, "provider_name": "Together"})
-        fetch_provider_mock.assert_called_once()
+        fetch_provider_mock.assert_awaited_once()
         self.assertEqual(fetch_provider_mock.call_args.kwargs["generation_id"], "gen-123")
+        llm.achat.assert_awaited_once()
 
     def test_fetch_openrouter_generation_provider(self):
         from smart_automator.server.config_service import _fetch_openrouter_generation_provider
@@ -258,15 +260,24 @@ class TestOpenRouterProvider(unittest.TestCase):
             request=request,
             json={"data": {"provider_name": "DeepInfra"}},
         )
-        with patch("httpx.get", return_value=response) as get:
-            name = _fetch_openrouter_generation_provider(
-                api_key="sk-or-test",
-                base_url="https://openrouter.ai/api/v1",
-                generation_id="gen-abc",
-            )
+        client = AsyncMock()
+        client.get.return_value = response
+
+        async def run():
+            with patch(
+                "smart_automator.server.config_service.httpx.AsyncClient"
+            ) as client_cls:
+                client_cls.return_value.__aenter__.return_value = client
+                return await _fetch_openrouter_generation_provider(
+                    api_key="sk-or-test",
+                    base_url="https://openrouter.ai/api/v1",
+                    generation_id="gen-abc",
+                )
+
+        name = asyncio.run(run())
         self.assertEqual(name, "DeepInfra")
         self.assertEqual(
-            get.call_args.kwargs["params"],
+            client.get.call_args.kwargs["params"],
             {"id": "gen-abc"},
         )
 

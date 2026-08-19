@@ -897,7 +897,7 @@ async def api_list_chrome_profiles(user: User = Depends(get_current_user)):
 @app.post("/api/workers/login")
 async def api_workers_login(req: LoginRequest):
     try:
-        user = user_store().verify_credentials(req.username, req.password)
+        user = await asyncio.to_thread(user_store().verify_credentials, req.username, req.password)
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     if user is None:
@@ -936,7 +936,7 @@ async def api_update_config(update: ConfigUpdate, user: User = Depends(get_curre
 @app.post("/api/config/check")
 async def api_check_config(update: ConfigUpdate | None = None, user: User = Depends(get_current_user)):
     try:
-        return check_llm_connection(update, user_id=user.id)
+        return await check_llm_connection(update, user_id=user.id)
     except BaseException as exc:
         return {"ok": False, "error": str(exc)}
 

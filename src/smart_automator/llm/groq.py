@@ -86,7 +86,8 @@ class OpenAICompatLLM(BaseLLM):
             self._model = config.active_model or config.groq_model
             base = config.openai_base_url or default_base_url("groq")
         self._base_url = _chat_completions_url(base)
-        self._client = httpx.Client(timeout=60.0)
+        self._timeout = 60.0
+        self._client = httpx.Client(timeout=self._timeout)
 
     @property
     def model_name(self) -> str | None:
@@ -105,6 +106,14 @@ class OpenAICompatLLM(BaseLLM):
             lambda: self._post(messages, temperature=temperature, json_mode=False),
             cancel_check=self._check_abort,
         )
+
+    async def achat(self, messages: list[dict], temperature: float = 0.7) -> str:
+        url, headers, payload = self._chat_request(
+            messages, temperature=temperature, json_mode=False
+        )
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.post(url, headers=headers, json=payload)
+        return self._handle_chat_response(response)
 
     def chat_json(self, messages: list[dict], temperature: float = 0.7) -> str:
         prepared = ensure_json_keyword_in_messages(messages)
@@ -131,8 +140,9 @@ class OpenAICompatLLM(BaseLLM):
             headers["X-Title"] = "smart-automator"
         return headers
 
-    def _post(self, messages: list[dict], *, temperature: float, json_mode: bool) -> str:
-        self._check_abort()
+    def _chat_request(
+        self, messages: list[dict], *, temperature: float, json_mode: bool
+    ) -> tuple[str, dict[str, str], dict]:
         payload: dict = {
             "model": self._model,
             "messages": messages,
@@ -149,11 +159,9 @@ class OpenAICompatLLM(BaseLLM):
                     "only": [self._openrouter_provider],
                     "allow_fallbacks": False,
                 }
-        response = self._client.post(
-            self._base_url,
-            headers=self._headers(),
-            json=payload,
-        )
+        return self._base_url, self._headers(), payload
+
+    def _handle_chat_response(self, response: httpx.Response) -> str:
         if response.status_code >= 400:
             detail = response.text.strip()
             if detail:
@@ -175,6 +183,14 @@ class OpenAICompatLLM(BaseLLM):
             }
         )
         return _extract_chat_completion_content(body)
+
+    def _post(self, messages: list[dict], *, temperature: float, json_mode: bool) -> str:
+        self._check_abort()
+        url, headers, payload = self._chat_request(
+            messages, temperature=temperature, json_mode=json_mode
+        )
+        response = self._client.post(url, headers=headers, json=payload)
+        return self._handle_chat_response(response)
 
     def __del__(self):
         try:

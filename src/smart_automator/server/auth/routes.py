@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
@@ -57,7 +58,8 @@ async def auth_setup() -> dict[str, bool]:
 @router.post("/register", status_code=201)
 async def register(req: RegisterRequest, response: Response) -> dict:
     try:
-        user = user_store().create_user(
+        user = await asyncio.to_thread(
+            user_store().create_user,
             req.username,
             req.password,
             allow_when_users_exist=_registration_open(),
@@ -76,7 +78,7 @@ async def register(req: RegisterRequest, response: Response) -> dict:
 @router.post("/login")
 async def login(req: LoginRequest, response: Response) -> dict:
     try:
-        user = user_store().verify_credentials(req.username, req.password)
+        user = await asyncio.to_thread(user_store().verify_credentials, req.username, req.password)
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     if user is None:

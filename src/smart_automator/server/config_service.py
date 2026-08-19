@@ -6,6 +6,7 @@ import os
 import time
 from pathlib import Path
 
+import httpx
 from dotenv import load_dotenv, set_key
 from sqlalchemy import delete, select
 
@@ -831,20 +832,20 @@ def config_for_check(update=None, user_id: str | None = None) -> Config:
     return config
 
 
-def check_llm_connection(update=None, user_id: str | None = None) -> dict:
+async def check_llm_connection(update=None, user_id: str | None = None) -> dict:
     config = config_for_check(update, user_id=user_id)
     from ..main import create_llm
 
     try:
         llm = create_llm(config)
-        llm.chat([{"role": "user", "content": "Reply with OK only."}], temperature=0)
+        await llm.achat([{"role": "user", "content": "Reply with OK only."}], temperature=0)
     except BaseException as exc:
         raise RuntimeError(format_llm_connection_error(exc)) from exc
 
     result: dict = {"ok": True}
     if getattr(llm, "_provider", None) == "openrouter":
         generation_id = getattr(llm, "last_generation_id", None) or ""
-        provider_name = _fetch_openrouter_generation_provider(
+        provider_name = await _fetch_openrouter_generation_provider(
             api_key=config.openrouter_api_key,
             base_url=config.openai_base_url or default_base_url("openrouter"),
             generation_id=generation_id,
@@ -854,7 +855,7 @@ def check_llm_connection(update=None, user_id: str | None = None) -> dict:
     return result
 
 
-def _fetch_openrouter_generation_provider(
+async def _fetch_openrouter_generation_provider(
     *,
     api_key: str,
     base_url: str,
@@ -863,7 +864,6 @@ def _fetch_openrouter_generation_provider(
     """Look up which upstream provider served an OpenRouter generation."""
     if not api_key or not generation_id:
         return ""
-    import httpx
 
     base = (base_url or default_base_url("openrouter")).rstrip("/")
     if base.endswith("/chat/completions"):
@@ -874,15 +874,15 @@ def _fetch_openrouter_generation_provider(
     else:
         url = f"{base.rstrip('/')}/generation"
     try:
-        response = httpx.get(
-            url,
-            params={"id": generation_id},
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            timeout=15.0,
-        )
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(
+                url,
+                params={"id": generation_id},
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+            )
         if response.status_code >= 400:
             return ""
         body = response.json()
