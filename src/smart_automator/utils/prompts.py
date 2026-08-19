@@ -38,8 +38,8 @@ Rules:
 - `action` must be a non-empty array. Never return `"action": []`.
 - Use only element indexes [N] from the current Interactive Elements list.
 - `(offscreen)` indexes are valid — interacting with them scrolls them into view.
-- If the needed control is not listed (truncated or not mounted), use scroll_to_text / next_page / scroll_to_percent before inventing indexes.
-- Scroll actions target the document when it overflows, otherwise the primary in-viewport overflow region automatically. Pass `index` of an element inside a region to scroll that region specifically.
+- If the needed control is not listed (truncated or not mounted), use scroll_to_text / next_page / page_right / scroll_to_percent (percent or xPercent) before inventing indexes.
+- Scroll actions target the document when it overflows, otherwise the primary in-viewport overflow region automatically. Pass `index` of an element inside a region to scroll that region specifically. Use xPercent for horizontal overflow (tables, wide panes); percent/yPercent for vertical.
 - Max {max_actions} actions per step, executed in order; sequence may stop after navigation.
 - Multi-field forms: if multiple empty inputs are listed, chain input_text for every required empty field, then click submit/confirm in the same step.
 - PIN keypads: click each digit by index, then click Enter/OK/Submit.
@@ -56,6 +56,7 @@ Available actions:
 done, search_google, go_to_url, go_back, wait, click_element, input_text,
 switch_tab, open_tab, close_tab, cache_content,
 scroll_to_percent, scroll_to_top, scroll_to_bottom, previous_page, next_page,
+scroll_to_left, scroll_to_right, page_left, page_right,
 scroll_to_text, send_keys, get_dropdown_options, select_dropdown_option
 
 Examples:
@@ -161,22 +162,41 @@ def build_browser_state_message(
             f"window.visualViewport.height: {browser_state.visual_viewport_height}, "
             f"visual viewport height as percentage of scrollable distance: {scroll_pct}%\n"
         )
+        window_region = next(
+            (region for region in browser_state.scroll_regions if region.kind == "window"),
+            None,
+        )
+        if window_region and window_region.overflow_x > 2:
+            scroll_info += (
+                f"window horizontal scroll: {window_region.x_percent}% "
+                f"({window_region.scroll_left}/{window_region.overflow_x})\n"
+            )
         container_regions = [
             region for region in browser_state.scroll_regions if region.kind == "container"
         ]
         if container_regions:
             lines = ["[Scrollable regions]"]
             for region in container_regions:
-                position = (
-                    "at top"
-                    if region.at_top
-                    else "at bottom"
-                    if region.at_bottom
-                    else f"scroll={region.percent}%"
-                )
+                position_parts: list[str] = []
+                if region.overflow > 2:
+                    if region.at_top:
+                        position_parts.append("at top")
+                    elif region.at_bottom:
+                        position_parts.append("at bottom")
+                    else:
+                        position_parts.append(f"scroll-y={region.percent}%")
+                if region.overflow_x > 2:
+                    if region.at_left:
+                        position_parts.append("at left")
+                    elif region.at_right:
+                        position_parts.append("at right")
+                    else:
+                        position_parts.append(f"scroll-x={region.x_percent}%")
+                position = ", ".join(position_parts) if position_parts else "no overflow"
                 lines.append(
                     f"- container {region.tag} xpath={region.xpath} "
-                    f"{position} ({region.scroll_top}/{region.overflow})"
+                    f"{position} (y={region.scroll_top}/{region.overflow}, "
+                    f"x={region.scroll_left}/{region.overflow_x})"
                 )
             scroll_info += "\n".join(lines) + "\n"
         index_note = ""

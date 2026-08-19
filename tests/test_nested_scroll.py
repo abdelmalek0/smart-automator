@@ -46,6 +46,39 @@ class TestScrollRegion(unittest.TestCase):
         self.assertTrue(bottom.at_bottom)
         self.assertEqual(bottom.percent, 100)
 
+    def test_x_percent_and_boundaries(self):
+        region = ScrollRegion(
+            key="html/body/div",
+            kind="container",
+            tag="div",
+            xpath="html/body/div",
+            scroll_top=0,
+            client_height=200,
+            scroll_height=200,
+            scroll_left=0,
+            client_width=400,
+            scroll_width=2000,
+        )
+        self.assertEqual(region.overflow_x, 1600)
+        self.assertTrue(region.at_left)
+        self.assertFalse(region.at_right)
+        self.assertEqual(region.x_percent, 0)
+
+        right = ScrollRegion(
+            key="html/body/div",
+            kind="container",
+            tag="div",
+            xpath="html/body/div",
+            scroll_top=0,
+            client_height=200,
+            scroll_height=200,
+            scroll_left=1600,
+            client_width=400,
+            scroll_width=2000,
+        )
+        self.assertTrue(right.at_right)
+        self.assertEqual(right.x_percent, 100)
+
 
 class TestScrollFingerprintVerification(unittest.TestCase):
     def test_container_only_change_is_detected(self):
@@ -66,6 +99,21 @@ class TestScrollFingerprintVerification(unittest.TestCase):
     def test_window_change_still_detected(self):
         before = PageSnapshot(url="u", title="t", scroll_y=0, scroll_fingerprint=(("window", 0),))
         after = PageSnapshot(url="u", title="t", scroll_y=50, scroll_fingerprint=(("window", 50),))
+        self.assertTrue(before.scroll_changed(after))
+
+    def test_horizontal_only_change_is_detected(self):
+        before = PageSnapshot(
+            url="https://example.com",
+            title="T",
+            scroll_y=0,
+            scroll_fingerprint=(("window", 0, 0), ("html/body/div[1]", 0, 0)),
+        )
+        after = PageSnapshot(
+            url="https://example.com",
+            title="T",
+            scroll_y=0,
+            scroll_fingerprint=(("window", 0, 0), ("html/body/div[1]", 0, 400)),
+        )
         self.assertTrue(before.scroll_changed(after))
 
     def test_verify_action_marks_container_scroll_verified(self):
@@ -260,6 +308,30 @@ class TestResolveScrollTargetHelpers(unittest.TestCase):
         assert primary is not None
         self.assertEqual(primary.key, "large")
 
+    def test_primary_prefers_window_for_horizontal_overflow(self):
+        from smart_automator.browser.page import Page
+
+        page = Page.__new__(Page)
+        page.get_window_scroll_region = MagicMock(
+            return_value=ScrollRegion(
+                key="window",
+                kind="window",
+                tag="window",
+                xpath="",
+                scroll_top=0,
+                client_height=800,
+                scroll_height=800,
+                scroll_left=0,
+                client_width=800,
+                scroll_width=2400,
+            )
+        )
+        page.discover_scrollable_containers = MagicMock(return_value=[])
+        primary = Page.get_primary_scroll_region(page, axis="x")
+        self.assertIsNotNone(primary)
+        assert primary is not None
+        self.assertEqual(primary.kind, "window")
+
     def test_scroll_to_percent_returns_none_when_no_target(self):
         from smart_automator.browser.page import Page
 
@@ -393,6 +465,66 @@ class TestScrollRegionCaptureForReplay(unittest.TestCase):
         )
         self.assertNotIn("xpath", steps[0]["args"])
         self.assertEqual(steps[0]["args"]["percent"], 50)
+
+
+class TestHorizontalScrollActions(unittest.TestCase):
+    def test_scroll_to_left_already_at_boundary(self):
+        from smart_automator.actions.builder import ActionBuilder
+
+        context = AgentContext(
+            task_id="t",
+            browser_context=MagicMock(),
+            message_manager=MagicMock(),
+            options=AgentOptions(),
+        )
+        page = MagicMock()
+        region = ScrollRegion(
+            key="pane",
+            kind="container",
+            tag="div",
+            xpath="html/body/div",
+            scroll_top=0,
+            client_height=200,
+            scroll_height=200,
+            scroll_left=0,
+            client_width=400,
+            scroll_width=2000,
+        )
+        page.resolve_scroll_target.return_value = (region, MagicMock())
+        context.browser_context.get_current_page.return_value = page
+
+        registry = ActionBuilder(context).build_default_actions()
+        result = registry.execute(Action(name="scroll_to_left", args={}), {})
+        self.assertIn("already at left", result.extracted_content or "")
+
+    def test_scroll_to_right_already_at_boundary(self):
+        from smart_automator.actions.builder import ActionBuilder
+
+        context = AgentContext(
+            task_id="t",
+            browser_context=MagicMock(),
+            message_manager=MagicMock(),
+            options=AgentOptions(),
+        )
+        page = MagicMock()
+        region = ScrollRegion(
+            key="pane",
+            kind="container",
+            tag="div",
+            xpath="html/body/div",
+            scroll_top=0,
+            client_height=200,
+            scroll_height=200,
+            scroll_left=1600,
+            client_width=400,
+            scroll_width=2000,
+        )
+        page.resolve_scroll_target.return_value = (region, MagicMock())
+        context.browser_context.get_current_page.return_value = page
+
+        registry = ActionBuilder(context).build_default_actions()
+        result = registry.execute(Action(name="scroll_to_right", args={}), {})
+        self.assertIn("already at right", result.extracted_content or "")
 
 
 if __name__ == "__main__":

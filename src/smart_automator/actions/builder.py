@@ -166,6 +166,10 @@ class NavigatorActionRegistry:
             "scroll_to_bottom": True,
             "previous_page": True,
             "next_page": True,
+            "scroll_to_left": True,
+            "scroll_to_right": True,
+            "page_left": True,
+            "page_right": True,
         }
 
     def get_action_names(self) -> list[str]:
@@ -698,24 +702,37 @@ class ActionBuilder:
             return ActionResult(extracted_content=msg, include_in_memory=True)
 
         def scroll_to_percent(args, selector_map):
-            y_percent = int(args.get("yPercent", args.get("percent", 0)))
+            y_percent_raw = args.get("yPercent", args.get("percent"))
+            x_percent_raw = args.get("xPercent")
+            y_percent = int(y_percent_raw) if y_percent_raw is not None else None
+            x_percent = int(x_percent_raw) if x_percent_raw is not None else None
             element = optional_scroll_element(args, selector_map)
-            region = get_page().scroll_to_percent(y_percent, element)
+            region = get_page().scroll_to_percent(
+                y_percent,
+                element,
+                x_percent=x_percent,
+            )
             if region is None:
                 return ActionResult(
                     extracted_content="No scrollable region found",
                     include_in_memory=True,
                 )
             label = _scroll_result_label(region)
+            parts: list[str] = []
+            if x_percent is not None:
+                parts.append(f"x={x_percent}%")
+            if y_percent is not None:
+                parts.append(f"y={y_percent}%")
+            position = ", ".join(parts) if parts else "0%"
             return ActionResult(
-                extracted_content=f"Scrolled {label} to {y_percent}%",
+                extracted_content=f"Scrolled {label} to {position}",
                 include_in_memory=True,
                 interacted_element=_history_element_from_scroll_region(region),
             )
 
         def scroll_to_top(args, selector_map):
             element = optional_scroll_element(args, selector_map)
-            resolved = get_page().resolve_scroll_target(element)
+            resolved = get_page().resolve_scroll_target(element, axis="y")
             if not resolved:
                 return ActionResult(
                     extracted_content="No scrollable region found",
@@ -738,7 +755,7 @@ class ActionBuilder:
 
         def scroll_to_bottom(args, selector_map):
             element = optional_scroll_element(args, selector_map)
-            resolved = get_page().resolve_scroll_target(element)
+            resolved = get_page().resolve_scroll_target(element, axis="y")
             if not resolved:
                 return ActionResult(
                     extracted_content="No scrollable region found",
@@ -761,7 +778,7 @@ class ActionBuilder:
 
         def previous_page(args, selector_map):
             element = optional_scroll_element(args, selector_map)
-            resolved = get_page().resolve_scroll_target(element)
+            resolved = get_page().resolve_scroll_target(element, axis="y")
             if not resolved:
                 return ActionResult(
                     extracted_content="No scrollable region found",
@@ -784,7 +801,7 @@ class ActionBuilder:
 
         def next_page(args, selector_map):
             element = optional_scroll_element(args, selector_map)
-            resolved = get_page().resolve_scroll_target(element)
+            resolved = get_page().resolve_scroll_target(element, axis="y")
             if not resolved:
                 return ActionResult(
                     extracted_content="No scrollable region found",
@@ -801,6 +818,98 @@ class ActionBuilder:
             get_page().scroll_to_next_page(element)
             return ActionResult(
                 extracted_content=f"Scrolled {_scroll_result_label(region)} to next page",
+                include_in_memory=True,
+                interacted_element=interacted,
+            )
+
+        def scroll_to_left(args, selector_map):
+            element = optional_scroll_element(args, selector_map)
+            resolved = get_page().resolve_scroll_target(element, axis="x")
+            if not resolved:
+                return ActionResult(
+                    extracted_content="No scrollable region found",
+                    include_in_memory=True,
+                )
+            region, _handle = resolved
+            interacted = _history_element_from_scroll_region(region)
+            if region.at_left:
+                return ActionResult(
+                    extracted_content=f"{_scroll_result_label(region)} already at left",
+                    include_in_memory=True,
+                    interacted_element=interacted,
+                )
+            get_page().scroll_to_percent(None, element, x_percent=0)
+            return ActionResult(
+                extracted_content=f"Scrolled {_scroll_result_label(region)} to left",
+                include_in_memory=True,
+                interacted_element=interacted,
+            )
+
+        def scroll_to_right(args, selector_map):
+            element = optional_scroll_element(args, selector_map)
+            resolved = get_page().resolve_scroll_target(element, axis="x")
+            if not resolved:
+                return ActionResult(
+                    extracted_content="No scrollable region found",
+                    include_in_memory=True,
+                )
+            region, _handle = resolved
+            interacted = _history_element_from_scroll_region(region)
+            if region.at_right:
+                return ActionResult(
+                    extracted_content=f"{_scroll_result_label(region)} already at right",
+                    include_in_memory=True,
+                    interacted_element=interacted,
+                )
+            get_page().scroll_to_percent(None, element, x_percent=100)
+            return ActionResult(
+                extracted_content=f"Scrolled {_scroll_result_label(region)} to right",
+                include_in_memory=True,
+                interacted_element=interacted,
+            )
+
+        def page_left(args, selector_map):
+            element = optional_scroll_element(args, selector_map)
+            resolved = get_page().resolve_scroll_target(element, axis="x")
+            if not resolved:
+                return ActionResult(
+                    extracted_content="No scrollable region found",
+                    include_in_memory=True,
+                )
+            region, _handle = resolved
+            interacted = _history_element_from_scroll_region(region)
+            if region.at_left:
+                return ActionResult(
+                    extracted_content=f"{_scroll_result_label(region)} already at left",
+                    include_in_memory=True,
+                    interacted_element=interacted,
+                )
+            get_page().scroll_to_previous_page_x(element)
+            return ActionResult(
+                extracted_content=f"Scrolled {_scroll_result_label(region)} to previous page (left)",
+                include_in_memory=True,
+                interacted_element=interacted,
+            )
+
+        def page_right(args, selector_map):
+            element = optional_scroll_element(args, selector_map)
+            resolved = get_page().resolve_scroll_target(element, axis="x")
+            if not resolved:
+                return ActionResult(
+                    extracted_content="No scrollable region found",
+                    include_in_memory=True,
+                )
+            region, _handle = resolved
+            interacted = _history_element_from_scroll_region(region)
+            if region.at_right:
+                return ActionResult(
+                    extracted_content=f"{_scroll_result_label(region)} already at right",
+                    include_in_memory=True,
+                    interacted_element=interacted,
+                )
+            get_page().scroll_to_next_page_x(element)
+            return ActionResult(
+                extracted_content=f"Scrolled {_scroll_result_label(region)} to next page (right)",
                 include_in_memory=True,
                 interacted_element=interacted,
             )
@@ -868,6 +977,10 @@ class ActionBuilder:
             "scroll_to_bottom": scroll_to_bottom,
             "previous_page": previous_page,
             "next_page": next_page,
+            "scroll_to_left": scroll_to_left,
+            "scroll_to_right": scroll_to_right,
+            "page_left": page_left,
+            "page_right": page_right,
             "scroll_to_text": scroll_to_text,
             "send_keys": send_keys,
             "get_dropdown_options": get_dropdown_options,

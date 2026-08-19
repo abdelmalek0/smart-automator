@@ -483,6 +483,9 @@ def test_to_imperative_from_action_and_narration() -> None:
     assert convert("click_element", "Click ItemOne") == "Click ItemOne"
     assert convert("input_text", "Human entered 'x' in FieldA") == "Type 'x' in FieldA"
     assert convert("scroll_to_percent", "Human scrolled to 40%") == "Scroll to 40%"
+    assert convert("scroll_to_percent", "Human scrolled horizontally to 80%") == (
+        "Scroll horizontally to 80%"
+    )
     assert convert("send_keys", "Human sent keys: Enter") == "Press Enter"
     assert convert("go_to_url", "Human navigated to https://example.com") == (
         "Go to https://example.com"

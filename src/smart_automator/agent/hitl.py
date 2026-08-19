@@ -731,23 +731,36 @@ _HUMAN_CAPTURE_SCRIPT = """
         document.documentElement.scrollHeight || 0,
         document.body ? document.body.scrollHeight : 0,
       );
-      const scrollable = Math.max(scrollHeight - (window.innerHeight || 0), 1);
-      return Math.max(0, Math.min(100, Math.round((scrollY / scrollable) * 100)));
+      const scrollableY = Math.max(scrollHeight - (window.innerHeight || 0), 1);
+      const yPercent = Math.max(0, Math.min(100, Math.round((scrollY / scrollableY) * 100)));
+      const scrollX = window.scrollX || document.documentElement.scrollLeft || 0;
+      const scrollWidth = Math.max(
+        document.documentElement.scrollWidth || 0,
+        document.body ? document.body.scrollWidth : 0,
+      );
+      const scrollableX = Math.max(scrollWidth - (window.innerWidth || 0), 1);
+      const xPercent = Math.max(0, Math.min(100, Math.round((scrollX / scrollableX) * 100)));
+      return { yPercent, xPercent };
     }
-    const scrollable = Math.max(el.scrollHeight - el.clientHeight, 1);
-    return Math.max(0, Math.min(100, Math.round((el.scrollTop / scrollable) * 100)));
+    const scrollableY = Math.max(el.scrollHeight - el.clientHeight, 1);
+    const yPercent = Math.max(0, Math.min(100, Math.round((el.scrollTop / scrollableY) * 100)));
+    const scrollableX = Math.max(el.scrollWidth - el.clientWidth, 1);
+    const xPercent = Math.max(0, Math.min(100, Math.round((el.scrollLeft / scrollableX) * 100)));
+    return { yPercent, xPercent };
   }
 
   function flushScroll() {
     if (!pendingScroll) return;
-    const { kind, element, percent } = pendingScroll;
+    const { kind, element, yPercent, xPercent } = pendingScroll;
     pendingScroll = null;
     if (kind === 'window') {
       try {
         window._saHumanAction({
           eventType: 'scroll',
           scrollKind: 'window',
-          percent,
+          percent: yPercent,
+          yPercent,
+          xPercent,
           tagName: 'html',
           xpath: '',
           attributes: {},
@@ -760,18 +773,19 @@ _HUMAN_CAPTURE_SCRIPT = """
       }
       return;
     }
-    report('scroll', element, { percent, scrollKind: 'element' });
+    report('scroll', element, { percent: yPercent, yPercent, xPercent, scrollKind: 'element' });
   }
 
   document.addEventListener(
     'scroll',
     (event) => {
       const resolved = resolveScrollTarget(event.target);
-      const percent = computeScrollPercent(resolved.kind, resolved.element);
+      const { yPercent, xPercent } = computeScrollPercent(resolved.kind, resolved.element);
       pendingScroll = {
         kind: resolved.kind,
         element: resolved.element,
-        percent,
+        yPercent,
+        xPercent,
       };
       if (scrollTimer) clearTimeout(scrollTimer);
       scrollTimer = setTimeout(() => {
@@ -1270,35 +1284,59 @@ class HumanActionRecorder:
         self._append_record("send_keys", args, result)
 
     def _record_scroll(self, payload: dict[str, Any]) -> None:
-        try:
-            percent = int(payload.get("percent", 0))
-        except (TypeError, ValueError):
-            percent = 0
-        percent = max(0, min(100, percent))
+        def _parse_percent(key: str, fallback_key: str | None = None) -> int:
+            raw = payload.get(key)
+            if raw is None and fallback_key:
+                raw = payload.get(fallback_key)
+            try:
+                value = int(raw if raw is not None else 0)
+            except (TypeError, ValueError):
+                value = 0
+            return max(0, min(100, value))
+
+        y_percent = _parse_percent("yPercent", "percent")
+        x_percent = _parse_percent("xPercent")
         scroll_kind = str(payload.get("scrollKind", "window") or "window")
         element: DOMHistoryElement | None = None
+        base_args: dict[str, Any] = {"yPercent": y_percent, "percent": y_percent}
+        if payload.get("xPercent") is not None:
+            base_args["xPercent"] = x_percent
         if scroll_kind == "element":
             element = self._element_from_payload(payload)
             xpath = (element.xpath or "").strip()
             # Treat empty/root document paths as window scroll.
             if not xpath or xpath in {"html", "/html", "html[1]", "/html[1]"}:
                 element = None
-                args = {"yPercent": percent, "percent": percent}
+                args = dict(base_args)
             else:
-                args = self._dom_action_args(element, yPercent=percent, percent=percent)
+                args = self._dom_action_args(element, **base_args)
         else:
-            args = {"yPercent": percent, "percent": percent}
+            args = dict(base_args)
+
+        def _scroll_summary() -> str:
+            has_x = args.get("xPercent") is not None
+            if has_x and x_percent != 0 and y_percent != 0:
+                return f"Human scrolled to x={x_percent}%, y={y_percent}%"
+            if has_x and x_percent != 0 and y_percent == 0:
+                return f"Human scrolled horizontally to {x_percent}%"
+            return f"Human scrolled to {y_percent}%"
 
         def make_scroll_result() -> ActionResult:
             scroll_result = ActionResult(
                 success=True,
-                extracted_content=f"Human scrolled to {percent}%",
+                extracted_content=_scroll_summary(),
                 include_in_memory=True,
                 action_name="scroll_to_percent",
                 interacted_element=element,
             )
             self._attach_page(scroll_result, payload)
             return scroll_result
+
+        def _same_scroll_position(last_args: dict[str, Any]) -> bool:
+            last_y = int(last_args.get("percent", last_args.get("yPercent", -1)))
+            last_x = int(last_args.get("xPercent", -1))
+            current_x = int(args.get("xPercent", -1))
+            return last_y == y_percent and last_x == current_x
 
         # Coalesce consecutive scrolls on the same container into the latest percent.
         if self._recorded:
@@ -1308,7 +1346,7 @@ class HumanActionRecorder:
                     "css_selector"
                 ) == args.get("css_selector")
                 if same_target:
-                    if int(last_args.get("percent", last_args.get("yPercent", -1))) == percent:
+                    if _same_scroll_position(last_args):
                         return
                     result = make_scroll_result()
                     result.action_index = len(self._recorded)
@@ -1703,6 +1741,8 @@ class HitlController:
         if display_args.get("percent") is not None or display_args.get("yPercent") is not None:
             pct = display_args.get("percent", display_args.get("yPercent"))
             details.append(f"percent={pct}")
+        if display_args.get("xPercent") is not None:
+            details.append(f"xPercent={display_args['xPercent']}")
         attrs = dict(display_args.get("attributes") or {})
         for key in ("aria-label", "title"):
             value = attrs.get(key)

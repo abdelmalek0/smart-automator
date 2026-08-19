@@ -27,10 +27,17 @@ class ScrollRegion:
     scroll_top: int
     client_height: int
     scroll_height: int
+    scroll_left: int = 0
+    client_width: int = 0
+    scroll_width: int = 0
 
     @property
     def overflow(self) -> int:
         return max(self.scroll_height - self.client_height, 0)
+
+    @property
+    def overflow_x(self) -> int:
+        return max(self.scroll_width - self.client_width, 0)
 
     @property
     def percent(self) -> int:
@@ -40,12 +47,27 @@ class ScrollRegion:
         return max(0, min(100, round((self.scroll_top / overflow) * 100)))
 
     @property
+    def x_percent(self) -> int:
+        overflow = self.overflow_x
+        if overflow <= 0:
+            return 0
+        return max(0, min(100, round((self.scroll_left / overflow) * 100)))
+
+    @property
     def at_top(self) -> bool:
         return self.scroll_top <= 2
 
     @property
     def at_bottom(self) -> bool:
         return self.scroll_top + self.client_height >= self.scroll_height - 2
+
+    @property
+    def at_left(self) -> bool:
+        return self.scroll_left <= 2
+
+    @property
+    def at_right(self) -> bool:
+        return self.scroll_left + self.client_width >= self.scroll_width - 2
 
 
 @dataclass

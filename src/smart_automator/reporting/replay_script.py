@@ -31,6 +31,10 @@ DOM_ACTIONS = frozenset({
     "scroll_to_bottom",
     "previous_page",
     "next_page",
+    "scroll_to_left",
+    "scroll_to_right",
+    "page_left",
+    "page_right",
     "scroll_to_text",
 })
 
@@ -47,6 +51,10 @@ _LOCATOR_ACTIONS = frozenset({
     "scroll_to_bottom",
     "previous_page",
     "next_page",
+    "scroll_to_left",
+    "scroll_to_right",
+    "page_left",
+    "page_right",
 })
 
 # Compatibility aliases for existing tests and callers.
@@ -201,6 +209,10 @@ def _needs_element_locator(step: dict[str, Any]) -> bool:
         "scroll_to_bottom",
         "previous_page",
         "next_page",
+        "scroll_to_left",
+        "scroll_to_right",
+        "page_left",
+        "page_right",
     }:
         return bool(identity or positional)
     return True
@@ -237,33 +249,68 @@ def _format_playwright_step(step: dict[str, Any]) -> str | None:
     if action == "send_keys":
         return f'page.keyboard.press({_playwright_keyboard_key(str(args.get("keys", "")))!r})'
     if action == "scroll_to_percent":
-        percent = int(args.get("yPercent") or args.get("percent") or 0)
-        if use_resolver:
-            return (
-                f"{prefix}{locator}.evaluate("
-                f"'el => el.scrollTo({{ top: (el.scrollHeight - el.clientHeight) * {percent} / 100 }})')"
-            )
-        return (
-            "page.evaluate("
-            f"\"() => window.scrollTo(0, document.body.scrollHeight * {percent} / 100)\""
-            ")"
+        y_raw = args.get("yPercent", args.get("percent"))
+        x_raw = args.get("xPercent")
+        y_percent = int(y_raw) if y_raw is not None else None
+        x_percent = int(x_raw) if x_raw is not None else None
+        scroll_js = (
+            "(el, { yPct, xPct }) => {"
+            " const pos = { behavior: 'auto' };"
+            " if (yPct !== null && yPct !== undefined) {"
+            " const maxScrollY = Math.max(el.scrollHeight - el.clientHeight, 0);"
+            " pos.top = maxScrollY * yPct / 100;"
+            " }"
+            " if (xPct !== null && xPct !== undefined) {"
+            " const maxScrollX = Math.max(el.scrollWidth - el.clientWidth, 0);"
+            " pos.left = maxScrollX * xPct / 100;"
+            " }"
+            " if ('top' in pos || 'left' in pos) el.scrollTo(pos);"
+            " }"
         )
+        window_js = (
+            "({ yPct, xPct }) => {"
+            " const pos = { behavior: 'auto' };"
+            " if (yPct !== null && yPct !== undefined) pos.top = document.body.scrollHeight * yPct / 100;"
+            " if (xPct !== null && xPct !== undefined) pos.left = document.body.scrollWidth * xPct / 100;"
+            " if ('top' in pos || 'left' in pos) window.scrollTo(pos);"
+            " }"
+        )
+        scroll_payload = {"yPct": y_percent, "xPct": x_percent}
+        if use_resolver:
+            return f"{prefix}{locator}.evaluate({scroll_js!r}, {scroll_payload!r})"
+        return f"page.evaluate({window_js!r}, {scroll_payload!r})"
     if action == "scroll_to_top":
         if use_resolver:
-            return f"{prefix}{locator}.evaluate('el => el.scrollTo({{ top: 0 }})')"
-        return "page.evaluate('() => window.scrollTo(0, 0)')"
+            return f"{prefix}{locator}.evaluate('el => el.scrollTo({{ top: 0, behavior: \"auto\" }})')"
+        return "page.evaluate('() => window.scrollTo({ top: 0, behavior: \"auto\" })')"
     if action == "scroll_to_bottom":
         if use_resolver:
-            return f"{prefix}{locator}.evaluate('el => el.scrollTo({{ top: el.scrollHeight }})')"
-        return "page.evaluate('() => window.scrollTo(0, document.body.scrollHeight)')"
+            return f"{prefix}{locator}.evaluate('el => el.scrollTo({{ top: el.scrollHeight, behavior: \"auto\" }})')"
+        return "page.evaluate('() => window.scrollTo({ top: document.body.scrollHeight, behavior: \"auto\" })')"
     if action == "previous_page":
         if use_resolver:
-            return f"{prefix}{locator}.evaluate('el => el.scrollBy({{ top: -el.clientHeight }})')"
-        return "page.evaluate('() => window.scrollBy(0, -window.innerHeight)')"
+            return f"{prefix}{locator}.evaluate('el => el.scrollBy({{ top: -el.clientHeight, behavior: \"auto\" }})')"
+        return "page.evaluate('() => window.scrollBy({ top: -window.innerHeight, behavior: \"auto\" })')"
     if action == "next_page":
         if use_resolver:
-            return f"{prefix}{locator}.evaluate('el => el.scrollBy({{ top: el.clientHeight }})')"
-        return "page.evaluate('() => window.scrollBy(0, window.innerHeight)')"
+            return f"{prefix}{locator}.evaluate('el => el.scrollBy({{ top: el.clientHeight, behavior: \"auto\" }})')"
+        return "page.evaluate('() => window.scrollBy({ top: window.innerHeight, behavior: \"auto\" })')"
+    if action == "scroll_to_left":
+        if use_resolver:
+            return f"{prefix}{locator}.evaluate('el => el.scrollTo({{ left: 0, behavior: \"auto\" }})')"
+        return "page.evaluate('() => window.scrollTo({ left: 0, behavior: \"auto\" })')"
+    if action == "scroll_to_right":
+        if use_resolver:
+            return f"{prefix}{locator}.evaluate('el => el.scrollTo({{ left: el.scrollWidth, behavior: \"auto\" }})')"
+        return "page.evaluate('() => window.scrollTo({ left: document.body.scrollWidth, behavior: \"auto\" })')"
+    if action == "page_left":
+        if use_resolver:
+            return f"{prefix}{locator}.evaluate('el => el.scrollBy({{ left: -el.clientWidth, behavior: \"auto\" }})')"
+        return "page.evaluate('() => window.scrollBy({ left: -window.innerWidth, behavior: \"auto\" })')"
+    if action == "page_right":
+        if use_resolver:
+            return f"{prefix}{locator}.evaluate('el => el.scrollBy({{ left: el.clientWidth, behavior: \"auto\" }})')"
+        return "page.evaluate('() => window.scrollBy({ left: window.innerWidth, behavior: \"auto\" })')"
     if action == "scroll_to_text":
         return f"{prefix}{locator}.scroll_into_view_if_needed()"
     if action == "open_tab":

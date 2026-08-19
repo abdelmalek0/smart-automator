@@ -26,7 +26,7 @@ class PageSnapshot:
     tab_ids: tuple[int, ...] = ()
     dom_signature: int = 0
     interactive_count: int = 0
-    scroll_fingerprint: tuple[tuple[str, int], ...] = ()
+    scroll_fingerprint: tuple[tuple[str, ...], ...] = ()
 
     def page_changed(self, other: PageSnapshot) -> bool:
         return self.url != other.url or self.title != other.title
@@ -37,16 +37,34 @@ class PageSnapshot:
     def tabs_changed(self, other: PageSnapshot) -> bool:
         return self.tab_ids != other.tab_ids
 
+    @staticmethod
+    def _normalize_fingerprint(
+        fingerprint: tuple[tuple[str, ...], ...],
+    ) -> dict[str, tuple[int, int]]:
+        normalized: dict[str, tuple[int, int]] = {}
+        for entry in fingerprint:
+            if len(entry) >= 3:
+                key, scroll_top, scroll_left = entry[0], entry[1], entry[2]
+                normalized[str(key)] = (int(scroll_top), int(scroll_left))
+            elif len(entry) == 2:
+                key, scroll_top = entry
+                normalized[str(key)] = (int(scroll_top), 0)
+        return normalized
+
     def scroll_changed(self, other: PageSnapshot, *, tolerance: int = 2) -> bool:
         if abs(self.scroll_y - other.scroll_y) > tolerance:
             return True
-        before = dict(self.scroll_fingerprint)
-        after = dict(other.scroll_fingerprint)
+        before = self._normalize_fingerprint(self.scroll_fingerprint)
+        after = self._normalize_fingerprint(other.scroll_fingerprint)
         keys = set(before) | set(after)
         if not keys:
             return False
         for key in keys:
-            if abs(int(before.get(key, 0)) - int(after.get(key, 0))) > tolerance:
+            before_top, before_left = before.get(key, (0, 0))
+            after_top, after_left = after.get(key, (0, 0))
+            if abs(before_top - after_top) > tolerance:
+                return True
+            if abs(before_left - after_left) > tolerance:
                 return True
         return False
 
@@ -248,6 +266,10 @@ def apply_verification(
         "scroll_to_bottom",
         "previous_page",
         "next_page",
+        "scroll_to_left",
+        "scroll_to_right",
+        "page_left",
+        "page_right",
         "scroll_to_text",
     }:
         content = (result.extracted_content or "").lower()

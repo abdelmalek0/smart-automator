@@ -41,6 +41,10 @@ _OPTIONAL_ELEMENT_LOCATOR_ACTIONS = frozenset({
     "scroll_to_bottom",
     "previous_page",
     "next_page",
+    "scroll_to_left",
+    "scroll_to_right",
+    "page_left",
+    "page_right",
 })
 
 
@@ -176,33 +180,67 @@ def _execute_replay_step(page: PlaywrightPage, browser_context: BrowserContext, 
                 action_name=action_name,
             )
         if action == "scroll_to_percent":
-            percent = int(args.get("yPercent") or args.get("percent") or 0)
+            y_raw = args.get("yPercent", args.get("percent"))
+            x_raw = args.get("xPercent")
+            y_percent = int(y_raw) if y_raw is not None else None
+            x_percent = int(x_raw) if x_raw is not None else None
+            scroll_args = {"yPct": y_percent, "xPct": x_percent}
             if locator is not None:
                 locator.evaluate(
-                    "(el, pct) => el.scrollTo({ top: (el.scrollHeight - el.clientHeight) * pct / 100 })",
-                    percent,
+                    """(el, { yPct, xPct }) => {
+                        const pos = { behavior: 'auto' };
+                        if (yPct !== null && yPct !== undefined) {
+                            const maxScrollY = Math.max(el.scrollHeight - el.clientHeight, 0);
+                            pos.top = maxScrollY * yPct / 100;
+                        }
+                        if (xPct !== null && xPct !== undefined) {
+                            const maxScrollX = Math.max(el.scrollWidth - el.clientWidth, 0);
+                            pos.left = maxScrollX * xPct / 100;
+                        }
+                        if ('top' in pos || 'left' in pos) {
+                            el.scrollTo(pos);
+                        }
+                    }""",
+                    scroll_args,
                 )
             else:
                 page.evaluate(
-                    "(pct) => window.scrollTo(0, document.body.scrollHeight * pct / 100)",
-                    percent,
+                    """({ yPct, xPct }) => {
+                        const pos = { behavior: 'auto' };
+                        if (yPct !== null && yPct !== undefined) {
+                            pos.top = document.body.scrollHeight * yPct / 100;
+                        }
+                        if (xPct !== null && xPct !== undefined) {
+                            pos.left = document.body.scrollWidth * xPct / 100;
+                        }
+                        if ('top' in pos || 'left' in pos) {
+                            window.scrollTo(pos);
+                        }
+                    }""",
+                    scroll_args,
                 )
+            parts: list[str] = []
+            if x_percent is not None:
+                parts.append(f"x={x_percent}%")
+            if y_percent is not None:
+                parts.append(f"y={y_percent}%")
+            position = ", ".join(parts) if parts else "0%"
             return ActionResult(
-                extracted_content=f"Scrolled to {percent}%",
+                extracted_content=f"Scrolled to {position}",
                 include_in_memory=True,
                 action_name=action_name,
             )
         if action == "scroll_to_top":
             if locator is not None:
-                locator.evaluate("el => el.scrollTo({ top: 0 })")
+                locator.evaluate("el => el.scrollTo({ top: 0, behavior: 'auto' })")
             else:
-                page.evaluate("() => window.scrollTo(0, 0)")
+                page.evaluate("() => window.scrollTo({ top: 0, behavior: 'auto' })")
             return ActionResult(extracted_content="Scrolled to top", include_in_memory=True, action_name=action_name)
         if action == "scroll_to_bottom":
             if locator is not None:
-                locator.evaluate("el => el.scrollTo({ top: el.scrollHeight })")
+                locator.evaluate("el => el.scrollTo({ top: el.scrollHeight, behavior: 'auto' })")
             else:
-                page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
+                page.evaluate("() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'auto' })")
             return ActionResult(
                 extracted_content="Scrolled to bottom",
                 include_in_memory=True,
@@ -210,17 +248,49 @@ def _execute_replay_step(page: PlaywrightPage, browser_context: BrowserContext, 
             )
         if action == "previous_page":
             if locator is not None:
-                locator.evaluate("el => el.scrollBy({ top: -el.clientHeight })")
+                locator.evaluate("el => el.scrollBy({ top: -el.clientHeight, behavior: 'auto' })")
             else:
-                page.evaluate("() => window.scrollBy(0, -window.innerHeight)")
+                page.evaluate("() => window.scrollBy({ top: -window.innerHeight, behavior: 'auto' })")
             return ActionResult(extracted_content="Previous page", include_in_memory=True, action_name=action_name)
         if action == "next_page":
             if locator is not None:
-                locator.evaluate("el => el.scrollBy({ top: el.clientHeight })")
+                locator.evaluate("el => el.scrollBy({ top: el.clientHeight, behavior: 'auto' })")
             else:
-                page.evaluate("() => window.scrollBy(0, window.innerHeight)")
+                page.evaluate("() => window.scrollBy({ top: window.innerHeight, behavior: 'auto' })")
             return ActionResult(
                 extracted_content="Next page",
+                include_in_memory=True,
+                action_name=action_name,
+            )
+        if action == "scroll_to_left":
+            if locator is not None:
+                locator.evaluate("el => el.scrollTo({ left: 0, behavior: 'auto' })")
+            else:
+                page.evaluate("() => window.scrollTo({ left: 0, behavior: 'auto' })")
+            return ActionResult(extracted_content="Scrolled to left", include_in_memory=True, action_name=action_name)
+        if action == "scroll_to_right":
+            if locator is not None:
+                locator.evaluate("el => el.scrollTo({ left: el.scrollWidth, behavior: 'auto' })")
+            else:
+                page.evaluate("() => window.scrollTo({ left: document.body.scrollWidth, behavior: 'auto' })")
+            return ActionResult(
+                extracted_content="Scrolled to right",
+                include_in_memory=True,
+                action_name=action_name,
+            )
+        if action == "page_left":
+            if locator is not None:
+                locator.evaluate("el => el.scrollBy({ left: -el.clientWidth, behavior: 'auto' })")
+            else:
+                page.evaluate("() => window.scrollBy({ left: -window.innerWidth, behavior: 'auto' })")
+            return ActionResult(extracted_content="Previous page (left)", include_in_memory=True, action_name=action_name)
+        if action == "page_right":
+            if locator is not None:
+                locator.evaluate("el => el.scrollBy({ left: el.clientWidth, behavior: 'auto' })")
+            else:
+                page.evaluate("() => window.scrollBy({ left: window.innerWidth, behavior: 'auto' })")
+            return ActionResult(
+                extracted_content="Next page (right)",
                 include_in_memory=True,
                 action_name=action_name,
             )

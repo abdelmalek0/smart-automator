@@ -42,6 +42,10 @@ _IMPERATIVE_VERBS = {
     "input_text": "Type",
     "select_dropdown_option": "Select",
     "scroll_to_percent": "Scroll to",
+    "scroll_to_left": "Scroll to left edge of",
+    "scroll_to_right": "Scroll to right edge of",
+    "page_left": "Page left in",
+    "page_right": "Page right in",
     "send_keys": "Press",
     "go_to_url": "Go to",
     "open_url": "Go to",
@@ -54,6 +58,7 @@ _NARRATION_PREFIXES = (
     ("human entered ", "Type"),
     ("human selected option on ", "Select"),
     ("human selected ", "Select"),
+    ("human scrolled horizontally to ", "Scroll horizontally to"),
     ("human scrolled to ", "Scroll to"),
     ("human navigated to ", "Go to"),
     ("human sent keys: ", "Press"),
@@ -67,6 +72,7 @@ _PAST_PREFIXES = (
     ("typed ", "Type"),
     ("selected option on ", "Select"),
     ("selected ", "Select"),
+    ("scrolled horizontally to ", "Scroll horizontally to"),
     ("scrolled to ", "Scroll to"),
     ("navigated to ", "Go to"),
     ("sent keys: ", "Press"),
@@ -119,7 +125,7 @@ class TaskExtractorAgent(BaseAgent):
                 inferred = inferred or verb
                 lower = text.lower()
                 break
-        verb = _IMPERATIVE_VERBS.get(str(action_name or "").strip()) or inferred
+        verb = inferred or _IMPERATIVE_VERBS.get(str(action_name or "").strip()) or ""
         if not verb:
             return text
         if lower == verb.lower():

@@ -46,6 +46,17 @@ _IGNORED_URL_PATTERNS = (
 
 _DISCOVER_SCROLLABLE_CONTAINERS_JS = """(limit) => {
     const HIGHLIGHT_ID = 'playwright-highlight-container';
+    const overflowStyle = (style, axis) => {
+        const value = axis === 'x'
+            ? (style.overflowX || style.overflow)
+            : (style.overflowY || style.overflow);
+        return (
+            value === 'auto' ||
+            value === 'scroll' ||
+            value === 'overlay' ||
+            value === 'hidden'
+        );
+    };
     const isScrollable = (el) => {
         if (!(el instanceof HTMLElement)) return false;
         if (el.id === HIGHLIGHT_ID) return false;
@@ -54,15 +65,10 @@ _DISCOVER_SCROLLABLE_CONTAINERS_JS = """(limit) => {
             return false;
         }
         if (el.clientHeight < 40 || el.clientWidth < 40) return false;
-        const overflowAmount = el.scrollHeight - el.clientHeight;
-        if (overflowAmount <= 2) return false;
-        const oy = style.overflowY || style.overflow;
-        return (
-            oy === 'auto' ||
-            oy === 'scroll' ||
-            oy === 'overlay' ||
-            oy === 'hidden'
-        );
+        const overflowY = el.scrollHeight - el.clientHeight;
+        const overflowX = el.scrollWidth - el.clientWidth;
+        if (overflowY <= 2 && overflowX <= 2) return false;
+        return overflowStyle(style, 'y') || overflowStyle(style, 'x');
     };
     const intersectsViewport = (el) => {
         const rect = el.getBoundingClientRect();
@@ -100,14 +106,18 @@ _DISCOVER_SCROLLABLE_CONTAINERS_JS = """(limit) => {
     const scored = [];
     for (const el of document.querySelectorAll('*')) {
         if (!isScrollable(el) || !intersectsViewport(el)) continue;
-        const overflowAmount = el.scrollHeight - el.clientHeight;
-        const score = overflowAmount * visibleFraction(el);
+        const overflowY = el.scrollHeight - el.clientHeight;
+        const overflowX = el.scrollWidth - el.clientWidth;
+        const score = (overflowY + overflowX) * visibleFraction(el);
         scored.push({
             el,
             score,
             scrollTop: el.scrollTop,
             clientHeight: el.clientHeight,
             scrollHeight: el.scrollHeight,
+            scrollLeft: el.scrollLeft,
+            clientWidth: el.clientWidth,
+            scrollWidth: el.scrollWidth,
             tag: el.tagName.toLowerCase(),
             xpath: xpathFor(el),
         });
@@ -130,6 +140,9 @@ _DISCOVER_SCROLLABLE_CONTAINERS_JS = """(limit) => {
         scroll_top: Math.round(item.scrollTop),
         client_height: Math.round(item.clientHeight),
         scroll_height: Math.round(item.scrollHeight),
+        scroll_left: Math.round(item.scrollLeft),
+        client_width: Math.round(item.clientWidth),
+        scroll_width: Math.round(item.scrollWidth),
     }));
 }"""
 
@@ -138,18 +151,39 @@ _WINDOW_OVERFLOW_JS = """() => {
         document.documentElement?.scrollHeight ?? 0,
         document.body?.scrollHeight ?? 0,
     );
+    const scrollWidth = Math.max(
+        document.documentElement?.scrollWidth ?? 0,
+        document.body?.scrollWidth ?? 0,
+    );
     const viewportHeight = window.visualViewport?.height || window.innerHeight || 0;
+    const viewportWidth = window.visualViewport?.width || window.innerWidth || 0;
     const scrollY = window.scrollY || document.documentElement.scrollTop || 0;
+    const scrollX = window.scrollX || document.documentElement.scrollLeft || 0;
     return {
         scroll_top: Math.round(scrollY),
         client_height: Math.round(viewportHeight),
         scroll_height: Math.round(scrollHeight),
+        scroll_left: Math.round(scrollX),
+        client_width: Math.round(viewportWidth),
+        scroll_width: Math.round(scrollWidth),
         overflow: Math.max(scrollHeight - viewportHeight, 0),
+        overflow_x: Math.max(scrollWidth - viewportWidth, 0),
     };
 }"""
 
-_FIND_NEAREST_SCROLLABLE_JS = """(el) => {
-    const isScrollable = (node) => {
+_FIND_NEAREST_SCROLLABLE_JS = """(el, axis) => {
+    const overflowStyle = (style, ax) => {
+        const value = ax === 'x'
+            ? (style.overflowX || style.overflow)
+            : (style.overflowY || style.overflow);
+        return (
+            value === 'auto' ||
+            value === 'scroll' ||
+            value === 'overlay' ||
+            value === 'hidden'
+        );
+    };
+    const isScrollable = (node, ax) => {
         if (!(node instanceof HTMLElement)) return false;
         if (node.id === 'playwright-highlight-container') return false;
         const style = window.getComputedStyle(node);
@@ -157,20 +191,21 @@ _FIND_NEAREST_SCROLLABLE_JS = """(el) => {
             return false;
         }
         if (node.clientHeight < 40 || node.clientWidth < 40) return false;
-        const overflowAmount = node.scrollHeight - node.clientHeight;
-        if (overflowAmount <= 2) return false;
-        const oy = style.overflowY || style.overflow;
-        return (
-            oy === 'auto' ||
-            oy === 'scroll' ||
-            oy === 'overlay' ||
-            oy === 'hidden'
-        );
+        const overflowY = node.scrollHeight - node.clientHeight;
+        const overflowX = node.scrollWidth - node.clientWidth;
+        if (ax === 'x') {
+            return overflowX > 2 && overflowStyle(style, 'x');
+        }
+        if (ax === 'y') {
+            return overflowY > 2 && overflowStyle(style, 'y');
+        }
+        if (overflowY <= 2 && overflowX <= 2) return false;
+        return overflowStyle(style, 'y') || overflowStyle(style, 'x');
     };
     let current = el;
     let depth = 0;
     while (current && depth < 40) {
-        if (isScrollable(current)) return current;
+        if (isScrollable(current, axis || 'both')) return current;
         current = current.parentElement;
         depth += 1;
     }
@@ -747,6 +782,9 @@ class Page:
                     scroll_top=int(item.get("scroll_top", 0)),
                     client_height=int(item.get("client_height", 0)),
                     scroll_height=int(item.get("scroll_height", 0)),
+                    scroll_left=int(item.get("scroll_left", 0)),
+                    client_width=int(item.get("client_width", 0)),
+                    scroll_width=int(item.get("scroll_width", 0)),
                 )
             )
         return regions
@@ -772,6 +810,9 @@ class Page:
             scroll_top=int(info.get("scroll_top", 0)),
             client_height=int(info.get("client_height", 0)),
             scroll_height=int(info.get("scroll_height", 0)),
+            scroll_left=int(info.get("scroll_left", 0)),
+            client_width=int(info.get("client_width", 0)),
+            scroll_width=int(info.get("scroll_width", 0)),
         )
 
     def list_scroll_regions(self, limit: int = 5) -> list[ScrollRegion]:
@@ -780,11 +821,28 @@ class Page:
         containers = self.discover_scrollable_containers(limit=limit)
         return [window_region, *containers]
 
-    def get_scroll_fingerprint(self, limit: int = 5) -> tuple[tuple[str, int], ...]:
-        return tuple((region.key, region.scroll_top) for region in self.list_scroll_regions(limit=limit))
+    def get_scroll_fingerprint(self, limit: int = 5) -> tuple[tuple[str, int, int], ...]:
+        return tuple(
+            (region.key, region.scroll_top, region.scroll_left)
+            for region in self.list_scroll_regions(limit=limit)
+        )
 
-    def get_primary_scroll_region(self) -> ScrollRegion | None:
+    def get_primary_scroll_region(self, axis: str = "y") -> ScrollRegion | None:
         window_region = self.get_window_scroll_region()
+        if axis == "x":
+            if window_region.overflow_x > 2:
+                return window_region
+            containers = self.discover_scrollable_containers(limit=5)
+            if not containers:
+                return None
+            return max(containers, key=lambda region: region.overflow_x)
+        if axis == "both":
+            if window_region.overflow > 2 or window_region.overflow_x > 2:
+                return window_region
+            containers = self.discover_scrollable_containers(limit=5)
+            if not containers:
+                return None
+            return max(containers, key=lambda region: region.overflow + region.overflow_x)
         if window_region.overflow > 2:
             return window_region
         containers = self.discover_scrollable_containers(limit=5)
@@ -792,9 +850,11 @@ class Page:
             return None
         return max(containers, key=lambda region: region.overflow)
 
-    def _find_nearest_scrollable_element(self, handle: ElementHandle) -> ElementHandle | None:
+    def _find_nearest_scrollable_element(
+        self, handle: ElementHandle, axis: str = "both"
+    ) -> ElementHandle | None:
         try:
-            found = handle.evaluate_handle(_FIND_NEAREST_SCROLLABLE_JS)
+            found = handle.evaluate_handle(_FIND_NEAREST_SCROLLABLE_JS, axis)
         except Exception:
             return None
         try:
@@ -815,12 +875,14 @@ class Page:
     def resolve_scroll_target(
         self,
         element: DOMElementNode | None = None,
+        *,
+        axis: str = "y",
     ) -> tuple[ScrollRegion, ElementHandle | None] | None:
         """Return (region, handle). handle is None for window targets."""
         if element is not None:
             handle = self._locate_element(element)
             if handle:
-                scrollable = self._find_nearest_scrollable_element(handle)
+                scrollable = self._find_nearest_scrollable_element(handle, axis)
                 if scrollable is not None:
                     info = scrollable.evaluate(
                         """el => {
@@ -843,6 +905,9 @@ class Page:
                                 scroll_top: Math.round(el.scrollTop),
                                 client_height: Math.round(el.clientHeight),
                                 scroll_height: Math.round(el.scrollHeight),
+                                scroll_left: Math.round(el.scrollLeft),
+                                client_width: Math.round(el.clientWidth),
+                                scroll_width: Math.round(el.scrollWidth),
                             };
                         }"""
                     )
@@ -855,16 +920,19 @@ class Page:
                         scroll_top=int(info.get("scroll_top", 0)),
                         client_height=int(info.get("client_height", 0)),
                         scroll_height=int(info.get("scroll_height", 0)),
+                        scroll_left=int(info.get("scroll_left", 0)),
+                        client_width=int(info.get("client_width", 0)),
+                        scroll_width=int(info.get("scroll_width", 0)),
                     )
                     return region, scrollable
-            primary = self.get_primary_scroll_region()
+            primary = self.get_primary_scroll_region(axis)
             if primary is None:
                 return None
             if primary.kind == "window":
                 return primary, None
             return primary, self._query_scroll_region_handle(primary)
 
-        primary = self.get_primary_scroll_region()
+        primary = self.get_primary_scroll_region(axis)
         if primary is None:
             return None
         if primary.kind == "window":
@@ -878,29 +946,62 @@ class Page:
         region, _handle = resolved
         return region.scroll_top, region.client_height, region.scroll_height
 
-    def _apply_scroll_percent(self, region: ScrollRegion, handle: ElementHandle | None, percent: int) -> None:
-        pct = max(0, min(100, int(percent)))
+    def _apply_scroll_percent(
+        self,
+        region: ScrollRegion,
+        handle: ElementHandle | None,
+        *,
+        y_percent: int | None = None,
+        x_percent: int | None = None,
+    ) -> None:
+        y_pct = None if y_percent is None else max(0, min(100, int(y_percent)))
+        x_pct = None if x_percent is None else max(0, min(100, int(x_percent)))
         if region.kind == "window" or handle is None:
             self._page.evaluate(
-                """(pct) => {
-                    const h = Math.max(
-                        document.documentElement.scrollHeight,
-                        document.body.scrollHeight
-                    ) - (window.visualViewport?.height || window.innerHeight);
-                    window.scrollTo({ top: Math.max(h, 0) * pct / 100, behavior: 'auto' });
+                """({ yPct, xPct }) => {
+                    const pos = { behavior: 'auto' };
+                    if (yPct !== null && yPct !== undefined) {
+                        const h = Math.max(
+                            document.documentElement.scrollHeight,
+                            document.body.scrollHeight
+                        ) - (window.visualViewport?.height || window.innerHeight);
+                        pos.top = Math.max(h, 0) * yPct / 100;
+                    }
+                    if (xPct !== null && xPct !== undefined) {
+                        const w = Math.max(
+                            document.documentElement.scrollWidth,
+                            document.body.scrollWidth
+                        ) - (window.visualViewport?.width || window.innerWidth);
+                        pos.left = Math.max(w, 0) * xPct / 100;
+                    }
+                    if ('top' in pos || 'left' in pos) {
+                        window.scrollTo(pos);
+                    }
                 }""",
-                pct,
+                {"yPct": y_pct, "xPct": x_pct},
             )
             return
         handle.evaluate(
-            """(el, pct) => {
-                const maxScroll = Math.max(el.scrollHeight - el.clientHeight, 0);
-                el.scrollTo({ top: maxScroll * pct / 100, behavior: 'auto' });
+            """(el, { yPct, xPct }) => {
+                const pos = { behavior: 'auto' };
+                if (yPct !== null && yPct !== undefined) {
+                    const maxScrollY = Math.max(el.scrollHeight - el.clientHeight, 0);
+                    pos.top = maxScrollY * yPct / 100;
+                }
+                if (xPct !== null && xPct !== undefined) {
+                    const maxScrollX = Math.max(el.scrollWidth - el.clientWidth, 0);
+                    pos.left = maxScrollX * xPct / 100;
+                }
+                if ('top' in pos || 'left' in pos) {
+                    el.scrollTo(pos);
+                }
             }""",
-            pct,
+            {"yPct": y_pct, "xPct": x_pct},
         )
 
-    def _apply_scroll_by_page(self, region: ScrollRegion, handle: ElementHandle | None, direction: int) -> None:
+    def _apply_scroll_by_page(
+        self, region: ScrollRegion, handle: ElementHandle | None, direction: int
+    ) -> None:
         if region.kind == "window" or handle is None:
             self._page.evaluate(
                 """(dir) => {
@@ -917,17 +1018,52 @@ class Page:
             direction,
         )
 
-    def scroll_to_percent(self, percent: int, element: DOMElementNode | None = None) -> ScrollRegion | None:
-        resolved = self.resolve_scroll_target(element)
+    def _apply_scroll_by_page_x(
+        self, region: ScrollRegion, handle: ElementHandle | None, direction: int
+    ) -> None:
+        if region.kind == "window" or handle is None:
+            self._page.evaluate(
+                """(dir) => {
+                    const w = window.visualViewport?.width || window.innerWidth;
+                    window.scrollBy({ left: dir * w, behavior: 'auto' });
+                }""",
+                direction,
+            )
+            return
+        handle.evaluate(
+            """(el, dir) => {
+                el.scrollBy({ left: dir * el.clientWidth, behavior: 'auto' });
+            }""",
+            direction,
+        )
+
+    def scroll_to_percent(
+        self,
+        percent: int | None = None,
+        element: DOMElementNode | None = None,
+        *,
+        x_percent: int | None = None,
+        axis: str = "y",
+    ) -> ScrollRegion | None:
+        y_percent = percent
+        if x_percent is not None and y_percent is None:
+            axis = "x"
+        elif x_percent is not None and y_percent is not None:
+            axis = "both"
+        resolved = self.resolve_scroll_target(element, axis=axis)
         if not resolved:
             return None
         region, handle = resolved
-        self._apply_scroll_percent(region, handle, percent)
+        if y_percent is None and x_percent is None:
+            return None
+        self._apply_scroll_percent(
+            region, handle, y_percent=y_percent, x_percent=x_percent
+        )
         self._cached_state = None
         return region
 
     def scroll_to_previous_page(self, element: DOMElementNode | None = None) -> ScrollRegion | None:
-        resolved = self.resolve_scroll_target(element)
+        resolved = self.resolve_scroll_target(element, axis="y")
         if not resolved:
             return None
         region, handle = resolved
@@ -936,11 +1072,29 @@ class Page:
         return region
 
     def scroll_to_next_page(self, element: DOMElementNode | None = None) -> ScrollRegion | None:
-        resolved = self.resolve_scroll_target(element)
+        resolved = self.resolve_scroll_target(element, axis="y")
         if not resolved:
             return None
         region, handle = resolved
         self._apply_scroll_by_page(region, handle, 1)
+        self._cached_state = None
+        return region
+
+    def scroll_to_previous_page_x(self, element: DOMElementNode | None = None) -> ScrollRegion | None:
+        resolved = self.resolve_scroll_target(element, axis="x")
+        if not resolved:
+            return None
+        region, handle = resolved
+        self._apply_scroll_by_page_x(region, handle, -1)
+        self._cached_state = None
+        return region
+
+    def scroll_to_next_page_x(self, element: DOMElementNode | None = None) -> ScrollRegion | None:
+        resolved = self.resolve_scroll_target(element, axis="x")
+        if not resolved:
+            return None
+        region, handle = resolved
+        self._apply_scroll_by_page_x(region, handle, 1)
         self._cached_state = None
         return region
 
@@ -1035,21 +1189,37 @@ class Page:
                         while (cur) {
                             if (!(cur instanceof HTMLElement)) break;
                             const style = window.getComputedStyle(cur);
-                            const overflowAmount = cur.scrollHeight - cur.clientHeight;
+                            const overflowY = cur.scrollHeight - cur.clientHeight;
+                            const overflowX = cur.scrollWidth - cur.clientWidth;
                             const oy = style.overflowY || style.overflow;
-                            const canScroll =
-                                overflowAmount > 2 &&
+                            const ox = style.overflowX || style.overflow;
+                            const canScrollY =
+                                overflowY > 2 &&
                                 (oy === 'scroll' ||
                                     oy === 'auto' ||
                                     oy === 'overlay' ||
                                     oy === 'hidden');
-                            if (canScroll) {
+                            const canScrollX =
+                                overflowX > 2 &&
+                                (ox === 'scroll' ||
+                                    ox === 'auto' ||
+                                    ox === 'overlay' ||
+                                    ox === 'hidden');
+                            if (canScrollY || canScrollX) {
                                 const cRect = cur.getBoundingClientRect();
                                 const eRect = el.getBoundingClientRect();
-                                const delta =
-                                    (eRect.top + eRect.height / 2) -
-                                    (cRect.top + cRect.height / 2);
-                                cur.scrollTop += delta;
+                                if (canScrollY) {
+                                    const deltaY =
+                                        (eRect.top + eRect.height / 2) -
+                                        (cRect.top + cRect.height / 2);
+                                    cur.scrollTop += deltaY;
+                                }
+                                if (canScrollX) {
+                                    const deltaX =
+                                        (eRect.left + eRect.width / 2) -
+                                        (cRect.left + cRect.width / 2);
+                                    cur.scrollLeft += deltaX;
+                                }
                                 break;
                             }
                             cur = cur.parentElement;

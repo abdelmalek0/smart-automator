@@ -516,7 +516,7 @@ class TestReplayExecutor(unittest.TestCase):
 
         page.evaluate.assert_called_once()
         self.assertIn("window.scrollTo", page.evaluate.call_args[0][0])
-        self.assertEqual(page.evaluate.call_args[0][1], 50)
+        self.assertEqual(page.evaluate.call_args[0][1], {"yPct": 50, "xPct": None})
         self.assertEqual(len(results), 1)
         self.assertIsNone(results[0].error)
         self.assertIn("50%", results[0].extracted_content or "")
@@ -539,7 +539,51 @@ class TestReplayExecutor(unittest.TestCase):
 
         page.locator.assert_called()
         locator.evaluate.assert_called_once()
-        self.assertEqual(locator.evaluate.call_args[0][1], 75)
+        self.assertEqual(locator.evaluate.call_args[0][1], {"yPct": 75, "xPct": None})
+        page.evaluate.assert_not_called()
+        self.assertEqual(len(results), 1)
+        self.assertIsNone(results[0].error)
+
+    def test_locatoreless_scroll_to_percent_x_uses_window_left(self):
+        browser_context = MagicMock()
+        page = MagicMock()
+        browser_context.get_current_page.return_value.playwright_page = page
+
+        steps = [
+            {
+                "action": "scroll_to_percent",
+                "args": {"xPercent": 60},
+            }
+        ]
+
+        results = execute_replay_steps(browser_context, steps)
+
+        page.evaluate.assert_called_once()
+        self.assertIn("window.scrollTo", page.evaluate.call_args[0][0])
+        self.assertEqual(page.evaluate.call_args[0][1], {"yPct": None, "xPct": 60})
+        self.assertEqual(len(results), 1)
+        self.assertIsNone(results[0].error)
+        self.assertIn("x=60%", results[0].extracted_content or "")
+
+    def test_scroll_to_percent_with_xpath_uses_element_x(self):
+        browser_context = MagicMock()
+        page = MagicMock()
+        locator = self._unique_locator()
+        page.locator.return_value = locator
+        browser_context.get_current_page.return_value.playwright_page = page
+
+        steps = [
+            {
+                "action": "scroll_to_percent",
+                "args": {"xPercent": 75, "xpath": "html/body/div"},
+            }
+        ]
+
+        results = execute_replay_steps(browser_context, steps)
+
+        page.locator.assert_called()
+        locator.evaluate.assert_called_once()
+        self.assertEqual(locator.evaluate.call_args[0][1], {"yPct": None, "xPct": 75})
         page.evaluate.assert_not_called()
         self.assertEqual(len(results), 1)
         self.assertIsNone(results[0].error)

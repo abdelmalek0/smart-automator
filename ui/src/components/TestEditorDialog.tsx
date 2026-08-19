@@ -45,6 +45,8 @@ export const REPLAY_ACTIONS = [
   'scroll_to_percent',
   'scroll_to_top',
   'scroll_to_bottom',
+  'scroll_to_left',
+  'scroll_to_right',
   'go_back',
   'search_google',
   'open_tab',
@@ -52,6 +54,8 @@ export const REPLAY_ACTIONS = [
   'close_tab',
   'previous_page',
   'next_page',
+  'page_left',
+  'page_right',
   'get_dropdown_options',
 ] as const
 
@@ -76,6 +80,9 @@ function stepSummary(step: ReplayStep): string {
   if (typeof args.xpath === 'string') return args.xpath
   if (typeof args.css_selector === 'string') return String(args.css_selector)
   if (typeof args.seconds === 'number') return `${args.seconds}s`
+  if (typeof args.percent === 'number') return `${args.percent}%`
+  if (typeof args.yPercent === 'number') return `y=${args.yPercent}%`
+  if (typeof args.xPercent === 'number') return `x=${args.xPercent}%`
   return ''
 }
 

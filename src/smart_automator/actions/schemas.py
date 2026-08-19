@@ -29,6 +29,10 @@ class Action:
             "scroll_to_bottom",
             "previous_page",
             "next_page",
+            "scroll_to_left",
+            "scroll_to_right",
+            "page_left",
+            "page_right",
         ) and self.index is not None
 
 
@@ -49,6 +53,10 @@ ACTION_NAMES = [
     "scroll_to_bottom",
     "previous_page",
     "next_page",
+    "scroll_to_left",
+    "scroll_to_right",
+    "page_left",
+    "page_right",
     "scroll_to_text",
     "send_keys",
     "get_dropdown_options",

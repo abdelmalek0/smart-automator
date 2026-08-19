@@ -108,6 +108,8 @@ def validate_action_args(action_name: str, args: dict[str, Any]) -> dict[str, An
             validated["yPercent"] = int(validated["yPercent"])
         elif "percent" in validated:
             validated["yPercent"] = int(validated["percent"])
+        if "xPercent" in validated:
+            validated["xPercent"] = int(validated["xPercent"])
     if action_name == "scroll_to_text" and "nth" in validated:
         validated["nth"] = int(validated["nth"])
     if action_name == "done" and "success" in validated:

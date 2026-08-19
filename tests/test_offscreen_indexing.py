@@ -157,6 +157,57 @@ class TestHitlScrollCapture(unittest.TestCase):
         self.assertEqual(args["percent"], 80)
         self.assertEqual(args["xpath"], "html/body/div[2]")
 
+    def test_record_horizontal_only_scroll(self):
+        context = AgentContext(
+            task_id="t",
+            browser_context=MagicMock(),
+            message_manager=MagicMock(),
+            options=AgentOptions(),
+        )
+        recorder = HumanActionRecorder(context)
+        recorder._active = True
+        recorder._handle_capture_event(
+            {
+                "eventType": "scroll",
+                "scrollKind": "window",
+                "percent": 0,
+                "yPercent": 0,
+                "xPercent": 55,
+                "tagName": "html",
+                "xpath": "",
+                "attributes": {},
+            }
+        )
+        name, args, result = recorder.recorded[0]
+        self.assertEqual(name, "scroll_to_percent")
+        self.assertEqual(args["xPercent"], 55)
+        self.assertIn("horizontally", result.extracted_content or "")
+
+    def test_coalesce_horizontal_scrolls(self):
+        context = AgentContext(
+            task_id="t",
+            browser_context=MagicMock(),
+            message_manager=MagicMock(),
+            options=AgentOptions(),
+        )
+        recorder = HumanActionRecorder(context)
+        recorder._active = True
+        for x_percent in (20, 45, 80):
+            recorder._handle_capture_event(
+                {
+                    "eventType": "scroll",
+                    "scrollKind": "window",
+                    "percent": 0,
+                    "yPercent": 0,
+                    "xPercent": x_percent,
+                    "tagName": "html",
+                    "xpath": "",
+                    "attributes": {},
+                }
+            )
+        self.assertEqual(len(recorder.recorded), 1)
+        self.assertEqual(recorder.recorded[0][1]["xPercent"], 80)
+
 
 class TestPromptOffscreenWording(unittest.TestCase):
     def test_navigator_prompt_mentions_offscreen(self):
