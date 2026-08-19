@@ -151,6 +151,21 @@ class TestExecutorTokenEmission(unittest.TestCase):
         )
         return executor, events
 
+    def test_zero_usage_does_not_report_estimated_history_tokens(self):
+        llm = _UsageLLM("nav-model")
+        executor, events = self._make_executor(llm)
+
+        self.assertGreater(executor._context.message_manager.history.total_tokens, 0)
+
+        executor.flush_token_usage()
+
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["type"], "tokens_update")
+        self.assertEqual(event["prompt_tokens"], 0)
+        self.assertEqual(event["completion_tokens"], 0)
+        self.assertEqual(event["tokens"], 0)
+
     def test_shared_llm_is_not_double_counted(self):
         llm = _UsageLLM("shared-model")
         llm.add_usage(prompt_tokens=100, completion_tokens=50)

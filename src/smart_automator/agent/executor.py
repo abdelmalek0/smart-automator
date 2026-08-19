@@ -273,7 +273,6 @@ class Executor:
         return [(llm, provider, model) for _, llm, provider, model in self._llm_usage_entries()]
 
     def _emit_tokens(self) -> None:
-        total = self._context.message_manager.history.total_tokens
         prompt_tokens = 0
         completion_tokens = 0
         cache_tokens = 0
@@ -306,8 +305,6 @@ class Executor:
                     "cost_usd": part_cost,
                 }
             )
-        if prompt_tokens == 0 and completion_tokens == 0:
-            prompt_tokens = total
         tokens = prompt_tokens + completion_tokens
         if any(part is not None for part in cost_parts):
             cost_usd = sum(part or 0.0 for part in cost_parts)
@@ -315,7 +312,7 @@ class Executor:
             cost_usd = None
         payload: dict[str, object] = {
             "type": "tokens_update",
-            "tokens": tokens or total,
+            "tokens": tokens,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "cache_tokens": cache_tokens,
