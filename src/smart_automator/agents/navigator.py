@@ -804,9 +804,14 @@ class NavigatorAgent(BaseAgent):
             and retry_wait > 0
             and not self._context.stopped
             and not self._context.paused
+            and not self._context.hitl_interrupt
         ):
-            time.sleep(retry_wait)
-            if not self._context.stopped and not self._context.paused:
+            self._context.wait_or_abort(retry_wait)
+            if (
+                not self._context.stopped
+                and not self._context.paused
+                and not self._context.hitl_interrupt
+            ):
                 browser_state = self._context.browser_context.get_state(
                     show_highlights=False,
                     wait_for_stable=True,
@@ -862,13 +867,15 @@ class NavigatorAgent(BaseAgent):
                 break
             try:
                 return self.execute_history_actions(history_item, actions_to_replay, delay_seconds)
+            except (RequestCancelledError, HitlInterruptedError):
+                raise
             except Exception as error:
                 if attempt + 1 >= max_retries:
                     message = f"Step {step_index + 1} failed after {max_retries} attempts: {error}"
                     if skip_failures:
                         return [ActionResult(error=message, include_in_memory=True)]
                     raise RuntimeError(message) from error
-                time.sleep(delay_seconds)
+                self._context.wait_or_abort(delay_seconds)
         return []
 
     def reset(self):

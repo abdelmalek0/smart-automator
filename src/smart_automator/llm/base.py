@@ -56,6 +56,16 @@ class BaseLLM(ABC):
         self._check_cancelled()
         self._check_hitl_interrupt()
 
+    def _call_with_retry(self, operation, **kwargs):
+        from .retry import call_with_retry
+
+        return call_with_retry(
+            operation,
+            cancel_check=self._check_abort,
+            wake=self._cancel_event,
+            **kwargs,
+        )
+
     def _record_usage(self, usage: dict) -> None:
         self._usage["prompt_tokens"] += int(usage.get("prompt_tokens", 0) or 0)
         self._usage["completion_tokens"] += int(usage.get("completion_tokens", 0) or 0)

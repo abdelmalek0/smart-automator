@@ -147,6 +147,7 @@ class TestNavigatorReplayRemapping(unittest.TestCase):
         context.browser_context = MagicMock()
         context.stopped = False
         context.paused = False
+        context.hitl_interrupt = False
 
         navigator = NavigatorAgent(
             llm=MagicMock(),
@@ -267,8 +268,7 @@ class TestNavigatorReplayRemapping(unittest.TestCase):
             wait_for_stable=True,
         )
 
-    @patch("smart_automator.agents.navigator.time.sleep")
-    def test_remapping_retries_after_wait(self, mock_sleep):
+    def test_remapping_retries_after_wait(self):
         navigator, context = self._make_navigator()
         context.options.replay_action_retry_wait_seconds = 15.0
         history_item = AgentStepRecord(
@@ -318,7 +318,7 @@ class TestNavigatorReplayRemapping(unittest.TestCase):
                 0.0,
             )
 
-        mock_sleep.assert_called_once_with(15.0)
+        context.wait_or_abort.assert_called_once_with(15.0)
         self.assertEqual(len(results), 1)
         self.assertIsNone(results[0].error)
         navigator._action_registry.execute_multi.assert_called_once()

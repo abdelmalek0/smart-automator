@@ -7,6 +7,7 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 from ..agent.context import ActionResult, AgentContext
+from ..llm.retry import sleep_or_abort
 from ..agent.messages.utils import wrap_untrusted_content
 from ..agent.compound_integrity import (
     BatchState,
@@ -379,7 +380,15 @@ class NavigatorActionRegistry:
                     and not context.stopped
                     and not context.paused
                 ):
-                    time.sleep(action_retry_wait_seconds)
+                    sleep_or_abort(
+                        action_retry_wait_seconds,
+                        should_stop=lambda: (
+                            context.stopped
+                            or context.paused
+                            or context.hitl_interrupt
+                        ),
+                        wake=context.cancel_event,
+                    )
                     if not context.stopped and not context.paused:
                         fresh_state = browser_context.get_state(
                             show_highlights=False,

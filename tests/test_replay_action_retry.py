@@ -64,7 +64,7 @@ class TestReplayActionRetry(unittest.TestCase):
     @patch("smart_automator.actions.builder.apply_verification")
     @patch("smart_automator.actions.builder.probe_element")
     @patch("smart_automator.actions.builder.capture_page_snapshot")
-    @patch("smart_automator.actions.builder.time.sleep")
+    @patch("smart_automator.actions.builder.sleep_or_abort")
     def test_retries_after_wait_when_first_attempt_fails(
         self,
         mock_sleep,
@@ -91,7 +91,8 @@ class TestReplayActionRetry(unittest.TestCase):
                 action_retry_wait_seconds=15.0,
             )
 
-        mock_sleep.assert_called_once_with(15.0)
+        mock_sleep.assert_called_once()
+        self.assertEqual(mock_sleep.call_args.args[0], 15.0)
         self.assertEqual(mock_execute.call_count, 2)
         browser_context.get_state.assert_called()
         self.assertEqual(len(results), 1)
@@ -100,7 +101,7 @@ class TestReplayActionRetry(unittest.TestCase):
     @patch("smart_automator.actions.builder.apply_verification")
     @patch("smart_automator.actions.builder.probe_element")
     @patch("smart_automator.actions.builder.capture_page_snapshot")
-    @patch("smart_automator.actions.builder.time.sleep")
+    @patch("smart_automator.actions.builder.sleep_or_abort")
     def test_fails_after_retry_when_both_attempts_fail(
         self,
         mock_sleep,
@@ -121,7 +122,8 @@ class TestReplayActionRetry(unittest.TestCase):
                 action_retry_wait_seconds=15.0,
             )
 
-        mock_sleep.assert_called_once_with(15.0)
+        mock_sleep.assert_called_once()
+        self.assertEqual(mock_sleep.call_args.args[0], 15.0)
         self.assertEqual(mock_execute.call_count, 2)
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].error, "Element with index 12 not found")
@@ -129,7 +131,7 @@ class TestReplayActionRetry(unittest.TestCase):
     @patch("smart_automator.actions.builder.apply_verification")
     @patch("smart_automator.actions.builder.probe_element")
     @patch("smart_automator.actions.builder.capture_page_snapshot")
-    @patch("smart_automator.actions.builder.time.sleep")
+    @patch("smart_automator.actions.builder.sleep_or_abort")
     def test_live_path_does_not_retry_without_param(
         self,
         mock_sleep,
@@ -155,7 +157,7 @@ class TestReplayActionRetry(unittest.TestCase):
     @patch("smart_automator.actions.builder.apply_verification")
     @patch("smart_automator.actions.builder.probe_element")
     @patch("smart_automator.actions.builder.capture_page_snapshot")
-    @patch("smart_automator.actions.builder.time.sleep")
+    @patch("smart_automator.actions.builder.sleep_or_abort")
     def test_stopped_during_wait_skips_retry(
         self,
         mock_sleep,
@@ -167,8 +169,9 @@ class TestReplayActionRetry(unittest.TestCase):
         mock_capture.return_value = _snapshot()
         actions = [Action(name="click_element", args={"index": 12})]
 
-        def stop_on_wait(_seconds: float) -> None:
+        def stop_on_wait(_seconds: float, **_kwargs) -> bool:
             context.stopped = True
+            return True
 
         mock_sleep.side_effect = stop_on_wait
 
@@ -184,7 +187,8 @@ class TestReplayActionRetry(unittest.TestCase):
                 action_retry_wait_seconds=15.0,
             )
 
-        mock_sleep.assert_called_once_with(15.0)
+        mock_sleep.assert_called_once()
+        self.assertEqual(mock_sleep.call_args.args[0], 15.0)
         mock_execute.assert_called_once()
         self.assertEqual(results[0].error, "Element with index 12 not found")
 

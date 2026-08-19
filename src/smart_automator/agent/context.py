@@ -200,6 +200,19 @@ class AgentContext:
         if self.stopped or self.cancel_event.is_set():
             raise RequestCancelledError("Request cancelled")
 
+    def abort_wait(self) -> None:
+        """Raise if Cancel or HITL should end a run wait."""
+        self.check_cancelled()
+        if self.hitl_interrupt:
+            from ..agents.errors import HitlInterruptedError
+
+            raise HitlInterruptedError("HITL interrupt")
+
+    def wait_or_abort(self, seconds: float) -> None:
+        from ..llm.retry import sleep_or_abort
+
+        sleep_or_abort(seconds, abort=self.abort_wait, wake=self.cancel_event)
+
     def pause(self):
         self.paused = True
 

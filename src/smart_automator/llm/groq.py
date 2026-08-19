@@ -3,7 +3,6 @@ import json
 import httpx
 
 from .base import BaseLLM
-from .retry import call_with_retry
 from .structured_output import ensure_json_keyword_in_messages
 from ..config import Config
 from ..server.provider_utils import default_base_url
@@ -102,9 +101,8 @@ class OpenAICompatLLM(BaseLLM):
         return True
 
     def chat(self, messages: list[dict], temperature: float = 0.7) -> str:
-        return call_with_retry(
+        return self._call_with_retry(
             lambda: self._post(messages, temperature=temperature, json_mode=False),
-            cancel_check=self._check_abort,
         )
 
     async def achat(self, messages: list[dict], temperature: float = 0.7) -> str:
@@ -118,16 +116,14 @@ class OpenAICompatLLM(BaseLLM):
     def chat_json(self, messages: list[dict], temperature: float = 0.7) -> str:
         prepared = ensure_json_keyword_in_messages(messages)
         try:
-            return call_with_retry(
+            return self._call_with_retry(
                 lambda: self._post(prepared, temperature=temperature, json_mode=True),
-                cancel_check=self._check_abort,
             )
         except httpx.HTTPStatusError as error:
             if error.response.status_code != 400:
                 raise
-            return call_with_retry(
+            return self._call_with_retry(
                 lambda: self._post(messages, temperature=temperature, json_mode=False),
-                cancel_check=self._check_abort,
             )
 
     def _headers(self) -> dict[str, str]:
