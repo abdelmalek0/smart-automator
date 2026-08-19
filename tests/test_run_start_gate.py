@@ -190,7 +190,7 @@ def test_concurrent_start_run_rejects_second(client: TestClient, monkeypatch) ->
     assert second.json()["detail"] == "Another run is already in progress"
 
 
-def test_connect_worker_busy_ignores_stale_cancelled_lease(client: TestClient, monkeypatch) -> None:
+def test_connect_worker_busy_follows_browser_state(client: TestClient, monkeypatch) -> None:
     user_id = client.get("/api/auth/me").json()["user"]["id"]
     cancelled = RunState(
         run_id="cancelled-run",
@@ -209,7 +209,35 @@ def test_connect_worker_busy_ignores_stale_cancelled_lease(client: TestClient, m
         lambda: FakeRegistry(worker),
     )
 
+    assert connect_worker_busy(user_id) is True
+    worker.browser_state = "stopping"
+    assert connect_worker_busy(user_id) is True
+    worker.browser_state = "idle"
+    worker.active_run_id = None
     assert connect_worker_busy(user_id) is False
+
+
+def test_connect_worker_busy_expires_stuck_stopping(client: TestClient, monkeypatch) -> None:
+    import time
+
+    from smart_automator.server.workers import WorkerConnection, WorkerRegistry
+
+    user_id = client.get("/api/auth/me").json()["user"]["id"]
+    registry = WorkerRegistry()
+    worker = WorkerConnection(user_id=user_id, websocket=MagicMock(), loop=MagicMock())
+    registry.register(worker)
+    worker.browser_state = "stopping"
+    worker.active_run_id = "stale-run"
+    worker.stop_deadline = time.monotonic() - 1
+    monkeypatch.setattr(
+        "smart_automator.server.workers.worker_registry",
+        lambda: registry,
+    )
+    with monkeypatch.context() as patched:
+        patched.setattr(WorkerRegistry, "_teardown_proxy", lambda *args, **kwargs: None)
+        assert connect_worker_busy(user_id) is False
+    assert worker.browser_state == "idle"
+    assert worker.active_run_id is None
 
 
 def test_cancel_active_run_stops_connect_browser(client: TestClient, monkeypatch) -> None:

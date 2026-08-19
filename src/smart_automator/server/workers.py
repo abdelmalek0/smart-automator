@@ -56,22 +56,15 @@ ACTIVE_RUN_STATUSES = ("pending", "running", "awaiting_human")
 
 
 def connect_worker_busy(user_id: str) -> bool:
-    worker = worker_registry().get(user_id)
+    registry = worker_registry()
+    worker = registry.get(user_id)
     if worker is None:
         return False
+    expire = getattr(registry, "expire_stop_if_due", None)
     with worker.lease_lock:
-        active_run_id = worker.active_run_id
-        browser_state = worker.browser_state
-
-    if active_run_id:
-        from .run_state import get_run_for_user
-
-        run = get_run_for_user(user_id, active_run_id)
-        if run is None or run.status not in ACTIVE_RUN_STATUSES:
-            return False
-        return True
-
-    return browser_state not in ("idle",)
+        if expire is not None:
+            expire(worker)
+        return worker.browser_state not in ("idle",)
 
 
 def user_has_active_run(user_id: str) -> bool:
@@ -406,6 +399,7 @@ class WorkerConnection:
     profiles: list[dict[str, Any]] = field(default_factory=list)
     browser_state: str = "idle"  # idle | starting | ready | stopping
     active_run_id: str | None = None
+    stop_deadline: float | None = None
     cdp_proxy: CdpProxy | None = None
     cdp_url: str | None = None
     ready_event: threading.Event = field(default_factory=threading.Event)
@@ -621,11 +615,9 @@ class WorkerRegistry:
             if current is worker:
                 del self._workers[worker.user_id]
         worker.online = False
-        self._teardown_proxy(worker, blocking=False)
-        worker.browser_state = "idle"
-        worker.active_run_id = None
+        with worker.lease_lock:
+            self._release_lease_locked(worker, blocking=False)
         worker.ready_event.set()
-        worker.stopped_event.set()
 
     def get(self, user_id: str) -> WorkerConnection | None:
         with self._lock:
@@ -644,13 +636,15 @@ class WorkerRegistry:
                 "browser_state": "offline",
                 "active_run_id": None,
             }
-        return {
-            "online": True,
-            "last_seen": worker.last_seen,
-            "profile_count": len(worker.profiles),
-            "browser_state": worker.browser_state,
-            "active_run_id": worker.active_run_id,
-        }
+        with worker.lease_lock:
+            self.expire_stop_if_due(worker)
+            return {
+                "online": True,
+                "last_seen": worker.last_seen,
+                "profile_count": len(worker.profiles),
+                "browser_state": worker.browser_state,
+                "active_run_id": worker.active_run_id,
+            }
 
     def profiles_for_user(self, user_id: str) -> list[dict[str, Any]]:
         worker = self.get(user_id)
@@ -704,15 +698,20 @@ class WorkerRegistry:
         deadline = time.monotonic() + timeout
         while True:
             with worker.lease_lock:
-                busy = (
-                    worker.browser_state not in ("idle",)
-                    and worker.active_run_id not in (None, run_id)
-                )
+                self.expire_stop_if_due(worker)
+                if worker.browser_state == "stopping":
+                    busy = True
+                else:
+                    busy = (
+                        worker.browser_state not in ("idle",)
+                        and worker.active_run_id not in (None, run_id)
+                    )
                 if not busy:
                     self._teardown_proxy(worker, blocking=True)
                     worker.error_message = ""
                     worker.ready_event.clear()
                     worker.stopped_event.clear()
+                    worker.stop_deadline = None
                     worker.browser_state = "starting"
                     worker.active_run_id = run_id
                     worker.cdp_url = None
@@ -799,25 +798,54 @@ class WorkerRegistry:
         worker = self.get(user_id)
         if worker is None:
             return
+        wait_seconds = 0.0
         with worker.lease_lock:
             if run_id is not None and worker.active_run_id not in (None, run_id):
                 return
-            if worker.browser_state in ("idle",) and worker.cdp_proxy is None:
+            if worker.browser_state == "idle" and worker.cdp_proxy is None:
                 return
 
-            worker.browser_state = "stopping"
-            worker.stopped_event.clear()
-            worker.enqueue_json(
-                {"type": "browser.stop", "run_id": run_id or worker.active_run_id or ""}
-            )
+            if worker.browser_state != "stopping":
+                worker.browser_state = "stopping"
+                worker.stop_deadline = time.monotonic() + max(0.0, timeout)
+                worker.stopped_event.clear()
+                worker.enqueue_json(
+                    {"type": "browser.stop", "run_id": run_id or worker.active_run_id or ""}
+                )
+            if wait:
+                remaining = (
+                    (worker.stop_deadline - time.monotonic())
+                    if worker.stop_deadline is not None
+                    else timeout
+                )
+                wait_seconds = max(0.0, remaining)
+
         if wait:
-            worker.stopped_event.wait(timeout=timeout)
-        with worker.lease_lock:
-            self._teardown_proxy(worker, blocking=True)
-            worker.browser_state = "idle"
-            worker.active_run_id = None
-            worker.cdp_url = None
-            worker.stopped_event.set()
+            worker.stopped_event.wait(timeout=wait_seconds)
+            with worker.lease_lock:
+                if (
+                    worker.browser_state == "stopping"
+                    and (run_id is None or worker.active_run_id in (None, run_id))
+                ):
+                    self._release_lease_locked(worker, blocking=True)
+
+    def expire_stop_if_due(self, worker: WorkerConnection) -> None:
+        """Force idle if a stop never got browser.stopped. Caller holds lease_lock."""
+        if worker.browser_state != "stopping":
+            return
+        deadline = worker.stop_deadline
+        if deadline is not None and time.monotonic() < deadline:
+            return
+        self._release_lease_locked(worker, blocking=False)
+
+    def _release_lease_locked(self, worker: WorkerConnection, *, blocking: bool) -> None:
+        """Caller holds lease_lock."""
+        self._teardown_proxy(worker, blocking=blocking)
+        worker.browser_state = "idle"
+        worker.active_run_id = None
+        worker.cdp_url = None
+        worker.stop_deadline = None
+        worker.stopped_event.set()
 
     def handle_control_message(self, worker: WorkerConnection, message: dict[str, Any]) -> None:
         worker.touch()
@@ -830,12 +858,17 @@ class WorkerRegistry:
                 worker.profiles = [p for p in profiles if isinstance(p, dict)]
             return
         if msg_type == "browser.starting":
-            worker.browser_state = "starting"
+            with worker.lease_lock:
+                if worker.browser_state != "stopping":
+                    worker.browser_state = "starting"
             return
         if msg_type == "browser.ready":
-            worker.browser_state = "ready"
-            worker.error_message = ""
-            worker.ready_event.set()
+            with worker.lease_lock:
+                if worker.browser_state == "stopping":
+                    return
+                worker.browser_state = "ready"
+                worker.error_message = ""
+                worker.ready_event.set()
             return
         if msg_type == "browser.stopped":
             # During an in-flight start, Connect may tear down a previous Chrome
@@ -844,10 +877,7 @@ class WorkerRegistry:
                 if worker.browser_state == "starting":
                     worker.stopped_event.set()
                     return
-                worker.browser_state = "idle"
-                worker.active_run_id = None
-                self._teardown_proxy(worker, blocking=False)
-                worker.stopped_event.set()
+                self._release_lease_locked(worker, blocking=False)
                 worker.ready_event.set()
             return
         if msg_type == "error":

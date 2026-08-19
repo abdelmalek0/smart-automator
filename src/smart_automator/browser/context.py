@@ -15,6 +15,9 @@ from .util import is_url_allowed
 from .views import BrowserState, TabInfo, URLNotAllowedError
 
 
+PLAYWRIGHT_CLOSE_TIMEOUT_MS = 3000
+
+
 class BrowserContext:
     def __init__(self, config: Config):
         self._config = config
@@ -166,7 +169,7 @@ class BrowserContext:
             raise ValueError(f"Tab {tab_id} not found")
         page = self._pages.pop(tab_id)
         try:
-            page.playwright_page.close()
+            page.playwright_page.close(timeout=PLAYWRIGHT_CLOSE_TIMEOUT_MS)
         except Exception:
             pass
         if self._current_page_id == tab_id:
@@ -237,28 +240,40 @@ class BrowserContext:
             page.remove_highlight()
 
     def close(self):
-        for page in self._pages.values():
-            try:
-                page.playwright_page.close()
-            except Exception:
-                pass
-        self._pages.clear()
-        if self._context:
-            try:
-                self._context.close()
-            except Exception:
-                pass
-        if self._browser:
-            try:
-                self._browser.close()
-            except Exception:
-                pass
         try:
+            if not self._remote_cdp:
+                for page in self._pages.values():
+                    self._close_with_timeout(page.playwright_page)
+            self._pages.clear()
+            self._close_with_timeout(self._context)
+            self._close_with_timeout(self._browser)
             if self._playwright:
-                self._playwright.stop()
+                try:
+                    self._playwright.stop()
+                except Exception:
+                    pass
         finally:
+            self._context = None
+            self._browser = None
             self._playwright = None
             temp_dir = self._temp_user_data_dir
             self._temp_user_data_dir = None
             if temp_dir:
                 shutil.rmtree(temp_dir, ignore_errors=True)
+
+    @staticmethod
+    def _close_with_timeout(target) -> None:
+        if target is None:
+            return
+        closer = getattr(target, "close", None)
+        if closer is None:
+            return
+        try:
+            closer(timeout=PLAYWRIGHT_CLOSE_TIMEOUT_MS)
+        except TypeError:
+            try:
+                closer()
+            except Exception:
+                pass
+        except Exception:
+            pass

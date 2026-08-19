@@ -49,6 +49,44 @@ function resolveAgentPhase(
   }
 }
 
+export function isConnectBrowserBusy(
+  connectOnline: boolean,
+  browserState: string | null | undefined,
+): boolean {
+  return Boolean(connectOnline && browserState && BUSY_BROWSER_STATES.has(browserState))
+}
+
+export function resolveRunStartBlock(input: {
+  localBrowserMode: boolean
+  connectOnline: boolean
+  hasActiveRun: boolean
+  browserBusy: boolean
+  browserState?: string | null
+}): { blockReason: RunStartBlockReason | null; blockHint: string | null } {
+  if (!input.localBrowserMode && !input.connectOnline) {
+    return {
+      blockReason: 'offline',
+      blockHint: 'Connect app offline — log in to the Connect app to start runs.',
+    }
+  }
+  if (input.hasActiveRun) {
+    return {
+      blockReason: 'busy',
+      blockHint: 'Finish or cancel the current run before starting another.',
+    }
+  }
+  if (input.browserBusy) {
+    const shuttingDown = input.browserState === 'stopping'
+    return {
+      blockReason: 'busy',
+      blockHint: shuttingDown
+        ? 'Chrome is shutting down — wait a moment before starting another run.'
+        : 'Connect browser is busy — wait a moment before starting another run.',
+    }
+  }
+  return { blockReason: null, blockHint: null }
+}
+
 export function useRunStartGate(): RunStartGate {
   const { data: config } = useQuery({
     queryKey: ['config'],
@@ -73,25 +111,14 @@ export function useRunStartGate(): RunStartGate {
   const leasedRun = leasedRunId ? runs.find((run) => run.run_id === leasedRunId) ?? null : null
   const leasedRunActive = Boolean(leasedRun && isActiveRunStatus(leasedRun.status))
 
-  const browserStateBusy = Boolean(
-    connectOnline &&
-      workerStatus?.browser_state &&
-      BUSY_BROWSER_STATES.has(workerStatus.browser_state),
-  )
-  const browserBusy = Boolean(
-    browserStateBusy && (leasedRunActive || (leasedRunId == null && hasActiveRun)),
-  )
-
-  let blockReason: RunStartBlockReason | null = null
-  let blockHint: string | null = null
-
-  if (!localBrowserMode && !connectOnline) {
-    blockReason = 'offline'
-    blockHint = 'Connect app offline — log in to the Connect app to start runs.'
-  } else if (hasActiveRun || browserBusy) {
-    blockReason = 'busy'
-    blockHint = 'Finish or cancel the current run before starting another.'
-  }
+  const browserBusy = isConnectBrowserBusy(connectOnline, workerStatus?.browser_state)
+  const { blockReason, blockHint } = resolveRunStartBlock({
+    localBrowserMode,
+    connectOnline,
+    hasActiveRun,
+    browserBusy,
+    browserState: workerStatus?.browser_state,
+  })
 
   const activeRun = resolveActiveRun(runs, leasedRun, leasedRunActive)
   const agentPhase = resolveAgentPhase(localBrowserMode, connectOnline, activeRun)

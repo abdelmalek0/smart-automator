@@ -525,3 +525,45 @@ def test_list_chrome_profiles_endpoint(client: TestClient, monkeypatch) -> None:
     res = client.get("/api/chrome-profiles")
     assert res.status_code == 200
     assert res.json() == sample
+
+
+def _unlaunched_context(*, remote: bool) -> BrowserContext:
+    context = BrowserContext.__new__(BrowserContext)
+    context._remote_cdp = remote
+    context._pages = {}
+    context._context = MagicMock()
+    context._browser = MagicMock()
+    context._playwright = MagicMock()
+    context._temp_user_data_dir = None
+    return context
+
+
+def test_close_remote_cdp_skips_pages_and_passes_timeout() -> None:
+    from smart_automator.browser.context import PLAYWRIGHT_CLOSE_TIMEOUT_MS
+
+    context = _unlaunched_context(remote=True)
+    page = MagicMock()
+    context._pages[0] = MagicMock(playwright_page=page)
+    pw_context = context._context
+    browser = context._browser
+    playwright = context._playwright
+
+    context.close()
+
+    page.close.assert_not_called()
+    pw_context.close.assert_called_once_with(timeout=PLAYWRIGHT_CLOSE_TIMEOUT_MS)
+    browser.close.assert_called_once_with(timeout=PLAYWRIGHT_CLOSE_TIMEOUT_MS)
+    playwright.stop.assert_called_once()
+    assert context._pages == {}
+
+
+def test_close_local_pages_use_timeout() -> None:
+    from smart_automator.browser.context import PLAYWRIGHT_CLOSE_TIMEOUT_MS
+
+    context = _unlaunched_context(remote=False)
+    page = MagicMock()
+    context._pages[0] = MagicMock(playwright_page=page)
+
+    context.close()
+
+    page.close.assert_called_once_with(timeout=PLAYWRIGHT_CLOSE_TIMEOUT_MS)

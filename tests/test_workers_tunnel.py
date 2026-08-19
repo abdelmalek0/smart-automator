@@ -122,6 +122,9 @@ def test_request_browser_start_rolls_back_lease_on_timeout() -> None:
                 fresh_profile=True,
                 timeout=0.2,
             )
+        assert worker.browser_state == "stopping"
+        assert worker.active_run_id == "run-1"
+        registry.handle_control_message(worker, {"type": "browser.stopped"})
         assert worker.browser_state == "idle"
         assert worker.active_run_id is None
 
@@ -163,14 +166,20 @@ def test_runner_detaches_proxy_before_playwright_cleanup() -> None:
     runner_src = (
         Path(__file__).resolve().parents[1] / "src/smart_automator/server/runner.py"
     ).read_text(encoding="utf-8")
+    helper = runner_src.split("def teardown_connect_and_browser", 1)[1].split(
+        "def run_automation", 1
+    )[0]
+    detach = helper.index("detach_cdp_proxy")
+    stop_async = helper.index("wait=False")
+    cleanup = helper.index("executor.cleanup()")
+    stop_wait = helper.index("wait=True")
+    assert detach < stop_async < cleanup < stop_wait
+
     finally_src = runner_src.rsplit("    finally:", 1)[1]
-    detach = finally_src.index("detach_cdp_proxy")
-    cleanup = finally_src.index("executor.cleanup()")
-    stop = finally_src.index("request_browser_stop(")
+    teardown = finally_src.index("teardown_connect_and_browser(")
     history = finally_src.index("save_run_history(")
     report = finally_src.index("_generate_report(")
-    assert detach < cleanup < stop
-    assert stop < history < report
+    assert teardown < history < report
 
 
 def test_request_browser_start_waits_for_idle_lease() -> None:
@@ -235,6 +244,139 @@ def test_request_browser_start_busy_timeout() -> None:
         )
     assert worker.active_run_id == "run-prev"
     assert worker.browser_state == "ready"
+
+
+def test_request_browser_stop_wait_false_stays_stopping() -> None:
+    registry = WorkerRegistry()
+    worker = WorkerConnection(user_id="user-1", websocket=MagicMock(), loop=MagicMock())
+    registry.register(worker)
+    worker.browser_state = "ready"
+    worker.active_run_id = "run-1"
+    with patch.object(WorkerRegistry, "_teardown_proxy"):
+        registry.request_browser_stop("user-1", run_id="run-1", wait=False)
+        assert worker.browser_state == "stopping"
+        assert worker.active_run_id == "run-1"
+        registry.handle_control_message(worker, {"type": "browser.stopped"})
+    assert worker.browser_state == "idle"
+    assert worker.active_run_id is None
+
+
+def test_request_browser_stop_wait_true_force_idle_on_timeout() -> None:
+    registry = WorkerRegistry()
+    worker = WorkerConnection(user_id="user-1", websocket=MagicMock(), loop=MagicMock())
+    registry.register(worker)
+    worker.browser_state = "ready"
+    worker.active_run_id = "run-1"
+    with patch.object(WorkerRegistry, "_teardown_proxy"):
+        registry.request_browser_stop("user-1", run_id="run-1", wait=True, timeout=0.05)
+    assert worker.browser_state == "idle"
+    assert worker.active_run_id is None
+
+
+def test_request_browser_stop_ignores_other_run_lease() -> None:
+    registry = WorkerRegistry()
+    worker = WorkerConnection(user_id="user-1", websocket=MagicMock(), loop=MagicMock())
+    registry.register(worker)
+    worker.browser_state = "stopping"
+    worker.active_run_id = "run-1"
+    worker.stop_deadline = time.monotonic() + 30
+    with patch.object(WorkerRegistry, "_teardown_proxy"):
+        registry.request_browser_stop("user-1", run_id="run-other", wait=True, timeout=0.05)
+    assert worker.browser_state == "stopping"
+    assert worker.active_run_id == "run-1"
+
+
+def test_request_browser_start_waits_for_stopping_lease() -> None:
+    import threading
+
+    registry = WorkerRegistry()
+    worker = WorkerConnection(user_id="user-1", websocket=MagicMock(), loop=MagicMock())
+    registry.register(worker)
+    worker.browser_state = "stopping"
+    worker.active_run_id = "run-prev"
+    worker.stop_deadline = time.monotonic() + 30
+    worker.stopped_event.clear()
+
+    def release_then_ready() -> None:
+        time.sleep(0.15)
+        registry.handle_control_message(worker, {"type": "browser.stopped"})
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if worker.active_run_id == "run-next" and worker.browser_state == "starting":
+                registry.handle_control_message(worker, {"type": "browser.ready"})
+                return
+            time.sleep(0.01)
+
+    with (
+        patch.object(WorkerRegistry, "_teardown_proxy"),
+        patch.object(workers.CdpProxy, "start", return_value="http://127.0.0.1:9999"),
+        patch.object(WorkerRegistry, "_wait_json_version"),
+    ):
+        threading.Thread(target=release_then_ready, daemon=True).start()
+        url = registry.request_browser_start(
+            "user-1",
+            run_id="run-next",
+            fresh_profile=True,
+            timeout=2.0,
+        )
+        assert url == "http://127.0.0.1:9999"
+        assert worker.active_run_id == "run-next"
+        assert worker.browser_state == "ready"
+
+
+def test_expire_stop_if_due_releases_stuck_stopping() -> None:
+    registry = WorkerRegistry()
+    worker = WorkerConnection(user_id="user-1", websocket=MagicMock(), loop=MagicMock())
+    registry.register(worker)
+    worker.browser_state = "stopping"
+    worker.active_run_id = "run-1"
+    worker.stop_deadline = time.monotonic() - 1
+    with patch.object(WorkerRegistry, "_teardown_proxy"):
+        with worker.lease_lock:
+            registry.expire_stop_if_due(worker)
+    assert worker.browser_state == "idle"
+    assert worker.active_run_id is None
+
+
+def test_browser_ready_ignored_while_stopping() -> None:
+    registry = WorkerRegistry()
+    worker = WorkerConnection(user_id="user-1", websocket=MagicMock(), loop=MagicMock())
+    registry.register(worker)
+    worker.browser_state = "stopping"
+    worker.active_run_id = "run-1"
+    registry.handle_control_message(worker, {"type": "browser.ready"})
+    assert worker.browser_state == "stopping"
+    assert worker.active_run_id == "run-1"
+
+
+def test_teardown_connect_reaches_stop_after_playwright_close_error() -> None:
+    from smart_automator.server.runner import teardown_connect_and_browser
+
+    order: list[object] = []
+
+    class FakeExecutor:
+        def cleanup(self) -> None:
+            order.append("close")
+            raise RuntimeError("playwright close failed")
+
+    registry = MagicMock()
+    registry.detach_cdp_proxy.side_effect = lambda *args, **kwargs: order.append("detach")
+    registry.request_browser_stop.side_effect = lambda *args, **kwargs: order.append(
+        ("stop", kwargs.get("wait"))
+    )
+    run = MagicMock()
+    run.user_id = "user-1"
+    run.run_id = "run-1"
+
+    with patch("smart_automator.server.runner.worker_registry", lambda: registry):
+        teardown_connect_and_browser(
+            run,
+            worker_browser_started=True,
+            executor=FakeExecutor(),
+            browser_context=None,
+        )
+
+    assert order == ["detach", ("stop", False), "close", ("stop", True)]
 
 
 def test_connect_cdp_eof_does_not_kill_control_wss() -> None:

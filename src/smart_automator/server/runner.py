@@ -22,7 +22,11 @@ from .models import RUN_MODE_MANUAL
 from .paths import REPORT_DIR, SCREENSHOT_DIR
 from .replay_store import has_replay_script, load_run_replay, save_run_replay, delete_run_replay
 from ..storage.websites import WebsiteStore
-from .workers import local_browser_mode_enabled, worker_registry
+from .workers import (
+    WORKER_BROWSER_STOP_TIMEOUT_SECONDS,
+    local_browser_mode_enabled,
+    worker_registry,
+)
 from .step_mapper import (
     build_step_start,
     history_item_to_step,
@@ -477,6 +481,49 @@ def _replay_with_events(
     )
 
 
+def teardown_connect_and_browser(
+    run: RunState,
+    *,
+    worker_browser_started: bool,
+    executor: Executor | None,
+    browser_context: BrowserContext | None,
+) -> None:
+    """Drop CDP mux, ask Connect to kill Chrome, then close Playwright.
+
+    Stop is sent before Playwright close so a hung driver cannot skip the lease.
+    """
+    if worker_browser_started:
+        try:
+            worker_registry().detach_cdp_proxy(run.user_id, run_id=run.run_id)
+        except Exception as exc:
+            log.warning("[run:%s] CDP proxy detach failed: %s", run.run_id[:8], exc)
+        try:
+            worker_registry().request_browser_stop(
+                run.user_id,
+                run_id=run.run_id,
+                wait=False,
+            )
+        except Exception as exc:
+            log.warning("[run:%s] worker browser stop (async) failed: %s", run.run_id[:8], exc)
+    try:
+        if executor is not None:
+            executor.cleanup()
+        elif browser_context is not None:
+            browser_context.close()
+    except Exception:
+        pass
+    if worker_browser_started:
+        try:
+            worker_registry().request_browser_stop(
+                run.user_id,
+                run_id=run.run_id,
+                wait=True,
+                timeout=WORKER_BROWSER_STOP_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            log.warning("[run:%s] worker browser stop failed: %s", run.run_id[:8], exc)
+
+
 def run_automation(run: RunState) -> None:
     browser_context: BrowserContext | None = None
     executor: Executor | None = None
@@ -661,34 +708,14 @@ def run_automation(run: RunState) -> None:
             run.finished_at = time.time()
         if executor is not None:
             executor.flush_token_usage()
-        # Drop the CDP mux before Playwright closes sockets so cleanup cannot
-        # flood/kill the worker control WSS. Then stop Chrome only (WSS stays).
-        # Release the lease before history/report so a consecutive run can start.
-        if worker_browser_started:
-            try:
-                worker_registry().detach_cdp_proxy(run.user_id, run_id=run.run_id)
-            except Exception as exc:
-                log.warning("[run:%s] CDP proxy detach failed: %s", run.run_id[:8], exc)
-        if executor is not None:
-            try:
-                executor.cleanup()
-            except Exception:
-                pass
-        elif browser_context is not None:
-            try:
-                browser_context.close()
-            except Exception:
-                pass
-        if worker_browser_started:
-            try:
-                worker_registry().request_browser_stop(
-                    run.user_id,
-                    run_id=run.run_id,
-                    wait=True,
-                    timeout=5.0,
-                )
-            except Exception as exc:
-                log.warning("[run:%s] worker browser stop failed: %s", run.run_id[:8], exc)
+        # Drop the CDP mux, tell Connect to kill Chrome, then close Playwright.
+        # Lease release must not wait on an unbounded Playwright close.
+        teardown_connect_and_browser(
+            run,
+            worker_browser_started=worker_browser_started,
+            executor=executor,
+            browser_context=browser_context,
+        )
         if run.status != "cancelled" and executor is not None:
             try:
                 save_run_history(run.run_id, executor.context.history)
