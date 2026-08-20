@@ -6,7 +6,7 @@ from smart_automator.agent.compound_integrity import (
     format_action_results_with_verification,
     format_all_actions_args,
 )
-from smart_automator.server.step_mapper import navigator_to_step
+from smart_automator.server.step_mapper import human_action_to_step, navigator_to_step
 
 
 class TestStepMapper(unittest.TestCase):
@@ -89,6 +89,18 @@ class TestStepMapper(unittest.TestCase):
         )
         self.assertEqual(step["status"], "fail")
         self.assertEqual(step["action"], "scroll_to_text")
+
+    def test_human_action_to_step_uses_imperative_title(self):
+        step = human_action_to_step(
+            2,
+            action="go_to_url",
+            args={"url": "https://example.com"},
+            result="Human navigated to https://example.com",
+        )
+        self.assertEqual(step["thought"], "Go to https://example.com")
+        self.assertEqual(step["result"], "Human navigated to https://example.com")
+        self.assertEqual(step["action"], "go_to_url")
+        self.assertEqual(step["source"], "human")
 
 
 if __name__ == "__main__":

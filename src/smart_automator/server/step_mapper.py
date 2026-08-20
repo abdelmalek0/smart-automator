@@ -11,6 +11,7 @@ from ..agent.compound_integrity import (
 from ..agent.history import AgentStepRecord
 from ..actions.builder import parse_actions
 from ..agent.messages.utils import fix_actions
+from ..agents.task_extractor import TaskExtractorAgent
 
 
 def planner_to_plan(plan_result: dict[str, Any]) -> dict[str, Any]:
@@ -143,9 +144,10 @@ def human_action_to_step(
     result: str,
     screenshot_url: str | None = None,
 ) -> dict[str, Any]:
+    title = TaskExtractorAgent._to_imperative("", result) or result
     return {
         "index": index,
-        "thought": "Human intervention",
+        "thought": title,
         "action": action,
         "args": args,
         "result": result,
