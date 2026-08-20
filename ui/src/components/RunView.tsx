@@ -22,6 +22,12 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog'
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from '@/components/ui/accordion'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
 import type { RunStatus } from '@/types'
@@ -184,77 +190,102 @@ export default function RunView({ runId, onRunComplete }: Props) {
   const procedureTask =
     run?.task && run.task !== MANUAL_PLACEHOLDER_TASK ? run.task : ''
   const displayTitle =
-    run?.name ||
+    run?.name?.trim() ||
     (isManual && isActiveRun && !procedureTask ? 'Recording demonstration…' : '') ||
-    (!procedureTask ? run?.task || '…' : '')
+    (procedureTask ? 'Untitled test' : run?.task || '…')
   const draftTask = (run?.steps ?? [])
     .filter((step) => step.source === 'human')
     .map((step, index) => `${index + 1}. ${step.result || step.action}`)
     .join('\n')
+  const sourceRunId = run?.use_replay_script ? run.source_run_id : null
 
   return (
     <div className="flex flex-col h-full">
       <div className="flex-shrink-0 px-6 py-4 border-b border-border flex items-start gap-4">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-            <span className="text-xs text-muted-foreground mono">{runId.slice(0, 8)}</span>
-            {run && (
-              <span
-                title={executionModeLabel(run)}
-                className={cn(
-                  'inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-semibold',
-                  executionModeChipClass(run),
-                )}
-              >
-                {executionModeShortLabel(run)}
-              </span>
-            )}
-          </div>
-          {projectName && (
-            <Badge variant="outline" className="mb-1.5 text-[10px] gap-1">
-              <Globe className="h-3 w-3" />
-              {projectName}
-            </Badge>
-          )}
-          {displayTitle && (
-            <h2 className="text-sm font-medium leading-snug">{displayTitle}</h2>
-          )}
-          {procedureTask && (
-            <p className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap leading-relaxed max-h-56 overflow-y-auto">
-              {procedureTask}
+        <div className="flex-1 min-w-0 space-y-2.5">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 min-w-0 flex-wrap">
+              <h2 className="text-base font-semibold leading-tight truncate">{displayTitle}</h2>
+              {run && (
+                <span
+                  title={executionModeLabel(run)}
+                  className={cn(
+                    'inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-semibold shrink-0',
+                    executionModeChipClass(run),
+                  )}
+                >
+                  {executionModeShortLabel(run)}
+                </span>
+              )}
+            </div>
+            <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground flex-wrap">
+              {projectName && (
+                <>
+                  <Globe className="h-3 w-3 shrink-0" />
+                  <span className="truncate max-w-[14rem]">{projectName}</span>
+                  <span aria-hidden className="text-muted-foreground/40">
+                    ·
+                  </span>
+                </>
+              )}
+              <span className="mono">{runId.slice(0, 8)}</span>
+              {sourceRunId && (
+                <>
+                  <span aria-hidden className="text-muted-foreground/40">
+                    ·
+                  </span>
+                  {sourceRunExists ? (
+                    <span>
+                      from{' '}
+                      <Link
+                        to={`/runs/${sourceRunId}`}
+                        className="mono text-primary hover:underline underline-offset-2"
+                      >
+                        {sourceRunId.slice(0, 8)}
+                      </Link>
+                    </span>
+                  ) : (
+                    <span>source removed</span>
+                  )}
+                </>
+              )}
             </p>
+          </div>
+
+          {run?.success_criteria && (
+            <div className="max-w-2xl">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Goal
+              </p>
+              <p className="mt-0.5 text-sm leading-snug">{run.success_criteria}</p>
+            </div>
           )}
+
+          {procedureTask && (
+            <Accordion type="single" collapsible className="max-w-2xl">
+              <AccordionItem value="test-description" className="border-none">
+                <AccordionTrigger className="py-0 text-xs font-medium text-muted-foreground hover:no-underline hover:text-foreground justify-start gap-1.5 w-fit">
+                  Description
+                </AccordionTrigger>
+                <AccordionContent className="text-xs text-muted-foreground leading-relaxed max-h-56 overflow-y-auto pt-1.5">
+                  <p className="whitespace-pre-wrap">{procedureTask}</p>
+                </AccordionContent>
+              </AccordionItem>
+            </Accordion>
+          )}
+
           {isManual && isActiveRun && (
-            <p className="mt-1 text-xs text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               Perform the flow in the browser, then click Done. The agent is recording, not driving.
             </p>
           )}
           {isManual && draftTask && run?.task === MANUAL_PLACEHOLDER_TASK && (
-            <p className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap line-clamp-6">
+            <p className="text-xs text-muted-foreground whitespace-pre-wrap line-clamp-6">
               <span className="font-medium text-foreground">Draft:</span> {draftTask}
             </p>
           )}
-          {run?.success_criteria && (
-            <p className="mt-1 text-xs text-muted-foreground line-clamp-3">
-              <span className="font-medium text-foreground">Criteria:</span> {run.success_criteria}
-            </p>
-          )}
-          {run?.use_replay_script && run.source_run_id && sourceRunExists && (
-            <p className="mt-1 text-xs text-muted-foreground">
-              From{' '}
-              <Link
-                to={`/runs/${run.source_run_id}`}
-                className="mono text-primary hover:underline underline-offset-2"
-              >
-                {run.source_run_id.slice(0, 8)}
-              </Link>
-            </p>
-          )}
-          {run?.use_replay_script && run.source_run_id && !sourceRunExists && (
-            <p className="mt-1 text-xs text-muted-foreground">Source removed</p>
-          )}
           {streamError && run?.status === 'error' && (
-            <p className="mt-1 text-xs text-destructive break-words">{streamError}</p>
+            <p className="text-xs text-destructive break-words">{streamError}</p>
           )}
         </div>
         <div className="flex items-center gap-2 flex-shrink-0 pt-0.5">
