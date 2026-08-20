@@ -289,7 +289,7 @@ export default function RunView({ runId, onRunComplete }: Props) {
           )}
         </div>
         <div className="flex items-center gap-2 flex-shrink-0 pt-0.5">
-          {run && (
+          {run && run.status !== 'awaiting_human' && (
             <Badge
               variant={statusBadgeVariant(run.status as RunStatus)}
               className={cn(run.status === 'running' && 'gap-1.5')}

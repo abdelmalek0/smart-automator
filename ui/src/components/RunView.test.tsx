@@ -43,9 +43,13 @@ function mockRun(partial: Partial<RunDetails> = {}): RunDetails {
   }
 }
 
+const stream = vi.hoisted(() => ({
+  run: null as RunDetails | null,
+}))
+
 vi.mock('@/hooks/useRunStream', () => ({
   useRunStream: () => ({
-    run: mockRun(),
+    run: stream.run ?? mockRun(),
     connected: true,
     closed: true,
     error: null,
@@ -82,6 +86,7 @@ function renderView() {
 describe('RunView', () => {
   afterEach(() => {
     cleanup()
+    stream.run = null
   })
 
   it('shows the goal and keeps the task collapsed under Description', () => {
@@ -99,5 +104,18 @@ describe('RunView', () => {
 
     expect(trigger.getAttribute('data-state')).toBe('open')
     expect(screen.getByText(taskText)).toBeTruthy()
+  })
+
+  it('does not show an Awaiting human status badge', () => {
+    stream.run = mockRun({
+      status: 'awaiting_human',
+      finished_at: null,
+      hitl_reason: 'Solve the login challenge',
+    })
+    renderView()
+
+    expect(screen.queryByText('Awaiting human')).toBeNull()
+    expect(screen.getByText('Solve the login challenge')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /take control/i })).toBeTruthy()
   })
 })
